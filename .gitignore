@@ -1,0 +1,43 @@
+# ---- Build outputs ----
+build/
+dist/
+out/
+*.obj
+*.o
+*.lo
+*.la
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exe
+*.exp
+*.pdb
+*.ptx
+
+# ---- CMake / VS ----
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.sln
+*.vcxproj*
+*.ninja
+*.user
+*.opensdf
+*.sdf
+*.ipch
+
+# ---- CUDA / OpenCV / FFmpeg / DirectStorage (外部ライブラリ) ----
+OpenCV_withCUDA/
+NVIDIAGPUComputingToolkit/
+ffmpeg/
+directstorage/
+
+# ---- Logs / Temp ----
+*.log
+*.tmp
+*.swp
+*.DS_Store
+Thumbs.db

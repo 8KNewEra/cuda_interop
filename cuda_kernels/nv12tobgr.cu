@@ -1,0 +1,40 @@
+extern "C"
+__global__ void nv12_to_bgr_kernel(
+    const uint8_t* y_plane, int y_step,
+    const uint8_t* uv_plane, int uv_step,
+    uchar3* bgr, int bgr_step,
+    int width, int height)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height) return;
+
+    uint8_t Y = y_plane[y * y_step + x];
+
+    int uv_index = (y / 2) * uv_step + (x / 2) * 2;
+    uint8_t U = uv_plane[uv_index];
+    uint8_t V = uv_plane[uv_index + 1];
+
+    float fY = (float)Y - 16.0f;
+    float fU = (float)U - 128.0f;
+    float fV = (float)V - 128.0f;
+
+    float R = 1.164f * fY + 1.596f * fV;
+    float G = 1.164f * fY - 0.392f * fU - 0.813f * fV;
+    float B = 1.164f * fY + 2.017f * fU;
+
+    uint8_t r = (uint8_t)fminf(fmaxf(R, 0.0f), 255.0f);
+    uint8_t g = (uint8_t)fminf(fmaxf(G, 0.0f), 255.0f);
+    uint8_t b = (uint8_t)fminf(fmaxf(B, 0.0f), 255.0f);
+
+    uchar3 pixel;
+    pixel.x = b; 
+    pixel.y = g; 
+    pixel.z = r; 
+
+    uchar3* row = (uchar3*)((uint8_t*)bgr + y * bgr_step);
+    row[x] = pixel;
+}
+
+
