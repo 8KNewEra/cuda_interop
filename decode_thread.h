@@ -25,11 +25,11 @@ extern "C" {
 extern int g_gpu_usage;
 extern int g_fps;
 
-class decode_thread : public QObject {
+class decode_thread : public QThread {
     Q_OBJECT
 
 public:
-    explicit decode_thread(QString FilePath,QObject *parent = nullptr);
+    explicit decode_thread(const QString& filePath, QObject *parent = nullptr);
     ~decode_thread() override;
 
 signals:
@@ -50,14 +50,7 @@ public slots:
     void set_decode_speed(int speed);
 
 private:
-    enum DecodeState {
-        STATE_READING,
-        STATE_FLUSHING,
-        STATE_DONE
-    };
-
-
-
+    void run() override;
     void initialized_ffmpeg();
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
@@ -93,8 +86,6 @@ private:
     QTimer *timer;
     QElapsedTimer elapsedTimer;
     int interval_ms;
-
-    DecodeState decode_state = STATE_READING;
 
     int No=0;
 

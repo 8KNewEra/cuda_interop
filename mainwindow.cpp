@@ -158,33 +158,30 @@ void MainWindow::start_decode_thread() {
     if (run_decode_thread == 0) {
         //const char* input_filename = "C:/Users/kamon/Videos/SaveImage001/8K120p_HEVC.mp4";
         //const char* input_filename = "D:/test.mp4";
-        const char* input_filename = "D:/8K.mp4";
-        decodestream = new decode_thread(input_filename);
-        decode__thread = new QThread;
+        decodestream = new decode_thread("D:/8K.mp4");
 
-        decodestream->moveToThread(decode__thread);
-        QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
-        QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag);
+        // 信号とスロット接続
+        QObject::connect(decodestream, &decode_thread::send_decode_image,this, &MainWindow::decode_view);
+        QObject::connect(glWidget, &GLWidget::decode_please,decodestream, &decode_thread::receve_decode_flag);
 
-        QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
+        QObject::connect(this, &MainWindow::send_decode_speed,decodestream, &decode_thread::set_decode_speed);
 
-        QObject::connect(decodestream, &decode_thread::send_slider, this, &MainWindow::slider_control);
-        QObject::connect(decodestream, &decode_thread::send_video_info, this, &MainWindow::slider_set_range);
-        QObject::connect(decode__thread, &QThread::started, decodestream, &decode_thread::startProcessing);
-        QObject::connect(decode__thread, &QThread::finished, decodestream, &decode_thread::stopProcessing);
+        QObject::connect(decodestream, &decode_thread::send_slider,this, &MainWindow::slider_control);
+        QObject::connect(decodestream, &decode_thread::send_video_info,this, &MainWindow::slider_set_range);
 
-        QObject::connect(ui->play_pushButton, &QPushButton::clicked, decodestream, &decode_thread::resumePlayback, Qt::QueuedConnection);
-        QObject::connect(ui->pause_pushButton, &QPushButton::clicked, decodestream, &decode_thread::pausePlayback, Qt::QueuedConnection);
-        QObject::connect(ui->Live_horizontalSlider, &QSlider::sliderMoved, decodestream, &decode_thread::sliderPlayback, Qt::QueuedConnection);
-        QObject::connect(ui->reverse_pushButton, &QPushButton::clicked, decodestream, &decode_thread::reversePlayback, Qt::QueuedConnection);
-        QObject::connect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
-        QObject::connect(this, &::MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
-        QObject::connect(this, &MainWindow::send_manual_slider, decodestream, &decode_thread::sliderPlayback);
+        QObject::connect(ui->play_pushButton, &QPushButton::clicked,decodestream, &decode_thread::resumePlayback, Qt::QueuedConnection);
+        QObject::connect(ui->pause_pushButton, &QPushButton::clicked,decodestream, &decode_thread::pausePlayback, Qt::QueuedConnection);
+        QObject::connect(ui->Live_horizontalSlider, &QSlider::sliderMoved,decodestream, &decode_thread::sliderPlayback, Qt::QueuedConnection);
+        QObject::connect(ui->reverse_pushButton, &QPushButton::clicked,decodestream, &decode_thread::reversePlayback, Qt::QueuedConnection);
 
-        QObject::connect(decode__thread, &QThread::finished, decodestream, &QObject::deleteLater);
-        QObject::connect(decode__thread, &QThread::finished, decode__thread, &QObject::deleteLater);
+        QObject::connect(this, &MainWindow::send_manual_pause,decodestream, &decode_thread::pausePlayback);
+        QObject::connect(this, &MainWindow::send_manual_resumeplayback,decodestream, &decode_thread::resumePlayback);
+        QObject::connect(this, &MainWindow::send_manual_slider,decodestream, &decode_thread::sliderPlayback);
 
-        decode__thread->start();
+        // スレッド終了時に delete
+        QObject::connect(decodestream, &QThread::finished,decodestream, &QObject::deleteLater);
+
+        decodestream->start();   // ← run() が呼ばれる
         run_decode_thread = 1;
     }
 }

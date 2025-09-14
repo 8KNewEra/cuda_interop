@@ -20,10 +20,24 @@ extern "C" {
 
 #include <QTimer>
 
-decode_thread::decode_thread(QString FilePath, QObject *parent)
-    : QObject(parent), video_play_flag(true), timer(new QTimer(this))  {
+decode_thread::decode_thread(const QString &FilePath, QObject *parent)
+    : QThread(parent),
+    video_play_flag(true)
+{
     File_byteArray = FilePath.toUtf8();
     input_filename = File_byteArray.constData();
+}
+
+void decode_thread::run()
+{
+    initialized_ffmpeg();
+
+    while(true){
+        if(decode_flag){
+            get_decode_image();
+            decode_flag=false;
+        }
+    }
 }
 
 decode_thread::~decode_thread() {
@@ -140,11 +154,11 @@ void decode_thread::initialized_ffmpeg() {
 
 
     double framerate = getFrameRate(fmt_ctx, video_stream_index);
-    interval_ms = static_cast<double>(1000.0 / 1000);
-    elapsedTimer.start();
-    timer->start(interval_ms);
+    // interval_ms = static_cast<double>(1000.0 / 1000);
+    // elapsedTimer.start();
+    // timer->start(interval_ms);
 
-    connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
+    // connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
 
     // フレームレートを元にタイマー設定
     const char* codec_name = avcodec_get_name(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
