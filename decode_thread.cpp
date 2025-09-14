@@ -34,6 +34,13 @@ void decode_thread::run()
 
     while(true){
         if(decode_flag){
+            // --- 一時停止チェック ---
+            mutex.lock();
+            if (!video_play_flag) {
+                waitCondition.wait(&mutex); // resume()で起きる
+            }
+            mutex.unlock();
+
             get_decode_image();
             decode_flag=false;
         }
@@ -75,11 +82,11 @@ void decode_thread::sliderPlayback(int value){
 }
 
 void decode_thread::resumePlayback() {
-    decode_flag=true;
-    processFrame();
     QMutexLocker locker(&mutex);
+    decode_flag=true;
     video_play_flag = true;
     video_reverse_flag = false;
+    waitCondition.wakeOne();
 }
 
 void decode_thread::pausePlayback() {
@@ -88,9 +95,8 @@ void decode_thread::pausePlayback() {
 }
 
 void decode_thread::reversePlayback(){
-    decode_flag=true;
-    processFrame();
     QMutexLocker locker(&mutex);
+    decode_flag=true;
     video_play_flag = true;
     video_reverse_flag = true;
 }
@@ -286,9 +292,9 @@ void decode_thread::ffmpeg_to_CUDA(){
     slider_No = Get_Frame_No;
 
     if(CUDA_IMG_processor->NV12_to_BGR(gpu_y,gpu_uv,bgr_image,height,width)){
-        // cv::Mat g;
-        // bgr_image.download(g);
-        // bgr_image.upload(g);
+        cv::Mat g;
+        bgr_image.download(g);
+        bgr_image.upload(g);
         // cv::imwrite("debug.bmp",g);
 
         CUDA_IMG_processor->Gradation(bgr_image,bgr_image,height,width);
