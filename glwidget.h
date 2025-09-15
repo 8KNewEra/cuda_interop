@@ -69,6 +69,8 @@ private:
     bool encode_flag=false;
     save_encode* save_encoder=nullptr;
 
+    std::vector<cv::cuda::GpuMat>encode_frame;
+
     int FrameNo=0;
     int MaxFrame=0;
 };

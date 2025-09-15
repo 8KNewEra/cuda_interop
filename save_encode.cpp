@@ -264,6 +264,8 @@ bool save_encode::encode(cv::cuda::GpuMat& rgba_gpu)
     }
     av_packet_free(&pkt);
 
+    //qDebug()<<frame_index;
+
     return true;
 }
 

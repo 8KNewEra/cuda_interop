@@ -34,7 +34,7 @@ decode_thread::~decode_thread() {
 }
 
 void decode_thread::receve_decode_flag(){
-    decode_flag=true;
+    decode_flag = true;
 }
 
 void decode_thread::set_decode_speed(int speed){
@@ -172,7 +172,7 @@ void decode_thread::initialized_ffmpeg() {
     qDebug() << "1フレームのPTS数:" << pts_per_frame;
 
     //スライダー設定
-    emit send_video_info(pts_per_frame, (fmt_ctx->streams[video_stream_index]->duration)/pts_per_frame,framerate);
+    emit send_video_info(pts_per_frame, (fmt_ctx->streams[video_stream_index]->duration)/pts_per_frame-1,framerate);
 
     //再生
     video_play_flag = true;
@@ -254,6 +254,8 @@ void decode_thread::get_decode_image() {
 }
 
 void decode_thread::ffmpeg_to_CUDA(){
+    // QElapsedTimer timer;
+    // timer.start();
     int width = hw_frame->width;
     int height = hw_frame->height;
 
@@ -283,6 +285,8 @@ void decode_thread::ffmpeg_to_CUDA(){
         emit send_slider(Get_Frame_No/pts_per_frame);
         //qDebug()<<Get_Frame_No/pts_per_frame;
     }
+    // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
+    // qDebug()<<seconds;
 }
 
 

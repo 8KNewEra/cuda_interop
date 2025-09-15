@@ -95,6 +95,7 @@ private:
     int interval_ms;
 
     DecodeState decode_state = STATE_READING;
+    bool alreadyProcessed;
 
     int No=0;
 

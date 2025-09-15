@@ -316,9 +316,9 @@ void GLWidget::downloadToGLTexture() {
         save_encoder->encode(flipped);
     }
 
-    qDebug()<<FrameNo;
+    //qDebug()<<FrameNo<<":"<<MaxFrame;
 
-    if(FrameNo>MaxFrame){
+    if(FrameNo>=MaxFrame){
         delete save_encoder;
         save_encoder=nullptr;
         encode_flag=false;

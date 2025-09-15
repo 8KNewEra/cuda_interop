@@ -129,11 +129,11 @@ void MainWindow::slider_control(int Frame_No){
     if (!ui->Live_horizontalSlider->isSliderDown()&&!encode_flag) {
         ui->Live_horizontalSlider->setValue(Frame_No);
     }
-    //qDebug()<<Frame_No;
     slider_No=Frame_No;
 
     //最終フレームまで行ったら再度0フレームへ遷移
-    if(slider_No==slider_max-1){
+    // qDebug()<<slider_No<<":"<<slider_max;
+    if(slider_No==slider_max&&!encode_flag){
         emit send_manual_slider(0);
         emit send_manual_resumeplayback();
     }
@@ -158,13 +158,13 @@ void MainWindow::start_decode_thread() {
     if (run_decode_thread == 0) {
         //const char* input_filename = "C:/Users/kamon/Videos/SaveImage001/8K120p_HEVC.mp4";
         //const char* input_filename = "D:/test.mp4";
-        const char* input_filename = "D:/8K.mp4";
+        const char* input_filename = "D:/4K.mp4";
         decodestream = new decode_thread(input_filename);
         decode__thread = new QThread;
 
         decodestream->moveToThread(decode__thread);
         QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
-        QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag);
+        QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::DirectConnection);
 
         QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
 
@@ -269,41 +269,35 @@ void MainWindow::gpu_encode(){
     }
 
     // 進捗ダイアログを作成
-    QProgressDialog progress("エンコード中...", "キャンセル",1, slider_max-1, this);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0); // すぐ表示
-    progress.setValue(0);
+    progress = new QProgressDialog("エンコード中...", "キャンセル",1, slider_max, this);
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0); // すぐ表示
+    progress->setValue(0);
 
     //エンコード開始
     glWidget->encode_mode(encode_flag);
     glWidget->encode_maxFrame(slider_max);
-    emit send_decode_speed(1000);
     emit send_manual_resumeplayback();
 
     // 処理ループ内で更新
     while(true) {
         // プログレス更新
         //qDebug()<<slider_No<<":"<<slider_max;
-        progress.setValue(slider_No);
+        progress->setValue(slider_No);
 
         // ユーザーがキャンセルを押したか確認
-        if (progress.wasCanceled()){
+        if (progress->wasCanceled()){
             glWidget->encode_maxFrame(slider_No);
             break;
         }
 
         if(slider_No>=slider_max-1){
+            glWidget->encode_maxFrame(slider_No);
             break;
         }
 
         QCoreApplication::processEvents();  // UI応答性の確保
     }
-
-    emit send_manual_pause();
-    emit send_decode_speed(1000);
-    emit send_manual_slider(Now_Frame);
-    emit send_manual_resumeplayback();
-    progress.setValue(slider_max); // 完了
 
     connect(glWidget, &GLWidget::encode_finished, this, [=]() {
         encode_flag=false;
@@ -311,5 +305,9 @@ void MainWindow::gpu_encode(){
         qDebug() << "エンコード終了"
                  << QString::number(seconds, 'f', 3) // 小数点以下3桁
                  << "秒";
+
+        emit send_manual_slider(Now_Frame);
+        emit send_manual_resumeplayback();
+        progress->setValue(slider_max); // 完了
     }, Qt::SingleShotConnection);
 }

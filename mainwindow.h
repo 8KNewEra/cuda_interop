@@ -53,6 +53,7 @@ public:
     ~MainWindow();
 
     void GLwidgetInitialized();
+    QProgressDialog *progress;
 
     //画面表示
     int window_width=480;
