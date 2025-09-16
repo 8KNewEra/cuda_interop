@@ -112,6 +112,7 @@ void MainWindow::changeEvent(QEvent *event)
 }
 
 void MainWindow::decode_view(cv::cuda::GpuMat frame){
+    decodePending = false;
     if(!frame.empty()){
         //OpenGLへ画像を渡して描画
         glWidget->uploadToGLTexture(frame,slider_No);
@@ -149,6 +150,20 @@ void MainWindow::slider_set_range(int pts,int maxframe,int frame_rate){
     ui->Live_horizontalSlider->setRange(0, maxframe);
 }
 
+void MainWindow::SignalQueControl(){
+    if (decodePending)
+        return; // すでに積まれているので無視
+
+    decodePending = true;
+
+    // 次のイベントループで1回だけ呼ぶ
+    QTimer::singleShot(0, this, [this] {
+        // ここで本当にdecode_threadに投げる
+        QMetaObject::invokeMethod(decodestream, "receve_decode_flag",
+                                  Qt::QueuedConnection);
+    });
+}
+
 //ライブスレッド開始
 void MainWindow::start_decode_thread() {
     if (run_decode_thread == 1) {
@@ -164,7 +179,7 @@ void MainWindow::start_decode_thread() {
 
         decodestream->moveToThread(decode__thread);
         QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
-        QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::DirectConnection);
+        QObject::connect(glWidget, &GLWidget::decode_please, this, &MainWindow::SignalQueControl,Qt::QueuedConnection);
 
         QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
 
