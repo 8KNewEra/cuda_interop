@@ -173,7 +173,7 @@ void MainWindow::start_decode_thread() {
     if (run_decode_thread == 0) {
         //const char* input_filename = "C:/Users/kamon/Videos/SaveImage001/8K120p_HEVC.mp4";
         //const char* input_filename = "D:/test.mp4";
-        const char* input_filename = "D:/4K.mp4";
+        const char* input_filename = "F:/4K.mp4";
         decodestream = new decode_thread(input_filename);
         decode__thread = new QThread;
 

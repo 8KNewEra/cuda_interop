@@ -53,10 +53,10 @@ OPENCV_DIR = "$$PWD/OpenCV_withCUDA"
 
 INCLUDEPATH += $$OPENCV_DIR/include
 LIBS += -L$$OPENCV_DIR/x64/vc17/lib \
-        -lopencv_world4100  # ← ".lib" は不要！
+        -lopencv_world4120  # ← ".lib" は不要！
 
 #CUDAリンク
-CUDA_DIR = "$$PWD/NVIDIAGPUComputingToolkit/CUDA/v12.6"
+CUDA_DIR = "$$PWD/NVIDIAGPUComputingToolkit/CUDA/v12.8"
 
 INCLUDEPATH += $$CUDA_DIR/include
 LIBS += -L$$CUDA_DIR/lib/x64 \
