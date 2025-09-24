@@ -34,7 +34,10 @@ decode_thread::~decode_thread() {
 }
 
 void decode_thread::receve_decode_flag(){
-    decode_flag = true;
+    QMutexLocker locker(&mutex);
+    if(decode_state==STATE_WAIT_DECODE_FLAG){
+        decode_state = STATE_DECODE_READY;
+    }
 }
 
 void decode_thread::set_decode_speed(int speed){
@@ -54,14 +57,12 @@ void decode_thread::stopProcessing() {
 
 void decode_thread::sliderPlayback(int value){
     pausePlayback();
-    decode_flag=true;
     slider_No=value*pts_per_frame;
     video_play_flag = false;
     video_reverse_flag = false;
 }
 
 void decode_thread::resumePlayback() {
-    decode_flag=true;
     processFrame();
     QMutexLocker locker(&mutex);
     video_play_flag = true;
@@ -74,13 +75,11 @@ void decode_thread::pausePlayback() {
 }
 
 void decode_thread::reversePlayback(){
-    decode_flag=true;
     processFrame();
     QMutexLocker locker(&mutex);
     video_play_flag = true;
     video_reverse_flag = true;
 }
-
 
 void decode_thread::processFrame() {
     QMutexLocker locker(&mutex);
@@ -89,9 +88,9 @@ void decode_thread::processFrame() {
         return;
     }
 
-    if(decode_flag){
+    if(decode_state==STATE_DECODE_READY){
+        decode_state=STATE_DECODING;
         get_decode_image();
-        decode_flag=false;
     }
 }
 
@@ -143,7 +142,6 @@ void decode_thread::initialized_ffmpeg() {
     interval_ms = static_cast<double>(1000.0 / 1000);
     elapsedTimer.start();
     timer->start(interval_ms);
-
     connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
 
     // フレームレートを元にタイマー設定
@@ -220,7 +218,6 @@ double decode_thread::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_in
 }
 
 // フレーム取得
-// 1フレーム取得を試みる（タイマーから呼ばれる）
 void decode_thread::get_decode_image() {
     // --- シーク処理（必要なら）
     if (slider_No != Get_Frame_No || video_reverse_flag == true) {
@@ -253,6 +250,7 @@ void decode_thread::get_decode_image() {
     }
 }
 
+//CUDAに渡して画像処理
 void decode_thread::ffmpeg_to_CUDA(){
     // QElapsedTimer timer;
     // timer.start();
@@ -285,6 +283,7 @@ void decode_thread::ffmpeg_to_CUDA(){
         emit send_slider(Get_Frame_No/pts_per_frame);
         //qDebug()<<Get_Frame_No/pts_per_frame;
     }
+    decode_state=STATE_WAIT_DECODE_FLAG;
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 }

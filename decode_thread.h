@@ -51,12 +51,10 @@ public slots:
 
 private:
     enum DecodeState {
-        STATE_READING,
-        STATE_FLUSHING,
-        STATE_DONE
+        STATE_DECODE_READY,
+        STATE_DECODING,
+        STATE_WAIT_DECODE_FLAG
     };
-
-
 
     void initialized_ffmpeg();
     const char* selectDecoder(const char* codec_name);
@@ -85,18 +83,13 @@ private:
     int Slider_Frame_No;
     int slider_No;
     double pts_per_frame ;
-    QWaitCondition waitCondition;
     QMutex mutex;
-
-    bool decode_flag=true;
 
     QTimer *timer;
     QElapsedTimer elapsedTimer;
     int interval_ms;
 
-    DecodeState decode_state = STATE_READING;
-    bool alreadyProcessed;
-
+    DecodeState decode_state = STATE_DECODE_READY;
     int No=0;
 
 };

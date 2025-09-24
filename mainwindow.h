@@ -48,9 +48,6 @@ signals:
     void send_manual_resumeplayback();
     void send_manual_slider(int value);
 
-public slots:
-    void SignalQueControl();
-
 public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
@@ -74,7 +71,6 @@ public:
     QThread *decode__thread;
     decode_thread *decodestream;
     int run_decode_thread=0;
-    bool decodePending = false;
 
     //ライブスレッド動作
     void start_avi_thread();
