@@ -44,9 +44,12 @@ public:
     AVPacket* pkt = nullptr;                     // エンコード後のパケット
     AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
     AVBufferRef* hw_frames_ctx = nullptr;        // CUDA フレーム用のコンテキスト
+    AVRational tb;
+    AVRational fr;
+    int fps;  // 可変FPSでもOK
+    int pts_step;  // 1フレームあたりの刻み
 
     int64_t frame_index = 0;                         // PTS 管理用
-    int64_t step=0;
     int ret = 0;
 
     CUDA_ImageProcess* CUDA_IMG_processor=nullptr;

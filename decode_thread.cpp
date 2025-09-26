@@ -270,6 +270,7 @@ void decode_thread::ffmpeg_to_CUDA(){
     AVRational time_base = fmt_ctx->streams[video_stream_index]->time_base;
     Get_Frame_No = hw_frame->best_effort_timestamp;
     slider_No = Get_Frame_No;
+    qDebug()<<"decode_thread"<<Get_Frame_No/pts_per_frame;
 
     if(CUDA_IMG_processor->NV12_to_BGR(gpu_y,gpu_uv,bgr_image,height,width)){
         // cv::Mat g;

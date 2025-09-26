@@ -10,6 +10,8 @@ save_encode::save_encode(int h,int w) {
     height_=h;
     width_=w;
     frame_index=0;
+    fps = 120;
+
     // 1. codec_ctxをnullptrで初期化
     codec_ctx = nullptr;
 
@@ -48,17 +50,11 @@ save_encode::save_encode(int h,int w) {
     codec_ctx->height = height_;
     codec_ctx->pix_fmt = AV_PIX_FMT_CUDA;
 
-    codec_ctx->framerate = {60, 1}; // 60fps
-    codec_ctx->time_base = {1, 60};
-
-
-    AVRational tb = codec_ctx->time_base;     // 例: {1,60000}
-    AVRational fr = codec_ctx->framerate;     // 例: {60000,1001}
-
-    // 1フレームあたりのPTSステップを計算
-    step = av_rescale_q(1, av_inv_q(fr), tb);
-    qDebug()<<"aaaaa"<<step;
-
+    pts_step = 15000/fps;
+    fr = {fps, 1};
+    tb = {1, fps * pts_step};
+    codec_ctx->time_base = tb;
+    codec_ctx->framerate = fr;
     codec_ctx->gop_size = 60;
     codec_ctx->max_b_frames = 0;
     codec_ctx->bit_rate = 5 * 1000 * 1000;
@@ -70,36 +66,35 @@ save_encode::save_encode(int h,int w) {
     int ret = avcodec_open2(codec_ctx, codec, nullptr);
     if (ret < 0) throw std::runtime_error("Failed to open codec");
 
-    initialized_output("D:/test1.mp4");
+    initialized_output("D:/test2.mp4");
 }
 
 save_encode::~save_encode() {
-    // 重要なポイント:
-    // 1. まずエンコーダーをフラッシュし、残りのパケットをすべて書き出す。
-    // 2. その後、FFmpegのリソースを適切に解放する。
-    // 3. NULLチェックは重要だが、重複したフラッシュロジックは避ける。
+    // 全フレーム送信後にフラッシュ
+    avcodec_send_frame(codec_ctx, nullptr); // NULL送信でフラッシュ開始
 
-    // エンコーダーのフラッシュ処理
-    // エンコードの最後に必ず呼ぶ（EOF処理）
-    avcodec_send_frame(codec_ctx, nullptr); // NULL を送ってフラッシュモードにする
+    AVPacket *pkt = av_packet_alloc();
     while (true) {
-        AVPacket *pkt = av_packet_alloc();
         int ret = avcodec_receive_packet(codec_ctx, pkt);
-        if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) {
-            av_packet_free(&pkt);
+        if (ret == AVERROR(EAGAIN)) {
+            // 内部処理が残っている可能性 → 続行
+            continue;
+        }
+        if (ret == AVERROR_EOF) {
+            // すべてのパケットが出力済み
             break;
         }
         if (ret < 0) {
-            qDebug() << "NVENC flush error:" << ret;
-            av_packet_free(&pkt);
-            break;
+            throw std::runtime_error("Error during flushing");
         }
 
-        // 書き出し
+        av_packet_rescale_ts(pkt, codec_ctx->time_base, stream->time_base);
         pkt->stream_index = stream->index;
         av_interleaved_write_frame(fmt_ctx, pkt);
-        av_packet_free(&pkt);
+        av_packet_unref(pkt);
     }
+    av_packet_free(&pkt);
+
 
 
     // FFmpegリソースの解放
@@ -194,6 +189,9 @@ void save_encode::initialized_output(const std::string& path){
     ret = avformat_write_header(fmt_ctx, nullptr);
     if (ret < 0) throw std::runtime_error("Failed to write header");
 
+    stream->time_base = tb;
+    stream->avg_frame_rate = fr;
+
     this->stream = stream; // （必要であれば）
 }
 
@@ -207,7 +205,8 @@ void save_encode::initGpuMats()
 
 bool save_encode::encode(cv::cuda::GpuMat& rgba_gpu)
 {
-    frame_index+=1;
+    qDebug()<<"encode"<<No;
+    No+=1;
     // cv::Mat g;
     // rgba_gpu.download(g);
     // rgba_gpu.upload(g);
@@ -234,8 +233,8 @@ bool save_encode::encode(cv::cuda::GpuMat& rgba_gpu)
         );
 
     //フレームのPTS（表示時間）などをセット
-    hw_frame->pts = frame_index * step;  // current_ptsはフレームカウンタ等で管理
-    //qDebug()<<hw_frame->pts;
+    hw_frame->pts = frame_index*pts_step;  // 0,1,2,...
+    frame_index+=1;
 
     //エンコーダにフレーム送信
     int ret = avcodec_send_frame(codec_ctx, hw_frame);
@@ -254,6 +253,11 @@ bool save_encode::encode(cv::cuda::GpuMat& rgba_gpu)
 
         av_packet_rescale_ts(pkt, codec_ctx->time_base, stream->time_base);
         pkt->stream_index = stream->index;
+
+        static int64_t first_pts = AV_NOPTS_VALUE;
+        if (first_pts == AV_NOPTS_VALUE) first_pts = pkt->pts;
+        pkt->pts -= first_pts;
+        pkt->dts -= first_pts;
 
         ret = av_interleaved_write_frame(fmt_ctx, pkt);
         if (ret < 0) {

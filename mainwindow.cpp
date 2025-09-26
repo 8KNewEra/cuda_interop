@@ -156,9 +156,9 @@ void MainWindow::start_decode_thread() {
     }
 
     if (run_decode_thread == 0) {
-        //const char* input_filename = "C:/Users/kamon/Videos/SaveImage001/8K120p_HEVC.mp4";
-        //const char* input_filename = "D:/test.mp4";
-        const char* input_filename = "D:/8K.mp4";
+        //const char* input_filename = "C:/Users/kamon/Downloads/R5_4K/R5_1000.mp4";
+        //const char* input_filename = "D:/test2.mp4";
+        const char* input_filename = "D:/test1.mp4";
         decodestream = new decode_thread(input_filename);
         decode__thread = new QThread;
 
@@ -259,12 +259,6 @@ void MainWindow::gpu_encode(){
     encode_flag=true;
     emit send_manual_pause();
     emit send_manual_slider(0);
-
-    //FrameNoが0なことを確認
-    while (slider_No != 0) {
-        QThread::msleep(1); // CPU負荷を抑える
-        QCoreApplication::processEvents(); // UI更新
-    }
 
     // 進捗ダイアログを作成
     progress = new QProgressDialog("エンコード中...", "キャンセル",1, slider_max, this);

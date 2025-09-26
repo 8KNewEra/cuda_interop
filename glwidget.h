@@ -50,6 +50,14 @@ protected:
     void paintGL() override;
 
 private:
+    enum EncodeState {
+        STATE_NONE,
+        STATE_ENCODE_READY,
+        STATE_ENCODING
+    };
+
+    EncodeState encode_state = STATE_NONE;
+
     bool initialize_completed_flag=false;
     QOpenGLShaderProgram program;
     int sobelfilterEnabled;
@@ -66,7 +74,6 @@ private:
     cv::cuda::GpuMat gpuResized,gpuRGBA1;
     cv::cuda::GpuMat gpuRGBA2,flipped;
 
-    bool encode_flag=false;
     save_encode* save_encoder=nullptr;
 
     std::vector<cv::cuda::GpuMat>encode_frame;

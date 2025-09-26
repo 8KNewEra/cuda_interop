@@ -144,7 +144,7 @@ void GLWidget::resizeGL(int w, int h) {
 }
 
 void GLWidget::paintGL() {
-    if(encode_flag){
+    if(encode_state==STATE_ENCODING){
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width_, height_);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -186,6 +186,10 @@ void GLWidget::paintGL() {
 
 void GLWidget::uploadToGLTexture(cv::cuda::GpuMat frame,int a) {
     FrameNo=a;
+    // if(FrameNo==0&&encode_state==STATE_ENCODE_READY){
+    //     encode_state=STATE_ENCODING;
+    // }
+
     //initialized完了チェック
     if(!initialize_completed_flag) {
         emit decode_please();
@@ -257,6 +261,8 @@ void GLWidget::uploadToGLTexture(cv::cuda::GpuMat frame,int a) {
         return; // エラーが発生したら処理を中断
     }
 
+    qDebug()<<"uploadToGLTexture"<<FrameNo;
+
     update();
 }
 
@@ -316,12 +322,12 @@ void GLWidget::downloadToGLTexture() {
         save_encoder->encode(flipped);
     }
 
-    //qDebug()<<FrameNo<<":"<<MaxFrame;
+    qDebug()<<"downloadToGLTexture"<<FrameNo;
 
     if(FrameNo>=MaxFrame){
         delete save_encoder;
         save_encoder=nullptr;
-        encode_flag=false;
+        encode_state=STATE_NONE;
 
         emit encode_finished();
     }
@@ -332,7 +338,7 @@ void GLWidget::encode_mode(bool flag){
         if(save_encoder==nullptr){
             save_encoder = new save_encode(height_,width_);
         }
-        encode_flag=flag;
+        encode_state=STATE_ENCODING;
     }
 }
 
