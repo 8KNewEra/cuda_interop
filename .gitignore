@@ -15,6 +15,7 @@ out/
 *.exp
 *.pdb
 *.ptx
+*.bat
 
 # ---- CMake / VS ----
 CMakeFiles/

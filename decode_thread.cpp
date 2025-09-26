@@ -286,7 +286,7 @@ void decode_thread::ffmpeg_to_CUDA(){
     slider_No = Get_Frame_No;
 
     if(CUDA_IMG_Proc->NV12_to_RGBA(d_y, pitch_y, d_uv, pitch_uv, d_rgba, pitch_rgba, height, width)){
-        CUDA_IMG_Proc->Gradation(d_rgba,pitch_rgba,d_rgba,pitch_rgba,height,width);
+        //CUDA_IMG_Proc->Gradation(d_rgba,pitch_rgba,d_rgba,pitch_rgba,height,width);
         emit send_decode_image(d_rgba,width,height,pitch_rgba);
         emit send_slider(Get_Frame_No/pts_per_frame);
         //qDebug()<<Get_Frame_No/pts_per_frame;

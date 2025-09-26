@@ -106,7 +106,7 @@ bool CUDA_ImageProcess::Gradation(uint8_t *output,size_t pitch_output,uint8_t *i
         &width, &height
     };
 
-    dim3 block(32, 16);
+    dim3 block(32, 32);
     dim3 grid((width + block.x - 1) / block.x,
               (height + block.y - 1) / block.y);
 
