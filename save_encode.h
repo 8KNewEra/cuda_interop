@@ -3,8 +3,6 @@
 
 #include <QThread>
 #include <QObject>
-#include <opencv2/core/mat.hpp>
-#include <opencv2/core/cuda.hpp>  // CUDAサポート
 #include "cuda_imageprocess.h" // CUDA処理用クラスl
 #include <cuda_runtime.h>
 #include <cuda.h>
@@ -29,11 +27,11 @@ public:
     ~save_encode();
     void initialized_ffmpeg();
     void initialized_output(const std::string& path);
-    bool encode(cv::cuda::GpuMat& frame);
+    bool encode(uint8_t *d_rgba,size_t pitch_rgba);
     void encode_finished();
     void initGpuMats();
-    cv::cuda::GpuMat gpu_y;
-    cv::cuda::GpuMat gpu_uv;
+    uint8_t *d_y = nullptr, *d_uv = nullptr;
+    size_t pitch_y = 0, pitch_uv = 0;
     int height_,width_;
 
     // --- FFmpeg 関連 ---

@@ -4,22 +4,6 @@
 #pragma once
 
 #include <QThread>
-#include <opencv2/core.hpp>
-#include <opencv2/cudaimgproc.hpp>
-#include <opencv2/cudaarithm.hpp>
-#include <opencv2/cudafilters.hpp>
-#include <opencv2/cudaobjdetect.hpp>
-#include <opencv2/cudacodec.hpp>
-#include <opencv2/cudastereo.hpp>
-#include <opencv2/cudalegacy.hpp>
-#include <opencv2/cudawarping.hpp>
-#include <opencv2/cudafilters.hpp>
-#include <opencv2/opencv.hpp>
-#include <opencv2/core/cuda.hpp>
-#include <opencv2/cudaimgproc.hpp>
-#include <opencv2/cudaarithm.hpp>
-#include <opencv2/cudawarping.hpp>
-#include <opencv2/cudafilters.hpp>
 #include <cuda_runtime.h>
 #include <cuda.h>
 #include <QDebug>
@@ -29,9 +13,9 @@ class CUDA_ImageProcess {
 public:
     CUDA_ImageProcess();
     ~CUDA_ImageProcess();
-    bool RGBA_to_NV12(cv::cuda::GpuMat &rgba_gpu,cv::cuda::GpuMat &gpu_y,cv::cuda::GpuMat &gpu_uv,int hetght,int width);
-    bool NV12_to_BGR(cv::cuda::GpuMat &gpu_y,cv::cuda::GpuMat &gpu_uv,cv::cuda::GpuMat &rgba_gpu,int height,int width) ;
-    bool Gradation(cv::cuda::GpuMat &output,cv::cuda::GpuMat &input,int height,int width);
+    bool RGBA_to_NV12(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
+    bool NV12_to_RGBA(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int height, int width);
+    bool Gradation(uint8_t *output,size_t pitch_output,uint8_t *input,size_t pitch_input,int height,int width);
 
 protected:
     struct CudaKernelModule {
@@ -42,7 +26,7 @@ protected:
     };
 
     CudaKernelModule rgbToNv12Kernel; // 1つ目のカーネルを保持
-    CudaKernelModule nv12ToBgrKernel; // 2つ目のカーネルを保持
+    CudaKernelModule nv12TorgbaKernel; // 2つ目のカーネルを保持
     CudaKernelModule gradationKernel; // 2つ目のカーネルを保持
     bool load_CUDA_Kernel(CudaKernelModule& kernelModule);
 };

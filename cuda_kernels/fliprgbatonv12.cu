@@ -1,5 +1,5 @@
 extern "C"
-__global__ void rgba_to_nv12_kernel(
+__global__ void flip_rgba_to_nv12_kernel(
     const uchar4* rgba, int rgba_step,
     uint8_t* y_plane, int y_step,
     uint8_t* uv_plane, int uv_step,
@@ -10,7 +10,9 @@ __global__ void rgba_to_nv12_kernel(
 
     if (x >= width || y >= height) return;
 
-    const uchar4* row = (const uchar4*)((const uint8_t*)rgba + y * rgba_step);
+    int flipped_y = height - 1 - y;
+
+    const uchar4* row = (const uchar4*)((const uint8_t*)rgba + flipped_y * rgba_step);
     uchar4 pixel = row[x];
 
     float R = pixel.x;
@@ -33,4 +35,3 @@ __global__ void rgba_to_nv12_kernel(
         uv_plane[uv_index + 1] = V;
     }
 }
-

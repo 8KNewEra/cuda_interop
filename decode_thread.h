@@ -3,8 +3,6 @@
 
 #include <QThread>
 #include <QObject>
-#include <opencv2/core/mat.hpp>
-#include <opencv2/core/cuda.hpp>  // CUDAサポート
 #include "cuda_imageprocess.h" // CUDA処理用クラスl
 #include <QWaitCondition>
 #include <QMutex>
@@ -33,7 +31,7 @@ public:
     ~decode_thread() override;
 
 signals:
-    void send_decode_image(cv::cuda::GpuMat image);
+    void send_decode_image(uint8_t *d_rgba,int width,int height,size_t pitch_rgba);
     void send_slider(int frame_no);
     void send_video_info(int pts,int maxframe,int framerate);
 
@@ -76,9 +74,7 @@ private:
     const AVCodec* decoder;
     int video_stream_index;
 
-    cv::cuda::GpuMat gpu_y, gpu_uv, bgr_image;
-
-    CUDA_ImageProcess* CUDA_IMG_processor=nullptr;  // CUDA処理用スレッド
+    CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;  // CUDA処理用スレッド
     int Get_Frame_No;
     int Slider_Frame_No;
     int slider_No;
@@ -92,6 +88,8 @@ private:
     DecodeState decode_state = STATE_DECODE_READY;
     int No=0;
 
+    uint8_t *d_y = nullptr, *d_uv = nullptr, *d_rgba = nullptr;
+    size_t pitch_y = 0, pitch_uv = 0, pitch_rgba = 0;
 };
 
 #endif // DECODE_THREAD_H

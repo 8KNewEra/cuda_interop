@@ -2,13 +2,13 @@
 #include "qdebug.h"
 
 CUDA_ImageProcess::CUDA_ImageProcess(){
-    rgbToNv12Kernel.ptxPath = "../../cuda_kernels/rgbatonv12.ptx";
-    rgbToNv12Kernel.kernelName = "rgba_to_nv12_kernel";
+    rgbToNv12Kernel.ptxPath = "../../cuda_kernels/ptx_out/fliprgbatonv12.ptx";
+    rgbToNv12Kernel.kernelName = "flip_rgba_to_nv12_kernel";
 
-    nv12ToBgrKernel.ptxPath = "../../cuda_kernels/nv12tobgr.ptx";
-    nv12ToBgrKernel.kernelName = "nv12_to_bgr_kernel";
+    nv12TorgbaKernel.ptxPath = "../../cuda_kernels/ptx_out/nv12torgba.ptx";
+    nv12TorgbaKernel.kernelName = "nv12_to_rgba_kernel";
 
-    gradationKernel.ptxPath = "../../cuda_kernels/gradation.ptx";
+    gradationKernel.ptxPath = "../../cuda_kernels/ptx_out/gradation.ptx";
     gradationKernel.kernelName = "gradetion_kernel";
 
     qDebug() << "CUDA_ImageProces: Constructor called";
@@ -18,20 +18,20 @@ CUDA_ImageProcess::~CUDA_ImageProcess(){
     qDebug() << "CUDA_ImageProces: Destructor called";
 }
 
-bool CUDA_ImageProcess::RGBA_to_NV12(cv::cuda::GpuMat &rgba_gpu,cv::cuda::GpuMat &gpu_y,cv::cuda::GpuMat &gpu_uv,int height,int width){
+bool CUDA_ImageProcess::RGBA_to_NV12(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width){
     if (!rgbToNv12Kernel.function) {
         if(load_CUDA_Kernel(rgbToNv12Kernel)) return false;
     };
 
-    CUdeviceptr d_rgba = reinterpret_cast<CUdeviceptr>(rgba_gpu.ptr());
-    CUdeviceptr d_y = reinterpret_cast<CUdeviceptr>(gpu_y.ptr());
-    CUdeviceptr d_uv = reinterpret_cast<CUdeviceptr>(gpu_uv.ptr());
+    CUdeviceptr cu_rgba = reinterpret_cast<CUdeviceptr>(d_rgba);
+    CUdeviceptr cu_y = reinterpret_cast<CUdeviceptr>(d_y);
+    CUdeviceptr cu_uv = reinterpret_cast<CUdeviceptr>(d_uv);
 
     // カーネル引数
     void* args[] = {
-        &d_rgba, &rgba_gpu.step,
-        &d_y, &gpu_y.step,
-        &d_uv, &gpu_uv.step,
+        &cu_rgba, &pitch_rgba,
+        &cu_y, &pitch_y,
+        &cu_uv, &pitch_uv,
         &width, &height
     };
 
@@ -54,31 +54,31 @@ bool CUDA_ImageProcess::RGBA_to_NV12(cv::cuda::GpuMat &rgba_gpu,cv::cuda::GpuMat
     return true;
 }
 
-bool CUDA_ImageProcess::NV12_to_BGR(cv::cuda::GpuMat &gpu_y,cv::cuda::GpuMat &gpu_uv,cv::cuda::GpuMat &bgr_image,int height,int width) {
-    if (!nv12ToBgrKernel.function) {
-        if(!load_CUDA_Kernel(nv12ToBgrKernel)) return false;
-    };
+bool CUDA_ImageProcess::NV12_to_RGBA(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int height, int width)
+{
+    if (!nv12TorgbaKernel.function) {
+        if (!load_CUDA_Kernel(nv12TorgbaKernel)) return false;
+    }
 
-    CUdeviceptr d_bgr = reinterpret_cast<CUdeviceptr>(bgr_image.ptr());
-    CUdeviceptr d_y = reinterpret_cast<CUdeviceptr>(gpu_y.ptr());
-    CUdeviceptr d_uv = reinterpret_cast<CUdeviceptr>(gpu_uv.ptr());
+    CUdeviceptr cu_y   = reinterpret_cast<CUdeviceptr>(d_y);
+    CUdeviceptr cu_uv  = reinterpret_cast<CUdeviceptr>(d_uv);
+    CUdeviceptr cu_rgba = reinterpret_cast<CUdeviceptr>(d_rgba);
 
-    // カーネル引数
-    void* args[] = {
-        &d_y, &gpu_y.step,
-        &d_uv, &gpu_uv.step,
-        &d_bgr, &bgr_image.step,
-        &width, &height
-    };
+    int y_step   = static_cast<int>(pitch_y);
+    int uv_step  = static_cast<int>(pitch_uv);
+    int rgba_step = static_cast<int>(pitch_rgba);
 
-    dim3 block(16, 16);
-    dim3 grid((width + 15) / 16, (height + 15) / 16);
+    void* args[] = { &cu_y, &y_step, &cu_uv, &uv_step, &cu_rgba, &rgba_step, &width, &height };
+
+    dim3 block(32, 8);
+    dim3 grid((width + block.x - 1) / block.x,
+              (height + block.y - 1) / block.y);
 
     CUresult res = cuLaunchKernel(
-        nv12ToBgrKernel.function,
+        nv12TorgbaKernel.function,
         grid.x, grid.y, 1,
         block.x, block.y, 1,
-        0, 0,
+        0, nullptr,
         args, nullptr
         );
 
@@ -86,27 +86,29 @@ bool CUDA_ImageProcess::NV12_to_BGR(cv::cuda::GpuMat &gpu_y,cv::cuda::GpuMat &gp
         qWarning() << "カーネル起動失敗";
         return false;
     }
-    cuCtxSynchronize();  // or cudaDeviceSynchronize();
+
     return true;
 }
 
-bool CUDA_ImageProcess::Gradation(cv::cuda::GpuMat &output,cv::cuda::GpuMat &input,int height,int width) {
+
+bool CUDA_ImageProcess::Gradation(uint8_t *output,size_t pitch_output,uint8_t *input,size_t pitch_input,int height,int width) {
     if (! gradationKernel.function) {
         if(!load_CUDA_Kernel(gradationKernel)) return false;
     };
 
-    CUdeviceptr d_output = reinterpret_cast<CUdeviceptr>(output.ptr());
-    CUdeviceptr d_input = reinterpret_cast<CUdeviceptr>(input.ptr());
+    CUdeviceptr cu_output = reinterpret_cast<CUdeviceptr>(output);
+    CUdeviceptr cu_input = reinterpret_cast<CUdeviceptr>(input);
 
     // カーネル引数
     void* args[] = {
-        &d_output, &output.step,
-        &d_input, &input.step,
+        &cu_output, &pitch_output,
+        &cu_input, &pitch_input,
         &width, &height
     };
 
-    dim3 block(16, 16);
-    dim3 grid((width + 15) / 16, (height + 15) / 16);
+    dim3 block(32, 16);
+    dim3 grid((width + block.x - 1) / block.x,
+              (height + block.y - 1) / block.y);
 
     CUresult res = cuLaunchKernel(
         gradationKernel.function,

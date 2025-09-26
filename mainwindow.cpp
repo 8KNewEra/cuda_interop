@@ -110,11 +110,11 @@ void MainWindow::changeEvent(QEvent *event)
     }
 }
 
-void MainWindow::decode_view(cv::cuda::GpuMat frame){
+void MainWindow::decode_view(uint8_t *d_rgba,int width,int height,size_t pitch_rgba){
     QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
-    if(!frame.empty()){
+    if(d_rgba){
         //OpenGLへ画像を渡して描画
-        glWidget->uploadToGLTexture(frame,slider_No);
+        glWidget->uploadToGLTexture(d_rgba,slider_No, width, height,pitch_rgba);
     }
 }
 
@@ -156,9 +156,9 @@ void MainWindow::start_decode_thread() {
     }
 
     if (run_decode_thread == 0) {
-        //const char* input_filename = "C:/Users/kamon/Downloads/R5_4K/R5_1000.mp4";
+        //const char* input_filename = "D:/4K.mp4";
         //const char* input_filename = "D:/test2.mp4";
-        const char* input_filename = "D:/test1.mp4";
+        const char* input_filename = "D:/ph8K120fps.mp4";
         decodestream = new decode_thread(input_filename);
         decode__thread = new QThread;
 
@@ -259,6 +259,12 @@ void MainWindow::gpu_encode(){
     encode_flag=true;
     emit send_manual_pause();
     emit send_manual_slider(0);
+
+    //FrameNoが0なことを確認
+    while (slider_No != 0) {
+        QThread::msleep(1); // CPU負荷を抑える
+        QCoreApplication::processEvents(); // UI更新
+    }
 
     // 進捗ダイアログを作成
     progress = new QProgressDialog("エンコード中...", "キャンセル",1, slider_max, this);

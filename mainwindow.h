@@ -9,7 +9,6 @@
 
 #include <QMainWindow>
 #include <QVBoxLayout>
-#include <opencv2/core/cuda.hpp>
 #include <windows.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -67,7 +66,7 @@ public:
     //ライブスレッド動作
     void start_decode_thread();
     void stop_decode_thread();
-    void decode_view(cv::cuda::GpuMat frame);
+    void decode_view(uint8_t *d_rgba,int width,int height,size_t pitch_rgba);
     QThread *decode__thread;
     decode_thread *decodestream;
     int run_decode_thread=0;

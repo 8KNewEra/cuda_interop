@@ -46,7 +46,7 @@ public:
     ~avi_thread() override;
 
 signals:
-    void send_decode_image(cv::cuda::GpuMat image);
+    void send_decode_image(uint8_t *d_rgba,int width,int height,size_t pitch_rgba);
     void send_slider(int frame_no);
     void slider_max_min(int max,int min,int frame);
 
