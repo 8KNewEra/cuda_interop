@@ -16,6 +16,12 @@ public:
     bool RGBA_to_NV12(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
     bool NV12_to_RGBA(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int height, int width);
     bool Gradation(uint8_t *output,size_t pitch_output,uint8_t *input,size_t pitch_input,int height,int width);
+    bool initGraph();
+    bool runGraph(uint8_t* d_y, size_t pitch_y,
+                                 uint8_t* d_uv, size_t pitch_uv,
+                                 uint8_t* d_rgba, size_t pitch_rgba,
+                                 uint8_t* d_output, size_t pitch_output,
+                                 int width, int height, CUstream stream);
 
 protected:
     struct CudaKernelModule {
@@ -24,6 +30,13 @@ protected:
         CUmodule module=nullptr;
         CUfunction function=nullptr;
     };
+
+    struct {
+        CUgraph graph = nullptr;
+        CUgraphExec graphExec = nullptr;
+        CUgraphNode nodeNv12ToRgba;
+        CUgraphNode nodeGradation;
+    } g_graph;
 
     CudaKernelModule rgbToNv12Kernel; // 1つ目のカーネルを保持
     CudaKernelModule nv12TorgbaKernel; // 2つ目のカーネルを保持

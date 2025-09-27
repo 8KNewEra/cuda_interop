@@ -87,6 +87,7 @@ private:
 
     DecodeState decode_state = STATE_DECODE_READY;
     int No=0;
+    CUstream stream;
 
     uint8_t *d_y = nullptr, *d_uv = nullptr, *d_rgba = nullptr,*d_output=nullptr;
     size_t pitch_y = 0, pitch_uv = 0, pitch_rgba = 0,pitch_output = 0;

@@ -269,6 +269,8 @@ void decode_thread::ffmpeg_to_CUDA(){
         cudaMallocPitch(&d_uv, &pitch_uv, width, height / 2);
         cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
         cudaMallocPitch(&d_output, &pitch_output, width * 4, height);
+        cuStreamCreate(&stream, CU_STREAM_DEFAULT);
+        CUDA_IMG_Proc->initGraph();
     }
 
     cudaMemcpy2D(d_y, pitch_y,
@@ -286,12 +288,17 @@ void decode_thread::ffmpeg_to_CUDA(){
     Get_Frame_No = hw_frame->best_effort_timestamp;
     slider_No = Get_Frame_No;
 
-    if(CUDA_IMG_Proc->NV12_to_RGBA(d_y, pitch_y, d_uv, pitch_uv, d_rgba, pitch_rgba, height, width)){
-        CUDA_IMG_Proc->Gradation(d_output,pitch_output,d_rgba,pitch_rgba,height,width);
-        emit send_decode_image(d_output,width,height,pitch_output);
-        emit send_slider(Get_Frame_No/pts_per_frame);
-        //qDebug()<<Get_Frame_No/pts_per_frame;
-    }
+    CUDA_IMG_Proc->runGraph(d_y,pitch_y,
+             d_uv,pitch_uv,
+             d_rgba, pitch_rgba,
+             d_output, pitch_output,
+             width, height,stream);
+
+    cuStreamSynchronize(stream);
+
+    emit send_decode_image(d_output,width,height,pitch_output);
+    emit send_slider(Get_Frame_No/pts_per_frame);
+
     decode_state=STATE_WAIT_DECODE_FLAG;
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
