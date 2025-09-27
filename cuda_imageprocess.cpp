@@ -42,7 +42,7 @@ bool CUDA_ImageProcess::RGBA_to_NV12(uint8_t* d_rgba, size_t pitch_rgba,uint8_t*
         rgbToNv12Kernel.function,
         grid.x, grid.y, 1,
         block.x, block.y, 1,
-        0, 0,
+        0, nullptr,
         args, nullptr
         );
 
@@ -50,7 +50,6 @@ bool CUDA_ImageProcess::RGBA_to_NV12(uint8_t* d_rgba, size_t pitch_rgba,uint8_t*
         qWarning() << "カーネル起動失敗";
         return false;
     }
-    cuCtxSynchronize();  // or cudaDeviceSynchronize();
     return true;
 }
 
@@ -114,7 +113,7 @@ bool CUDA_ImageProcess::Gradation(uint8_t *output,size_t pitch_output,uint8_t *i
         gradationKernel.function,
         grid.x, grid.y, 1,
         block.x, block.y, 1,
-        0, 0,
+        0, nullptr,
         args, nullptr
         );
 
@@ -122,7 +121,6 @@ bool CUDA_ImageProcess::Gradation(uint8_t *output,size_t pitch_output,uint8_t *i
         qWarning() << "カーネル起動失敗";
         return false;
     }
-    cuCtxSynchronize();  // or cudaDeviceSynchronize();
     return true;
 }
 

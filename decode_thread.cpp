@@ -268,6 +268,7 @@ void decode_thread::ffmpeg_to_CUDA(){
         cudaMallocPitch(&d_y, &pitch_y, width, height);
         cudaMallocPitch(&d_uv, &pitch_uv, width, height / 2);
         cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
+        cudaMallocPitch(&d_output, &pitch_output, width * 4, height);
     }
 
     cudaMemcpy2D(d_y, pitch_y,
@@ -286,8 +287,8 @@ void decode_thread::ffmpeg_to_CUDA(){
     slider_No = Get_Frame_No;
 
     if(CUDA_IMG_Proc->NV12_to_RGBA(d_y, pitch_y, d_uv, pitch_uv, d_rgba, pitch_rgba, height, width)){
-        //CUDA_IMG_Proc->Gradation(d_rgba,pitch_rgba,d_rgba,pitch_rgba,height,width);
-        emit send_decode_image(d_rgba,width,height,pitch_rgba);
+        CUDA_IMG_Proc->Gradation(d_output,pitch_output,d_rgba,pitch_rgba,height,width);
+        emit send_decode_image(d_output,width,height,pitch_output);
         emit send_slider(Get_Frame_No/pts_per_frame);
         //qDebug()<<Get_Frame_No/pts_per_frame;
     }
