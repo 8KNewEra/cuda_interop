@@ -8,6 +8,11 @@
 #include <cuda.h>
 #include <QDebug>
 #include <QFile>
+#include <QThread>
+#include <QQueue>
+#include <QMutex>
+#include <QWaitCondition>
+
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -20,11 +25,19 @@ extern "C" {
 
 extern int g_fps;
 
-class save_encode
+class save_encode : public QThread
 {
+    Q_OBJECT
 public:
-    save_encode(int h,int w);
+    explicit save_encode(int h, int w, QObject* parent = nullptr);
     ~save_encode();
+
+
+    void pushFrame(uint8_t *d_rgba, size_t pitch_rgba);
+    void stop() ;
+    void run() override;
+
+
     void initialized_ffmpeg();
     void initialized_output(const std::string& path);
     bool encode(uint8_t *d_rgba,size_t pitch_rgba);
@@ -52,6 +65,13 @@ public:
 
     int No=0;
     int No2=0;
+
+
+    //テスト
+    QQueue<QPair<uint8_t*, int>> frameQueue;
+    QMutex mutex;
+    QWaitCondition cond;
+    bool stopFlag;
 };
 
 #endif // SAVE_ENCODE_H

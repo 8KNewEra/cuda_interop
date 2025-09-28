@@ -1,7 +1,7 @@
 #include "save_encode.h"
 #include "qdebug.h"
 
-save_encode::save_encode(int h,int w) {
+save_encode::save_encode(int h, int w, QObject* parent): QThread(parent), stopFlag(false) {
     if(CUDA_IMG_processor==nullptr){
         CUDA_IMG_processor=new CUDA_ImageProcess();
     }
@@ -249,22 +249,52 @@ bool save_encode::encode(uint8_t *d_rgba,size_t pitch_rgba)
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             break;
         } else if (ret < 0) {
-            throw std::runtime_error("Error receiving packet from encoder");
+            throw std::runtime_error("Error receiving packet");
         }
 
         av_packet_rescale_ts(pkt, codec_ctx->time_base, stream->time_base);
         pkt->stream_index = stream->index;
 
-        ret = av_interleaved_write_frame(fmt_ctx, pkt);
-        if (ret < 0) {
-            throw std::runtime_error("Error writing packet to output");
+        if (av_interleaved_write_frame(fmt_ctx, pkt) < 0) {
+            throw std::runtime_error("Error writing packet");
         }
-
         av_packet_unref(pkt);
     }
-    av_packet_free(&pkt);
 
     //qDebug()<<frame_index;
 
     return true;
+}
+
+
+void save_encode::run()
+{
+    while (true)
+    {
+        QPair<uint8_t*, int> frame;
+        {
+            QMutexLocker locker(&mutex);
+            if (frameQueue.isEmpty() && !stopFlag)
+                cond.wait(&mutex);
+
+            if (stopFlag && frameQueue.isEmpty())
+                break;
+
+            frame = frameQueue.dequeue();
+        }
+        // 順番を保ったままエンコード
+        encode(frame.first, frame.second);
+    }
+}
+
+void save_encode::pushFrame(uint8_t *d_rgba,size_t pitch_rgba){
+    QMutexLocker locker(&mutex);
+    frameQueue.enqueue({d_rgba, pitch_rgba});
+    cond.wakeOne();
+}
+
+void save_encode::stop() {
+    QMutexLocker locker(&mutex);
+    stopFlag = true;
+    cond.wakeOne();
 }

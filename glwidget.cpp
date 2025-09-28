@@ -296,14 +296,16 @@ void GLWidget::downloadToGLTexture() {
     }
 
     if(save_encoder!=nullptr){
-        save_encoder->encode(d_rgba, pitch_rgba);
+        save_encoder->pushFrame(d_rgba, pitch_rgba);
     }
 
     //qDebug()<<FrameNo<<":"<<MaxFrame;
 
     if(FrameNo>=MaxFrame){
+        save_encoder->stop();   // QWaitCondition で wake してループ抜ける
+        save_encoder->wait();   // スレッド終了まで待つ
         delete save_encoder;
-        save_encoder=nullptr;
+        save_encoder = nullptr;
         encode_flag=false;
 
         emit encode_finished();
@@ -314,6 +316,7 @@ void GLWidget::encode_mode(bool flag){
     if(flag==true){
         if(save_encoder==nullptr){
             save_encoder = new save_encode(height_,width_);
+            save_encoder->start();
         }
         encode_flag=flag;
     }
