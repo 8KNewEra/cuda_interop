@@ -1,8 +1,8 @@
 extern "C"
-__global__ void nv12_to_bgr_kernel(
+__global__ void nv12_to_rgba_kernel(
     const uint8_t* y_plane, int y_step,
     const uint8_t* uv_plane, int uv_step,
-    uchar3* bgr, int bgr_step,
+    uchar4* rgba, int rgba_step,
     int width, int height)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -28,13 +28,15 @@ __global__ void nv12_to_bgr_kernel(
     uint8_t g = (uint8_t)fminf(fmaxf(G, 0.0f), 255.0f);
     uint8_t b = (uint8_t)fminf(fmaxf(B, 0.0f), 255.0f);
 
-    uchar3 pixel;
-    pixel.x = b; 
-    pixel.y = g; 
-    pixel.z = r; 
+    uchar4 pixel;
+    pixel.x = r;
+    pixel.y = g;
+    pixel.z = b;
+    pixel.w = 255;
 
-    uchar3* row = (uchar3*)((uint8_t*)bgr + y * bgr_step);
+    uchar4* row = (uchar4*)((uint8_t*)rgba + y * rgba_step);
     row[x] = pixel;
 }
+
 
 

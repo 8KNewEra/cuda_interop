@@ -1,6 +1,5 @@
 #include "save_encode.h"
 #include "qdebug.h"
-#include <opencv2/cudaimgproc.hpp>           // cv::cuda::cvtColor
 
 save_encode::save_encode(int h,int w) {
     if(CUDA_IMG_processor==nullptr){
@@ -11,6 +10,7 @@ save_encode::save_encode(int h,int w) {
     width_=w;
     frame_index=0;
     fps = 120;
+    pts_step = 15000/60;
 
     // 1. codec_ctxをnullptrで初期化
     codec_ctx = nullptr;
@@ -19,7 +19,7 @@ save_encode::save_encode(int h,int w) {
     initialized_ffmpeg();
 
     // 3. エンコーダの取得とコンテキスト作成
-    const AVCodec* codec = avcodec_find_encoder_by_name("hevc_nvenc");
+    const AVCodec* codec = avcodec_find_encoder_by_name("av1_nvenc");
     if (!codec) throw std::runtime_error("hevc_nvenc codec not found");
 
     codec_ctx = avcodec_alloc_context3(codec);
@@ -50,7 +50,6 @@ save_encode::save_encode(int h,int w) {
     codec_ctx->height = height_;
     codec_ctx->pix_fmt = AV_PIX_FMT_CUDA;
 
-    pts_step = 15000/fps;
     fr = {fps, 1};
     tb = {1, fps * pts_step};
     codec_ctx->time_base = tb;
@@ -195,39 +194,35 @@ void save_encode::initialized_output(const std::string& path){
     this->stream = stream; // （必要であれば）
 }
 
-void save_encode::initGpuMats()
+bool save_encode::encode(uint8_t *d_rgba,size_t pitch_rgba)
 {
-    if (gpu_y.empty() || gpu_y.size() != cv::Size(width_, height_)) {
-        gpu_y.create(height_, width_, CV_8UC1);         // Y plane
-        gpu_uv.create(height_ / 2, width_ / 2, CV_8UC2);// UV interleaved (NV12)
-    }
-}
-
-bool save_encode::encode(cv::cuda::GpuMat& rgba_gpu)
-{
-    qDebug()<<"encode"<<No;
+    //qDebug()<<No;
     No+=1;
     // cv::Mat g;
     // rgba_gpu.download(g);
     // rgba_gpu.upload(g);
 
     // 一度だけバッファを確保
-    initGpuMats();
+    // 初回だけ再malloc
+    if (!d_y||!d_uv) {
+        cudaMallocPitch(&d_y, &pitch_y, width_, height_);
+        cudaMallocPitch(&d_uv, &pitch_uv, width_, height_ / 2);
+    }
 
     //NV12変換
-    if(!CUDA_IMG_processor->RGBA_to_NV12(rgba_gpu,gpu_y,gpu_uv,height_,width_)) return false;
+    if(!CUDA_IMG_processor->Flip_RGBA_to_NV12(d_rgba, pitch_rgba,d_y, pitch_y, d_uv, pitch_uv,height_, width_)) return false;
 
     //ffmpegへ転送
     cudaMemcpy2D(
         hw_frame->data[0], hw_frame->linesize[0],
-        gpu_y.ptr(), gpu_y.step,
+        d_y, pitch_y,
         width_ * sizeof(uint8_t), height_,
         cudaMemcpyDeviceToDevice
         );
 
     cudaMemcpy2D(
         hw_frame->data[1], hw_frame->linesize[1],
-        gpu_uv.ptr(), gpu_uv.step,
+        d_uv, pitch_uv,
         width_ * sizeof(uint8_t), height_ / 2,
         cudaMemcpyDeviceToDevice
         );
@@ -254,11 +249,6 @@ bool save_encode::encode(cv::cuda::GpuMat& rgba_gpu)
         av_packet_rescale_ts(pkt, codec_ctx->time_base, stream->time_base);
         pkt->stream_index = stream->index;
 
-        static int64_t first_pts = AV_NOPTS_VALUE;
-        if (first_pts == AV_NOPTS_VALUE) first_pts = pkt->pts;
-        pkt->pts -= first_pts;
-        pkt->dts -= first_pts;
-
         ret = av_interleaved_write_frame(fmt_ctx, pkt);
         if (ret < 0) {
             throw std::runtime_error("Error writing packet to output");
@@ -271,7 +261,4 @@ bool save_encode::encode(cv::cuda::GpuMat& rgba_gpu)
     //qDebug()<<frame_index;
 
     return true;
-}
-
-void save_encode::encode_finished(){
 }

@@ -32,10 +32,10 @@ GLWidget::~GLWidget() {
     qDebug() << "GLWidget: Destructor called";
 }
 
-void GLWidget::initCudaTexture() {
+void GLWidget::initCudaTexture(int width,int height) {
     glGenTextures(1, &inputTextureID);
     glBindTexture(GL_TEXTURE_2D, inputTextureID);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
@@ -49,13 +49,13 @@ void GLWidget::initCudaTexture() {
 }
 
 // initFBO に統合
-void GLWidget::initFBO() {
+void GLWidget::initTextureCuda(int width,int height) {
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
     glGenTextures(1, &fboTextureID);
     glBindTexture(GL_TEXTURE_2D, fboTextureID);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
@@ -68,22 +68,8 @@ void GLWidget::initFBO() {
         qDebug() << "cudaGraphicsGLRegisterImage (fbo) error:" << cudaGetErrorString(err);
         cudaResource2 = nullptr;
     }
-}
 
-void GLWidget::initGPUMat(cv::Size targetSize, cv::cuda::GpuMat& frame)
-{
-    // 入力フレームに合わせた型とサイズを使う
-    if (gpuResized.empty() || gpuResized.size() != targetSize || gpuResized.type() != frame.type()) {
-        gpuResized.create(targetSize, frame.type());
-    }
-
-    if (gpuRGBA1.empty() || gpuRGBA1.size() != targetSize) {
-        gpuRGBA1.create(targetSize, CV_8UC4);
-    }
-
-    if (gpuRGBA2.empty() || gpuRGBA2.size() != targetSize) {
-        gpuRGBA2.create(targetSize, CV_8UC4);
-    }
+    cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
 }
 
 void GLWidget::initializeGL() {
@@ -144,19 +130,23 @@ void GLWidget::resizeGL(int w, int h) {
 }
 
 void GLWidget::paintGL() {
-    if(encode_state==STATE_ENCODING){
+    if(encode_flag){
+        //fboターゲット
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width_, height_);
         glClear(GL_COLOR_BUFFER_BIT);
 
+        //シェーダの設定
         program.bind();
         program.setUniformValue("tex", 0);
         program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
         program.setUniformValue("u_filterEnabled", sobelfilterEnabled); // フィルタ無効
 
+        //入力テクスチャ(CUDAから来たもの)を設定
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, inputTextureID); // ← FBOの出力結果が入っている
 
+        //描画エリア、fboTextureIdに描画
         glBindVertexArray(vao);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);
@@ -184,33 +174,23 @@ void GLWidget::paintGL() {
     emit decode_please();
 }
 
-void GLWidget::uploadToGLTexture(cv::cuda::GpuMat frame,int a) {
+void GLWidget::uploadToGLTexture(uint8_t *d_rgba,int a,int width,int height,size_t pitch_rgba) {
     FrameNo=a;
-    // if(FrameNo==0&&encode_state==STATE_ENCODE_READY){
-    //     encode_state=STATE_ENCODING;
-    // }
-
     //initialized完了チェック
     if(!initialize_completed_flag) {
         emit decode_please();
         return;
     };
 
-    //画像サイズに応じてcudaテクスチャのサイズを変更
-    width_=frame.cols;
-    height_=frame.rows;
-    cv::Size targetSize(width_, height_);
-    if (gpuResized.size() != targetSize || gpuResized.type() != frame.type()) {
-        initCudaTexture();
-        initFBO();
-        initGPUMat(targetSize,frame);
+    if (width != width_ || height != height_) {
+        initCudaTexture(width,height);
+        initTextureCuda(width,height);
+        width_=width;
+        height_=height;
         emit decode_please();
     }
 
-    // OpenGL用のRGBA形式に変換
-    cv::cuda::cvtColor(frame, gpuRGBA1, cv::COLOR_BGR2RGBA, 0);
-
-    if (gpuRGBA1.empty()) {
+    if (!d_rgba) {
         qDebug() << "画像の読み込みに失敗しました";
         cudaGraphicsUnmapResources(1, &cudaResource1, 0); // マップ解除
         emit decode_please();
@@ -237,14 +217,13 @@ void GLWidget::uploadToGLTexture(cv::cuda::GpuMat frame,int a) {
     }
 
     //OpenGL用テクスチャに変換してOpenGL転送
-    size_t pitch = gpuRGBA1.step;  // 実際のピッチを取得
     size_t widthBytes = width_ * 4;
-    if (widthBytes <= pitch) {
+    if (widthBytes <= pitch_rgba) {
         cudaMemcpy2DToArray(
             array,
             0, 0,
-            gpuRGBA1.ptr(),
-            pitch,
+            d_rgba,
+            pitch_rgba,
             widthBytes,
             height_,
             cudaMemcpyDeviceToDevice
@@ -260,8 +239,6 @@ void GLWidget::uploadToGLTexture(cv::cuda::GpuMat frame,int a) {
         emit decode_please();
         return; // エラーが発生したら処理を中断
     }
-
-    qDebug()<<"uploadToGLTexture"<<FrameNo;
 
     update();
 }
@@ -293,9 +270,11 @@ void GLWidget::downloadToGLTexture() {
         return;
     }
 
+    //qDebug()<<width_;
+
     // GpuMatにコピー
     err = cudaMemcpy2DFromArray(
-        gpuRGBA2.data, gpuRGBA2.step,
+        d_rgba, pitch_rgba,
         cuArray, 0, 0,
         width_ * 4, height_,
         cudaMemcpyDeviceToDevice
@@ -310,24 +289,22 @@ void GLWidget::downloadToGLTexture() {
     // アンマップ（登録解除しない！）
     cudaGraphicsUnmapResources(1, &cudaResource2);
 
-    if (gpuRGBA2.empty()) {
+    if (!d_rgba) {
         qDebug() << "GpuMat is empty, 保存できません";
         emit decode_please();
         return;
     }
 
-    cv::cuda::flip(gpuRGBA2, flipped, 0);  // 1 = 左右反転
-
     if(save_encoder!=nullptr){
-        save_encoder->encode(flipped);
+        save_encoder->encode(d_rgba, pitch_rgba);
     }
 
-    qDebug()<<"downloadToGLTexture"<<FrameNo;
+    //qDebug()<<FrameNo<<":"<<MaxFrame;
 
     if(FrameNo>=MaxFrame){
         delete save_encoder;
         save_encoder=nullptr;
-        encode_state=STATE_NONE;
+        encode_flag=false;
 
         emit encode_finished();
     }
@@ -338,7 +315,7 @@ void GLWidget::encode_mode(bool flag){
         if(save_encoder==nullptr){
             save_encoder = new save_encode(height_,width_);
         }
-        encode_state=STATE_ENCODING;
+        encode_flag=flag;
     }
 }
 

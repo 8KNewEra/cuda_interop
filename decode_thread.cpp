@@ -1,5 +1,4 @@
 #include "decode_thread.h"
-#include "opencv2/imgcodecs.hpp"
 #include <QDebug>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
@@ -28,8 +27,15 @@ decode_thread::decode_thread(QString FilePath, QObject *parent)
 
 decode_thread::~decode_thread() {
     stopProcessing();
-    delete CUDA_IMG_processor;
-    CUDA_IMG_processor=nullptr;
+    delete CUDA_IMG_Proc;
+    CUDA_IMG_Proc=nullptr;
+
+    if (d_y) {
+        cudaFree(d_y);
+        cudaFree(d_uv);
+        cudaFree(d_rgba);
+    }
+
     qDebug() << "Live Thread: Destructor called";
 }
 
@@ -96,8 +102,8 @@ void decode_thread::processFrame() {
 
 // FFmpeg 初期化
 void decode_thread::initialized_ffmpeg() {
-    if(CUDA_IMG_processor==nullptr){
-        CUDA_IMG_processor=new CUDA_ImageProcess();
+    if(CUDA_IMG_Proc==nullptr){
+        CUDA_IMG_Proc=new CUDA_ImageProcess();
     }
 
     packet = av_packet_alloc();
@@ -257,30 +263,32 @@ void decode_thread::ffmpeg_to_CUDA(){
     int width = hw_frame->width;
     int height = hw_frame->height;
 
-    if (gpu_y.empty() || gpu_y.size() != cv::Size(width, height)) {
-        gpu_y.create(height, width, CV_8UC1);
-        gpu_uv.create(height / 2, width / 2, CV_8UC2);
-        bgr_image.create(height, width, CV_8UC3);
+    // 初回、解像度が変わった時に再malloc
+    if (!d_y || !d_uv || !d_rgba) {
+        cudaMallocPitch(&d_y, &pitch_y, width, height);
+        cudaMallocPitch(&d_uv, &pitch_uv, width, height / 2);
+        cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
+        cudaMallocPitch(&d_output, &pitch_output, width * 4, height);
     }
 
-    cudaMemcpy(gpu_y.ptr(), hw_frame->data[0], height * hw_frame->linesize[0], cudaMemcpyDeviceToDevice);
-    cudaMemcpy(gpu_uv.ptr(), hw_frame->data[1], (height / 2) * hw_frame->linesize[1], cudaMemcpyDeviceToDevice);
+    cudaMemcpy2D(d_y, pitch_y,
+                 hw_frame->data[0], hw_frame->linesize[0],
+                 width, height,
+                 cudaMemcpyDeviceToDevice);
+
+    cudaMemcpy2D(d_uv, pitch_uv,
+                 hw_frame->data[1], hw_frame->linesize[1],
+                 width, height / 2,
+                 cudaMemcpyDeviceToDevice);
 
     // フレーム番号更新
     AVRational time_base = fmt_ctx->streams[video_stream_index]->time_base;
     Get_Frame_No = hw_frame->best_effort_timestamp;
     slider_No = Get_Frame_No;
-    qDebug()<<"decode_thread"<<Get_Frame_No/pts_per_frame;
 
-    if(CUDA_IMG_processor->NV12_to_BGR(gpu_y,gpu_uv,bgr_image,height,width)){
-        // cv::Mat g;
-        // bgr_image.download(g);
-        // bgr_image.upload(g);
-        // cv::imwrite("debug.bmp",g);
-
-        CUDA_IMG_processor->Gradation(bgr_image,bgr_image,height,width);
-
-        emit send_decode_image(bgr_image);
+    if(CUDA_IMG_Proc->NV12_to_RGBA(d_y, pitch_y, d_uv, pitch_uv, d_rgba, pitch_rgba, height, width)){
+        CUDA_IMG_Proc->Gradation(d_output,pitch_output,d_rgba,pitch_rgba,height,width);
+        emit send_decode_image(d_output,width,height,pitch_output);
         emit send_slider(Get_Frame_No/pts_per_frame);
         //qDebug()<<Get_Frame_No/pts_per_frame;
     }

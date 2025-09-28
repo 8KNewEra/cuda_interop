@@ -3,7 +3,6 @@
 
 #include <QThread>
 #include <QObject> // 明示的にインクルード推奨
-#include <opencv2/core/mat.hpp>
 
 class fps_thread : public QThread {
     Q_OBJECT // <--- これが重要
