@@ -2,8 +2,8 @@
 #include "qdebug.h"
 
 CUDA_ImageProcess::CUDA_ImageProcess(){
-    rgbToNv12Kernel.ptxPath = "../../cuda_kernels/ptx_out/fliprgbatonv12.ptx";
-    rgbToNv12Kernel.kernelName = "flip_rgba_to_nv12_kernel";
+    fliprgbToNv12Kernel.ptxPath = "../../cuda_kernels/ptx_out/fliprgbatonv12.ptx";
+    fliprgbToNv12Kernel.kernelName = "flip_rgba_to_nv12_kernel";
 
     nv12TorgbaKernel.ptxPath = "../../cuda_kernels/ptx_out/nv12torgba.ptx";
     nv12TorgbaKernel.kernelName = "nv12_to_rgba_kernel";
@@ -18,9 +18,9 @@ CUDA_ImageProcess::~CUDA_ImageProcess(){
     qDebug() << "CUDA_ImageProces: Destructor called";
 }
 
-bool CUDA_ImageProcess::RGBA_to_NV12(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width){
-    if (!rgbToNv12Kernel.function) {
-        if(load_CUDA_Kernel(rgbToNv12Kernel)) return false;
+bool CUDA_ImageProcess::Flip_RGBA_to_NV12(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width){
+    if (!fliprgbToNv12Kernel.function) {
+        if(load_CUDA_Kernel(fliprgbToNv12Kernel)) return false;
     };
 
     CUdeviceptr cu_rgba = reinterpret_cast<CUdeviceptr>(d_rgba);
@@ -39,7 +39,7 @@ bool CUDA_ImageProcess::RGBA_to_NV12(uint8_t* d_rgba, size_t pitch_rgba,uint8_t*
     dim3 grid((width + 15) / 16, (height + 15) / 16);
 
     CUresult res = cuLaunchKernel(
-        rgbToNv12Kernel.function,
+        fliprgbToNv12Kernel.function,
         grid.x, grid.y, 1,
         block.x, block.y, 1,
         0, nullptr,

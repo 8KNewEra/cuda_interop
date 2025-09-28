@@ -28,8 +28,6 @@ public:
     void initialized_ffmpeg();
     void initialized_output(const std::string& path);
     bool encode(uint8_t *d_rgba,size_t pitch_rgba);
-    void encode_finished();
-    void initGpuMats();
     uint8_t *d_y = nullptr, *d_uv = nullptr;
     size_t pitch_y = 0, pitch_uv = 0;
     int height_,width_;

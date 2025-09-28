@@ -194,10 +194,6 @@ void save_encode::initialized_output(const std::string& path){
     this->stream = stream; // （必要であれば）
 }
 
-void save_encode::initGpuMats()
-{
-}
-
 bool save_encode::encode(uint8_t *d_rgba,size_t pitch_rgba)
 {
     //qDebug()<<No;
@@ -214,7 +210,7 @@ bool save_encode::encode(uint8_t *d_rgba,size_t pitch_rgba)
     }
 
     //NV12変換
-    if(!CUDA_IMG_processor->RGBA_to_NV12(d_rgba, pitch_rgba,d_y, pitch_y, d_uv, pitch_uv,height_, width_)) return false;
+    if(!CUDA_IMG_processor->Flip_RGBA_to_NV12(d_rgba, pitch_rgba,d_y, pitch_y, d_uv, pitch_uv,height_, width_)) return false;
 
     //ffmpegへ転送
     cudaMemcpy2D(
@@ -265,7 +261,4 @@ bool save_encode::encode(uint8_t *d_rgba,size_t pitch_rgba)
     //qDebug()<<frame_index;
 
     return true;
-}
-
-void save_encode::encode_finished(){
 }
