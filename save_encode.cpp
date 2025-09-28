@@ -62,8 +62,14 @@ save_encode::save_encode(int h,int w) {
     codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
     codec_ctx->hw_frames_ctx = av_buffer_ref(hw_frames_ctx);
 
-    int ret = avcodec_open2(codec_ctx, codec, nullptr);
+    //Split Frame Encode
+    AVDictionary* opts = nullptr;
+    av_dict_set(&opts, "split_encode_mode", "1", 0);
+    av_dict_set(&opts, "async_depth", "4", 0);
+
+    int ret = avcodec_open2(codec_ctx, codec, &opts);
     if (ret < 0) throw std::runtime_error("Failed to open codec");
+    av_dict_free(&opts);
 
     initialized_output("D:/test2.mp4");
 }
