@@ -3,11 +3,9 @@
 
 #include <QThread>
 #include <QObject>
-#include "cuda_imageprocess.h" // CUDA処理用クラスl
 #include <QWaitCondition>
 #include <QMutex>
 #include <cuda_runtime.h>
-#include <cuda.h>
 #include <QDebug>
 #include <QFile>
 
@@ -31,9 +29,10 @@ public:
     ~decode_thread() override;
 
 signals:
-    void send_decode_image(uint8_t *d_rgba,int width,int height,size_t pitch_rgba);
+    void send_decode_image(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
     void send_slider(int frame_no);
     void send_video_info(int pts,int maxframe,int framerate);
+    void send_software_image(AVFrame *rgba_frame);
 
 public slots:
     void get_decode_image();
@@ -58,6 +57,7 @@ private:
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     void ffmpeg_to_CUDA();
+    void ffmpeg_software_process();
 
     bool video_play_flag;
     bool video_reverse_flag;
@@ -67,6 +67,7 @@ private:
     QByteArray File_byteArray;
     AVPacket* packet;
     AVFrame* hw_frame;
+    AVFrame* sw_frame;
     AVFormatContext* fmt_ctx = nullptr;
     AVCodecContext* codec_ctx = nullptr;
     AVHWDeviceContext* hw_ctx = nullptr;
@@ -74,7 +75,6 @@ private:
     const AVCodec* decoder;
     int video_stream_index;
 
-    CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;  // CUDA処理用スレッド
     int Get_Frame_No;
     int Slider_Frame_No;
     int slider_No;
@@ -88,8 +88,8 @@ private:
     DecodeState decode_state = STATE_DECODE_READY;
     int No=0;
 
-    uint8_t *d_y = nullptr, *d_uv = nullptr, *d_rgba = nullptr,*d_output=nullptr;
-    size_t pitch_y = 0, pitch_uv = 0, pitch_rgba = 0,pitch_output = 0;
+    uint8_t *d_y = nullptr, *d_uv = nullptr;
+    size_t pitch_y = 0, pitch_uv = 0;
 };
 
 #endif // DECODE_THREAD_H

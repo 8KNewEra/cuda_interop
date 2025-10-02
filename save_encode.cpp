@@ -2,10 +2,6 @@
 #include "qdebug.h"
 
 save_encode::save_encode(int h,int w) {
-    if(CUDA_IMG_processor==nullptr){
-        CUDA_IMG_processor=new CUDA_ImageProcess();
-    }
-
     height_=h;
     width_=w;
     frame_index=0;
@@ -54,9 +50,9 @@ save_encode::save_encode(int h,int w) {
     tb = {1, fps * pts_step};
     codec_ctx->time_base = tb;
     codec_ctx->framerate = fr;
-    codec_ctx->gop_size = 60;
+    codec_ctx->gop_size =30;
     codec_ctx->max_b_frames = 0;
-    codec_ctx->bit_rate = 5 * 1000 * 1000;
+    codec_ctx->bit_rate = 200 * 1000 * 1000;
 
     // 4. 正しく初期化された hw_* を参照
     codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
@@ -141,9 +137,6 @@ save_encode::~save_encode() {
         fmt_ctx = nullptr;
     }
 
-    delete CUDA_IMG_processor;
-    CUDA_IMG_processor=nullptr;
-
     qDebug() << "save_encode: Destructor called";
 }
 
@@ -200,23 +193,13 @@ void save_encode::initialized_output(const std::string& path){
     this->stream = stream; // （必要であれば）
 }
 
-bool save_encode::encode(uint8_t *d_rgba,size_t pitch_rgba)
+bool save_encode::encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv)
 {
     //qDebug()<<No;
     No+=1;
-    // cv::Mat g;
-    // rgba_gpu.download(g);
-    // rgba_gpu.upload(g);
-
-    // 一度だけバッファを確保
-    // 初回だけ再malloc
-    if (!d_y||!d_uv) {
-        cudaMallocPitch(&d_y, &pitch_y, width_, height_);
-        cudaMallocPitch(&d_uv, &pitch_uv, width_, height_ / 2);
+    if(No==1){
+        return false;
     }
-
-    //NV12変換
-    if(!CUDA_IMG_processor->Flip_RGBA_to_NV12(d_rgba, pitch_rgba,d_y, pitch_y, d_uv, pitch_uv,height_, width_)) return false;
 
     //ffmpegへ転送
     cudaMemcpy2D(

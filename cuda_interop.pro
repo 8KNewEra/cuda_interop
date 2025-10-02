@@ -60,7 +60,6 @@ CUDA_DIR = "$$PWD/NVIDIAGPUComputingToolkit/CUDA/v12.8"
 
 INCLUDEPATH += $$CUDA_DIR/include
 LIBS += -L$$CUDA_DIR/lib/x64 \
-        -lcuda \
         -lcudart \
         -lnppc \
         -lnppial \
@@ -72,8 +71,14 @@ LIBS += -L$$CUDA_DIR/lib/x64 \
         -lnppist \
         -lnppisu
 
-
 LIBS += -L"$$PWD/NVIDIA Corporation/NVSMI" -lnvml
+
+#CUDAの.objファイルを列挙してリンク
+CUDA_OBJ_OUT_DIR = $$PWD/cuda_kernels/obj_out/
+CUDA_OBJ_FILES = $$files($$CUDA_OBJ_OUT_DIR/*.obj)
+for(obj, CUDA_OBJ_FILES) {
+    LIBS += $$obj
+}
 
 #ffmepg
 ffmpeg_DIR = "$$PWD/ffmpeg"

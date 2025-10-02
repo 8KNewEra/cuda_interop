@@ -27,13 +27,10 @@ decode_thread::decode_thread(QString FilePath, QObject *parent)
 
 decode_thread::~decode_thread() {
     stopProcessing();
-    delete CUDA_IMG_Proc;
-    CUDA_IMG_Proc=nullptr;
 
     if (d_y) {
         cudaFree(d_y);
         cudaFree(d_uv);
-        cudaFree(d_rgba);
     }
 
     qDebug() << "Live Thread: Destructor called";
@@ -102,10 +99,6 @@ void decode_thread::processFrame() {
 
 // FFmpeg 初期化
 void decode_thread::initialized_ffmpeg() {
-    if(CUDA_IMG_Proc==nullptr){
-        CUDA_IMG_Proc=new CUDA_ImageProcess();
-    }
-
     packet = av_packet_alloc();
     hw_frame = av_frame_alloc();
     int ret;
@@ -165,15 +158,24 @@ void decode_thread::initialized_ffmpeg() {
         return;
     }
 
+    AVDictionary* opts = nullptr;
+    av_dict_set(&opts, "split_decode_mode", "1", 0);
+
     codec_ctx = avcodec_alloc_context3(decoder);
     codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
     avcodec_parameters_to_context(codec_ctx, fmt_ctx->streams[video_stream_index]->codecpar);
-    avcodec_open2(codec_ctx, decoder, nullptr);
+    avcodec_open2(codec_ctx, decoder, &opts);
 
     //1フレームのPTSを計算
     double time_base_d = av_q2d(fmt_ctx->streams[video_stream_index]->time_base);
     pts_per_frame = 1.0 / (framerate * time_base_d);
     qDebug() << "1フレームのPTS数:" << pts_per_frame;
+
+    sw_frame = av_frame_alloc();
+
+    // RGBA 出力フレームを用意
+    sw_frame->format = AV_PIX_FMT_RGBA;
+
 
     //スライダー設定
     emit send_video_info(pts_per_frame, (fmt_ctx->streams[video_stream_index]->duration)/pts_per_frame-1,framerate);
@@ -264,11 +266,9 @@ void decode_thread::ffmpeg_to_CUDA(){
     int height = hw_frame->height;
 
     // 初回、解像度が変わった時に再malloc
-    if (!d_y || !d_uv || !d_rgba) {
+    if (!d_y || !d_uv) {
         cudaMallocPitch(&d_y, &pitch_y, width, height);
         cudaMallocPitch(&d_uv, &pitch_uv, width, height / 2);
-        cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
-        cudaMallocPitch(&d_output, &pitch_output, width * 4, height);
     }
 
     cudaMemcpy2D(d_y, pitch_y,
@@ -286,16 +286,58 @@ void decode_thread::ffmpeg_to_CUDA(){
     Get_Frame_No = hw_frame->best_effort_timestamp;
     slider_No = Get_Frame_No;
 
-    if(CUDA_IMG_Proc->NV12_to_RGBA(d_y, pitch_y, d_uv, pitch_uv, d_rgba, pitch_rgba, height, width)){
-        CUDA_IMG_Proc->Gradation(d_output,pitch_output,d_rgba,pitch_rgba,height,width);
-        emit send_decode_image(d_output,width,height,pitch_output);
-        emit send_slider(Get_Frame_No/pts_per_frame);
-        //qDebug()<<Get_Frame_No/pts_per_frame;
-    }
+    emit send_decode_image(d_y,pitch_y,d_uv,pitch_uv,width,height);
+    emit send_slider(Get_Frame_No/pts_per_frame);
+
     decode_state=STATE_WAIT_DECODE_FLAG;
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 }
+
+void decode_thread::ffmpeg_software_process(){
+    int width  = hw_frame->width;
+    int height = hw_frame->height;
+    sw_frame->width  = width;
+    sw_frame->height = height;
+
+    // hw → sw 転送 (NV12 のまま)
+    if (av_hwframe_transfer_data(sw_frame, hw_frame, 0) < 0) {
+        fprintf(stderr, "Error transferring frame to system memory\n");
+        return;
+    }
+
+    if (av_frame_get_buffer(sw_frame, 32) < 0) {
+        fprintf(stderr, "Could not allocate RGBA frame buffer\n");
+        return;
+    }
+
+    // コンテキスト作成
+    struct SwsContext *sws_ctx = sws_getContext(
+        width, height, (enum AVPixelFormat)sw_frame->format,  // 入力 (NV12)
+        width, height, AV_PIX_FMT_RGBA,                       // 出力
+        SWS_BILINEAR, NULL, NULL, NULL
+        );
+
+    if (!sws_ctx) {
+        fprintf(stderr, "Could not create sws context\n");
+        return;
+    }
+
+    // NV12 → RGBA 変換
+    sws_scale(sws_ctx,
+              (const uint8_t * const *)sw_frame->data, sw_frame->linesize,
+              0, height,
+             sw_frame->data, sw_frame->linesize);
+
+    emit send_software_image(sw_frame);
+
+    decode_state=STATE_WAIT_DECODE_FLAG;
+
+    // ここで rgba_frame->data[0] に RGBA ピクセルが入っている
+    // → OpenGL の glTexSubImage2D にそのまま渡せる
+}
+
+
 
 
 

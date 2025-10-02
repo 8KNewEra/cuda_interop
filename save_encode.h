@@ -3,9 +3,7 @@
 
 #include <QThread>
 #include <QObject>
-#include "cuda_imageprocess.h" // CUDA処理用クラスl
 #include <cuda_runtime.h>
-#include <cuda.h>
 #include <QDebug>
 #include <QFile>
 
@@ -27,9 +25,7 @@ public:
     ~save_encode();
     void initialized_ffmpeg();
     void initialized_output(const std::string& path);
-    bool encode(uint8_t *d_rgba,size_t pitch_rgba);
-    uint8_t *d_y = nullptr, *d_uv = nullptr;
-    size_t pitch_y = 0, pitch_uv = 0;
+    bool encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv);
     int height_,width_;
 
     // --- FFmpeg 関連 ---
@@ -47,8 +43,6 @@ public:
 
     int64_t frame_index = 0;                         // PTS 管理用
     int ret = 0;
-
-    CUDA_ImageProcess* CUDA_IMG_processor=nullptr;
 
     int No=0;
     int No2=0;

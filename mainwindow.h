@@ -10,9 +10,7 @@
 #include <QMainWindow>
 #include <QVBoxLayout>
 #include <windows.h>
-#include <cuda_runtime.h>
-#include <cuda_gl_interop.h>
-#include "glwidget.h"  // ← 修正点
+#include "glwidget.h"
 
 #include <windows.h>
 #include <QMainWindow>
@@ -66,7 +64,8 @@ public:
     //ライブスレッド動作
     void start_decode_thread();
     void stop_decode_thread();
-    void decode_view(uint8_t *d_rgba,int width,int height,size_t pitch_rgba);
+    void decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
+    void decode_view_software(AVFrame *rgba_frame);
     QThread *decode__thread;
     decode_thread *decodestream;
     int run_decode_thread=0;

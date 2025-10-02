@@ -37,11 +37,6 @@ MainWindow::MainWindow(QWidget *parent)
     ui->save_pushButton->setFixedHeight(26);
 
     QObject::connect(ui->save_pushButton, &QPushButton::clicked, this, &MainWindow::gpu_encode, Qt::QueuedConnection);
-
-    start_decode_thread();
-    //start_avi_thread();
-    start_fps_thread();
-    start_info_thread();
 }
 
 MainWindow::~MainWindow()
@@ -71,7 +66,10 @@ void MainWindow::GLwidgetInitialized(){
     // 初期化完了後の処理
     connect(glWidget, &GLWidget::initialized, this, [=]() {
         qDebug() << "GLWidget 初期化完了";
-        // CUDA-OpenGL連携リソース作成などここで行う
+        start_fps_thread();
+        start_info_thread();
+        start_decode_thread();
+        //start_avi_thread();
     });
 
     glWidget->show();
@@ -110,12 +108,17 @@ void MainWindow::changeEvent(QEvent *event)
     }
 }
 
-void MainWindow::decode_view(uint8_t *d_rgba,int width,int height,size_t pitch_rgba){
+void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width){
     QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
-    if(d_rgba){
+    if(d_y&&d_uv){
         //OpenGLへ画像を渡して描画
-        glWidget->uploadToGLTexture(d_rgba,slider_No, width, height,pitch_rgba);
+        glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,width,height,slider_No);
     }
+}
+
+void MainWindow::decode_view_software(AVFrame *rgba_frame){
+    QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+    glWidget->uploadToSoftwareImage(rgba_frame);
 }
 
 //fps表示
@@ -156,14 +159,15 @@ void MainWindow::start_decode_thread() {
     }
 
     if (run_decode_thread == 0) {
-        //const char* input_filename = "D:/8K.mp4";
+        const char* input_filename = "D:/4K.mp4";
         //const char* input_filename = "D:/test2.mp4";
-        const char* input_filename = "D:/ph8K120fps.mp4";
+        //const char* input_filename = "D:/ph8K120fps.mp4";
         decodestream = new decode_thread(input_filename);
         decode__thread = new QThread;
 
         decodestream->moveToThread(decode__thread);
         QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
+        QObject::connect(decodestream, &decode_thread::send_software_image, this, &MainWindow::decode_view_software);
         QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
 
         QObject::connect(decodestream, &decode_thread::send_slider, this, &MainWindow::slider_control);
@@ -258,6 +262,7 @@ void MainWindow::gpu_encode(){
     //停止→フレームを0番にシーク
     encode_flag=true;
     emit send_manual_pause();
+    emit send_decode_speed(1000);
     emit send_manual_slider(0);
 
     //FrameNoが0なことを確認

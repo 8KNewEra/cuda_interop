@@ -5,7 +5,6 @@
 #include <QObject>
 #include <opencv2/core/mat.hpp>
 #include <opencv2/core/cuda.hpp>  // CUDAサポート
-#include "cuda_imageprocess.h" // CUDA処理用クラスl
 #include "dstorage.h"
 #include <QWaitCondition>
 #include <QMutex>
@@ -46,7 +45,7 @@ public:
     ~avi_thread() override;
 
 signals:
-    void send_decode_image(uint8_t *d_rgba,int width,int height,size_t pitch_rgba);
+    void send_decode_image(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
     void send_slider(int frame_no);
     void slider_max_min(int max,int min,int frame);
 
@@ -83,7 +82,6 @@ private:
     NppiSize roi;
     const Npp8u* src[2];
 
-    CUDA_ImageProcess* processorThread;  // CUDA処理用スレッド
     int Get_Frame_No;
     int Slider_Frame_No;
     double pts_per_frame ;
