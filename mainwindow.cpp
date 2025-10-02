@@ -2,28 +2,18 @@
 #include "decode_thread.h"
 #include "ui_mainwindow.h"
 #include "glwidget.h"
-#include <dstorage.h>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
     g_fps=0;
+
     //qDebug() <<cv::getBuildInformation();
+
     ui->setupUi(this);
 
-    IDStorageFactory* factory = nullptr;
-    HRESULT hr = DStorageGetFactory(IID_PPV_ARGS(&factory));
-    if (FAILED(hr)) {
-        qDebug() << "Failed to create DirectStorage factory!";
-    }
-
-    cv::cuda::setDevice(0);
-
     GLwidgetInitialized();
-
-    // 起動時または最初の読み込み時
-    //std::vector<FrameIndex> frameIndex = ParseAviIndex("video.avi");
 
     //スライダー
     ui->Live_horizontalSlider->setFixedHeight(20);
@@ -69,7 +59,6 @@ void MainWindow::GLwidgetInitialized(){
         start_fps_thread();
         start_info_thread();
         start_decode_thread();
-        //start_avi_thread();
     });
 
     glWidget->show();
@@ -77,7 +66,7 @@ void MainWindow::GLwidgetInitialized(){
 
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
-    QMainWindow::resizeEvent(event); // デフォルトの resizeEvent 処理を呼び出す
+    QMainWindow::resizeEvent(event);
 
     QSize newSize = event->size();
     window_width = newSize.width();
@@ -99,8 +88,6 @@ void MainWindow::changeEvent(QEvent *event)
 
     if (event->type() == QEvent::WindowStateChange) {
         if (isFullScreen()) {
-            // レイアウトを使用している場合は、glWidget がレイアウト全体を占めるように
-            // (GridLayout の場合、通常は自動的にそうなります)
             ui->openGLContainer->setGeometry(0, 0, width(), height());
         } else {
             ui->openGLContainer->setGeometry(0, 0, window_width, window_height - 28);
@@ -114,11 +101,6 @@ void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t 
         //OpenGLへ画像を渡して描画
         glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,width,height,slider_No);
     }
-}
-
-void MainWindow::decode_view_software(AVFrame *rgba_frame){
-    QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
-    glWidget->uploadToSoftwareImage(rgba_frame);
 }
 
 //fps表示
@@ -167,7 +149,6 @@ void MainWindow::start_decode_thread() {
 
         decodestream->moveToThread(decode__thread);
         QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
-        QObject::connect(decodestream, &decode_thread::send_software_image, this, &MainWindow::decode_view_software);
         QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
 
         QObject::connect(decodestream, &decode_thread::send_slider, this, &MainWindow::slider_control);
@@ -190,37 +171,6 @@ void MainWindow::start_decode_thread() {
         run_decode_thread = 1;
     }
 }
-
-//ライブスレッド開始
-void MainWindow::start_avi_thread() {
-    if (run_avi_thread == 1) {
-        stop_decode_thread();
-    }
-
-    if (run_avi_thread == 0) {
-        avistream = new avi_thread;
-        avi_img_thread = new QThread;
-
-        avistream->moveToThread(avi_img_thread);
-
-        QObject::connect(avi_img_thread, &QThread::started, avistream, &avi_thread::startProcessing);
-        QObject::connect(avi_img_thread, &QThread::finished, avistream, &avi_thread::stopProcessing);
-        QObject::connect(avistream, &avi_thread::send_slider, this, &MainWindow::slider_control);
-        QObject::connect(avistream, &avi_thread::slider_max_min, this, &MainWindow::slider_set_range);
-        QObject::connect(avistream, &avi_thread::send_decode_image, this, &MainWindow::decode_view);
-
-
-        QObject::connect(ui->play_pushButton, &QPushButton::clicked, avistream, &avi_thread::resumePlayback, Qt::QueuedConnection);
-        QObject::connect(ui->pause_pushButton, &QPushButton::clicked, avistream, &avi_thread::pausePlayback, Qt::QueuedConnection);
-
-        QObject::connect(avi_img_thread, &QThread::finished, avistream, &QObject::deleteLater);
-        QObject::connect(avi_img_thread, &QThread::finished, avi_img_thread, &QObject::deleteLater);
-
-        avi_img_thread->start();
-        run_avi_thread = 1;
-    }
-}
-
 
 //ライブスレッド停止
 void MainWindow::stop_decode_thread(){
@@ -267,14 +217,14 @@ void MainWindow::gpu_encode(){
 
     //FrameNoが0なことを確認
     while (slider_No != 0) {
-        QThread::msleep(1); // CPU負荷を抑える
-        QCoreApplication::processEvents(); // UI更新
+        QThread::msleep(1);
+        QCoreApplication::processEvents();
     }
 
     // 進捗ダイアログを作成
     progress = new QProgressDialog("エンコード中...", "キャンセル",1, slider_max, this);
     progress->setWindowModality(Qt::WindowModal);
-    progress->setMinimumDuration(0); // すぐ表示
+    progress->setMinimumDuration(0);
     progress->setValue(0);
 
     //エンコード開始
@@ -284,11 +234,9 @@ void MainWindow::gpu_encode(){
 
     // 処理ループ内で更新
     while(true) {
-        // プログレス更新
         //qDebug()<<slider_No<<":"<<slider_max;
         progress->setValue(slider_No);
 
-        // ユーザーがキャンセルを押したか確認
         if (progress->wasCanceled()){
             glWidget->encode_maxFrame(slider_No);
             break;
@@ -299,18 +247,18 @@ void MainWindow::gpu_encode(){
             break;
         }
 
-        QCoreApplication::processEvents();  // UI応答性の確保
+        QCoreApplication::processEvents();
     }
 
     connect(glWidget, &GLWidget::encode_finished, this, [=]() {
         encode_flag=false;
-        double seconds = timer.nsecsElapsed() / 1e9; // ナノ秒 → 秒
+        double seconds = timer.nsecsElapsed() / 1e9;
         qDebug() << "エンコード終了"
-                 << QString::number(seconds, 'f', 3) // 小数点以下3桁
+                 << QString::number(seconds, 'f', 3)
                  << "秒";
 
         emit send_manual_slider(Now_Frame);
         emit send_manual_resumeplayback();
-        progress->setValue(slider_max); // 完了
+        progress->setValue(slider_max);
     }, Qt::SingleShotConnection);
 }

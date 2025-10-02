@@ -112,11 +112,11 @@ void GLWidget::paintGL() {
         program.bind();
         program.setUniformValue("tex", 0);
         program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
-        program.setUniformValue("u_filterEnabled", sobelfilterEnabled); // フィルタ無効
+        program.setUniformValue("u_filterEnabled", sobelfilterEnabled);
 
         //入力テクスチャ(CUDAから来たもの)を設定
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, inputTextureID); // ← FBOの出力結果が入っている
+        glBindTexture(GL_TEXTURE_2D, inputTextureID);
 
         //描画エリア、fboTextureIdに描画
         glBindVertexArray(vao);
@@ -132,10 +132,10 @@ void GLWidget::paintGL() {
         program.bind();
         program.setUniformValue("tex", 0);
         program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
-        program.setUniformValue("u_filterEnabled", sobelfilterEnabled); // フィルタ無効
+        program.setUniformValue("u_filterEnabled", sobelfilterEnabled);
 
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, inputTextureID); // ← FBOの出力結果が入っている
+        glBindTexture(GL_TEXTURE_2D, inputTextureID);
 
         glBindVertexArray(vao);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
@@ -352,30 +352,4 @@ void GLWidget::encode_mode(bool flag){
 
 void GLWidget::encode_maxFrame(int maxFrame){
     MaxFrame = maxFrame;
-}
-
-
-
-void GLWidget::uploadToSoftwareImage(AVFrame *rgba_frame){
-    int width=rgba_frame->width;
-    int height=rgba_frame->height;
-
-    //initialized完了チェック
-    if(!initialize_completed_flag) {
-        emit decode_please();
-        return;
-    };
-
-    if (width != width_ || height != height_) {
-        initCudaTexture(width,height);
-        initTextureCuda(width,height);
-        width_=width;
-        height_=height;
-        emit decode_please();
-    }
-
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width_, height_,
-                 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba_frame->data[0]);
-
-    update();
 }

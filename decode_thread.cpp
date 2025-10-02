@@ -2,6 +2,8 @@
 #include <QDebug>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
+#include <QDebug>
+#include <QTimer>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -12,12 +14,6 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/frame.h>
 }
-
-// コンストラクタ
-#include "decode_thread.h"
-#include <QDebug>
-
-#include <QTimer>
 
 decode_thread::decode_thread(QString FilePath, QObject *parent)
     : QObject(parent), video_play_flag(true), timer(new QTimer(this))  {
@@ -46,7 +42,7 @@ void decode_thread::receve_decode_flag(){
 void decode_thread::set_decode_speed(int speed){
     interval_ms = static_cast<int>(1000.0 / speed);
     elapsedTimer.start();
-    timer->start(interval_ms); // 接続し直さなくてもOK
+    timer->start(interval_ms);
 }
 
 void decode_thread::startProcessing() {
@@ -103,14 +99,14 @@ void decode_thread::initialized_ffmpeg() {
     hw_frame = av_frame_alloc();
     int ret;
 
-    // CUDA デバイスコンテキスト作成
+    //CUDA デバイスコンテキスト作成
     ret = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
     if (ret < 0) {
         qDebug() << "Failed to create CUDA device context";
         return;
     }
 
-
+    //ファイルを開く
     ret = avformat_open_input(&fmt_ctx, input_filename, nullptr, nullptr);
     if (ret < 0) {
         qDebug() << "Could not open input file";
@@ -136,14 +132,13 @@ void decode_thread::initialized_ffmpeg() {
         return;
     }
 
-
     double framerate = getFrameRate(fmt_ctx, video_stream_index);
     interval_ms = static_cast<double>(1000.0 / 1000);
     elapsedTimer.start();
     timer->start(interval_ms);
     connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
 
-    // フレームレートを元にタイマー設定
+    //フレームレートを元にタイマー設定
     const char* codec_name = avcodec_get_name(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
     const char* decoder_name = selectDecoder(codec_name);
 
@@ -171,12 +166,6 @@ void decode_thread::initialized_ffmpeg() {
     pts_per_frame = 1.0 / (framerate * time_base_d);
     qDebug() << "1フレームのPTS数:" << pts_per_frame;
 
-    sw_frame = av_frame_alloc();
-
-    // RGBA 出力フレームを用意
-    sw_frame->format = AV_PIX_FMT_RGBA;
-
-
     //スライダー設定
     emit send_video_info(pts_per_frame, (fmt_ctx->streams[video_stream_index]->duration)/pts_per_frame-1,framerate);
 
@@ -202,24 +191,24 @@ const char*decode_thread::selectDecoder(const char* codec_name) {
     return nullptr;
 }
 
-// フレームレートを取得する関数
+//フレームレートを取得する関数
 double decode_thread::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index) {
     if (video_stream_index < 0 || video_stream_index >= fmt_ctx->nb_streams) {
         qDebug() << "Invalid video stream index";
         return 0.0;
     }
 
-    // 映像ストリームの取得
+    //映像ストリームの取得
     AVStream* video_stream = fmt_ctx->streams[video_stream_index];
 
-    // avg_frame_rate を取得
+    //avg_frame_rateを取得
     AVRational frame_rate = video_stream->avg_frame_rate;
     if (frame_rate.num == 0 || frame_rate.den == 0) {
         // avg_frame_rate が0の時は r_frame_rate を使用
         frame_rate = video_stream->r_frame_rate;
     }
 
-    // フレームレートを計算（分子 / 分母）
+    //フレームレートを計算
     double frame_rate_value = static_cast<double>(frame_rate.num) / static_cast<double>(frame_rate.den);
 
     return frame_rate_value;
@@ -227,13 +216,13 @@ double decode_thread::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_in
 
 // フレーム取得
 void decode_thread::get_decode_image() {
-    // --- シーク処理（必要なら）
+    //シーク処理
     if (slider_No != Get_Frame_No || video_reverse_flag == true) {
         if (video_reverse_flag == true) {
             slider_No = slider_No - pts_per_frame;
         }
-        avcodec_flush_buffers(codec_ctx);  // デコーダのバッファをフラッシュ
-        av_seek_frame(fmt_ctx, video_stream_index, slider_No, AVSEEK_FLAG_BACKWARD);  // シーク
+        avcodec_flush_buffers(codec_ctx);
+        av_seek_frame(fmt_ctx, video_stream_index, slider_No, AVSEEK_FLAG_BACKWARD);
         Get_Frame_No = slider_No;
     }
 
@@ -243,12 +232,11 @@ void decode_thread::get_decode_image() {
                 if (avcodec_send_packet(codec_ctx, packet) < 0) continue;
 
                 if (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
-                    ffmpeg_to_CUDA(); // ここでCUDA転送など
+                    ffmpeg_to_CUDA();
                     break;
                 }
             }
         }else{
-            // デコーダをフラッシュして残りフレームを取り出す
             avcodec_send_packet(codec_ctx, nullptr);
             if (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
                 ffmpeg_to_CUDA();
@@ -265,7 +253,7 @@ void decode_thread::ffmpeg_to_CUDA(){
     int width = hw_frame->width;
     int height = hw_frame->height;
 
-    // 初回、解像度が変わった時に再malloc
+    //初回時にのみmalloc
     if (!d_y || !d_uv) {
         cudaMallocPitch(&d_y, &pitch_y, width, height);
         cudaMallocPitch(&d_uv, &pitch_uv, width, height / 2);
@@ -281,7 +269,7 @@ void decode_thread::ffmpeg_to_CUDA(){
                  width, height / 2,
                  cudaMemcpyDeviceToDevice);
 
-    // フレーム番号更新
+    //フレーム番号更新
     AVRational time_base = fmt_ctx->streams[video_stream_index]->time_base;
     Get_Frame_No = hw_frame->best_effort_timestamp;
     slider_No = Get_Frame_No;
@@ -292,49 +280,6 @@ void decode_thread::ffmpeg_to_CUDA(){
     decode_state=STATE_WAIT_DECODE_FLAG;
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
-}
-
-void decode_thread::ffmpeg_software_process(){
-    int width  = hw_frame->width;
-    int height = hw_frame->height;
-    sw_frame->width  = width;
-    sw_frame->height = height;
-
-    // hw → sw 転送 (NV12 のまま)
-    if (av_hwframe_transfer_data(sw_frame, hw_frame, 0) < 0) {
-        fprintf(stderr, "Error transferring frame to system memory\n");
-        return;
-    }
-
-    if (av_frame_get_buffer(sw_frame, 32) < 0) {
-        fprintf(stderr, "Could not allocate RGBA frame buffer\n");
-        return;
-    }
-
-    // コンテキスト作成
-    struct SwsContext *sws_ctx = sws_getContext(
-        width, height, (enum AVPixelFormat)sw_frame->format,  // 入力 (NV12)
-        width, height, AV_PIX_FMT_RGBA,                       // 出力
-        SWS_BILINEAR, NULL, NULL, NULL
-        );
-
-    if (!sws_ctx) {
-        fprintf(stderr, "Could not create sws context\n");
-        return;
-    }
-
-    // NV12 → RGBA 変換
-    sws_scale(sws_ctx,
-              (const uint8_t * const *)sw_frame->data, sw_frame->linesize,
-              0, height,
-             sw_frame->data, sw_frame->linesize);
-
-    emit send_software_image(sw_frame);
-
-    decode_state=STATE_WAIT_DECODE_FLAG;
-
-    // ここで rgba_frame->data[0] に RGBA ピクセルが入っている
-    // → OpenGL の glTexSubImage2D にそのまま渡せる
 }
 
 

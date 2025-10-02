@@ -67,7 +67,6 @@ private:
     QByteArray File_byteArray;
     AVPacket* packet;
     AVFrame* hw_frame;
-    AVFrame* sw_frame;
     AVFormatContext* fmt_ctx = nullptr;
     AVCodecContext* codec_ctx = nullptr;
     AVHWDeviceContext* hw_ctx = nullptr;

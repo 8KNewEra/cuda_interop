@@ -8,26 +8,26 @@ save_encode::save_encode(int h,int w) {
     fps = 120;
     pts_step = 15000/60;
 
-    // 1. codec_ctxをnullptrで初期化
+    //codec_ctxをnullptrで初期化
     codec_ctx = nullptr;
 
-    // 2. まず CUDA 関連初期化（先に必要な ctx ができる）
+    //CUDA関連初期化（先に必要な ctx ができる）
     initialized_ffmpeg();
 
-    // 3. エンコーダの取得とコンテキスト作成
+    //エンコーダの取得とコンテキスト作成
     const AVCodec* codec = avcodec_find_encoder_by_name("av1_nvenc");
     if (!codec) throw std::runtime_error("hevc_nvenc codec not found");
 
     codec_ctx = avcodec_alloc_context3(codec);
     if (!codec_ctx) throw std::runtime_error("Failed to allocate AVCodecContext");
 
-    // (これは codec_ctx->pix_fmt に設定するものです)
+    //これは codec_ctx->pix_fmt に設定するものです
     enum AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
     for (int i = 0; ; i++) {
         const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
         if (!config) {
             fprintf(stderr, "Encoder %s does not support any hardware config.\n", codec->name);
-            break; // エラー
+            break;
         }
         if (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX ) {
             hw_pix_fmt = config->pix_fmt; // この config->pix_fmt が NVENC が実際に期待するフォーマットです
@@ -36,10 +36,6 @@ save_encode::save_encode(int h,int w) {
     }
     if (hw_pix_fmt == AV_PIX_FMT_NONE) {
         fprintf(stderr, "No suitable hardware pixel format found for encoder %s.\n", codec->name);
-        // エラーハンドリング
-        // ここでエラーになる場合、NVENCがNV12を期待していない可能性も
-        // 代わりに AV_PIX_FMT_NV12 を直接指定する必要があるか、
-        // または別のピクセルフォーマットで試す必要があるかもしれません。
     }
 
     codec_ctx->width = width_;
@@ -54,14 +50,13 @@ save_encode::save_encode(int h,int w) {
     codec_ctx->max_b_frames = 0;
     codec_ctx->bit_rate = 200 * 1000 * 1000;
 
-    // 4. 正しく初期化された hw_* を参照
+    //初期化された hw_* を参照
     codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
     codec_ctx->hw_frames_ctx = av_buffer_ref(hw_frames_ctx);
 
-    //Split Frame Encode
+    //スプリットエンコードを有効化
     AVDictionary* opts = nullptr;
     av_dict_set(&opts, "split_encode_mode", "1", 0);
-    av_dict_set(&opts, "async_depth", "4", 0);
 
     int ret = avcodec_open2(codec_ctx, codec, &opts);
     if (ret < 0) throw std::runtime_error("Failed to open codec");
@@ -71,18 +66,16 @@ save_encode::save_encode(int h,int w) {
 }
 
 save_encode::~save_encode() {
-    // 全フレーム送信後にフラッシュ
-    avcodec_send_frame(codec_ctx, nullptr); // NULL送信でフラッシュ開始
+    //全フレーム送信後にフラッシュ
+    avcodec_send_frame(codec_ctx, nullptr);
 
     AVPacket *pkt = av_packet_alloc();
     while (true) {
         int ret = avcodec_receive_packet(codec_ctx, pkt);
         if (ret == AVERROR(EAGAIN)) {
-            // 内部処理が残っている可能性 → 続行
             continue;
         }
         if (ret == AVERROR_EOF) {
-            // すべてのパケットが出力済み
             break;
         }
         if (ret < 0) {
@@ -96,44 +89,35 @@ save_encode::~save_encode() {
     }
     av_packet_free(&pkt);
 
-
-
-    // FFmpegリソースの解放
-    // 重要なのは、割り当てられた順序と逆順に解放することと、
-    // 親となるコンテキストを解放する前に子を解放することです。
-    // 例: avformat_free_contextより前にavcodec_free_context。
-
-    // 最初にハードウェアフレームを解放
+    //ハードウェアフレームを解放
     if (hw_frame) {
         av_frame_free(&hw_frame);
         hw_frame = nullptr;
     }
-    // ハードウェアフレームコンテキストを解放
+    //ハードウェアフレームコンテキストを解放
     if (hw_frames_ctx) {
         av_buffer_unref(&hw_frames_ctx);
         hw_frames_ctx = nullptr;
     }
-    // ハードウェアデバイスコンテキストを解放
+    //ハードウェアデバイスコンテキストを解放
     if (hw_device_ctx) {
         av_buffer_unref(&hw_device_ctx);
         hw_device_ctx = nullptr;
     }
 
-    // コーデックコンテキストを解放
+    //コーデックコンテキストを解放
     if (codec_ctx) {
         avcodec_free_context(&codec_ctx);
         codec_ctx = nullptr;
     }
 
-    // フォーマットコンテキストと出力ファイルを解放
+    //フォーマットコンテキストと出力ファイルを解放
     if (fmt_ctx) {
-        // ファイルフッターの書き込みは、すべてのパケットが書き込まれた後に行う
-        // ただし、fmt_ctx->pb がオープンしている場合のみ
-        av_write_trailer(fmt_ctx); // フッター書き込み
-        if (fmt_ctx->pb) { // I/Oコンテキストがオープンしているか確認
-            avio_closep(&fmt_ctx->pb); // 出力ファイルを閉じる
+        av_write_trailer(fmt_ctx);
+        if (fmt_ctx->pb) {
+            avio_closep(&fmt_ctx->pb);
         }
-        avformat_free_context(fmt_ctx); // フォーマットコンテキストを解放
+        avformat_free_context(fmt_ctx);
         fmt_ctx = nullptr;
     }
 
@@ -190,7 +174,7 @@ void save_encode::initialized_output(const std::string& path){
     stream->time_base = tb;
     stream->avg_frame_rate = fr;
 
-    this->stream = stream; // （必要であれば）
+    this->stream = stream;
 }
 
 bool save_encode::encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv)
@@ -216,8 +200,8 @@ bool save_encode::encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitc
         cudaMemcpyDeviceToDevice
         );
 
-    //フレームのPTS（表示時間）などをセット
-    hw_frame->pts = frame_index*pts_step;  // 0,1,2,...
+    //フレームのPTSをセット
+    hw_frame->pts = frame_index*pts_step;
     frame_index+=1;
 
     //エンコーダにフレーム送信

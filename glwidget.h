@@ -31,7 +31,6 @@ public:
     void uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,int a);
     void encode_mode(bool flag);
     void encode_maxFrame(int maxFrame);
-    void uploadToSoftwareImage(AVFrame *rgba_frame);
 
 protected:
     void initializeGL() override;

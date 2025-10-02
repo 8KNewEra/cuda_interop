@@ -1,7 +1,6 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include "avi_thread.h"
 #include "fps_thread.h"
 #include "decode_thread.h"
 #include "info_thread.h"
@@ -65,17 +64,9 @@ public:
     void start_decode_thread();
     void stop_decode_thread();
     void decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
-    void decode_view_software(AVFrame *rgba_frame);
     QThread *decode__thread;
     decode_thread *decodestream;
     int run_decode_thread=0;
-
-    //ライブスレッド動作
-    void start_avi_thread();
-    void stop_avi_thread();
-    QThread *avi_img_thread;
-    avi_thread *avistream;
-    int run_avi_thread=0;
 
     //スライダー
     void slider_control(int Frame_No);

@@ -20,22 +20,12 @@ void info_thread::run() {
     }
 
     QTimer timer;
-
-    // シグナルとスロットの接続
-        connect(&timer, &QTimer::timeout, this, &info_thread::check_gpu_usage, Qt::DirectConnection);
-
-    // 50msごとにシグナルを発行
+    connect(&timer, &QTimer::timeout, this, &info_thread::check_gpu_usage, Qt::DirectConnection);
     timer.setInterval(1000);
     timer.start();
-
-    printf("debug : info Thread Starts\n");
     fflush(stdout);
-
-    exec();  // イベントループを開始し、ブロックされる
-
+    exec();
     fflush(stdout);
-
-    // タイマーを停止して接続を解除
     timer.stop();
     timer.disconnect();
 }
