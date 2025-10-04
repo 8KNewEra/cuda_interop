@@ -31,10 +31,10 @@ public:
     void uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,int a);
     void encode_mode(bool flag);
     void encode_maxFrame(int maxFrame);
+    void GLresize();
 
 protected:
     void initializeGL() override;
-    void resizeGL(int w, int h) override;
     void paintGL() override;
 
 private:
@@ -53,7 +53,8 @@ private:
     GLuint output_pbo=0;
 
     int width_, height_;
-    int viewport_width,viewport_height;
+    // 描画領域を計算
+    GLint x0, y0, x1, y1;
 
     bool encode_flag=false;
     save_encode* save_encoder=nullptr;

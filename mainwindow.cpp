@@ -26,6 +26,17 @@ MainWindow::MainWindow(QWidget *parent)
     ui->save_pushButton->setFixedWidth(30);
     ui->save_pushButton->setFixedHeight(26);
 
+    //ESCショートカット
+    QShortcut *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    escShortcut->setContext(Qt::ApplicationShortcut);
+    connect(escShortcut, &QShortcut::activated, this, [this] {
+        if (isFullScreenMode) {
+            qDebug() << "ESC pressed, exiting fullscreen";
+            toggleFullScreen();
+        }
+    });
+
+
     QObject::connect(ui->save_pushButton, &QPushButton::clicked, this, &MainWindow::gpu_encode, Qt::QueuedConnection);
 }
 
@@ -41,7 +52,8 @@ MainWindow::~MainWindow()
 
 void MainWindow::GLwidgetInitialized(){
     glWidget = new GLWidget();
-    QWidget* container = QWidget::createWindowContainer(glWidget);
+
+    container = QWidget::createWindowContainer(glWidget);;
     container->setMinimumSize(320, 240);
     container->setFocusPolicy(Qt::StrongFocus);
 
@@ -80,6 +92,31 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->openGLContainer->setGeometry(0, 0, window_width, window_height-30); // 位置とサイズを指定
 
     setMinimumSize(QSize(480, 320));
+
+    glWidget->GLresize();
+
+    // OpenGL表示領域のアスペクト比調整
+    // int videoW = 4320;
+    // int videoH = 4320;
+
+    // float aspectVideo  = float(videoW) / float(videoH);
+    // float aspectWindow = float(window_width) / float(window_height);
+
+    // int x, y, w, h;
+
+    // if (aspectWindow > aspectVideo) {
+    //     h = window_height - 30;
+    //     w = int(h * aspectVideo);
+    //     x = (window_width - w) / 2;
+    //     y = 0;
+    // } else {
+    //     w = window_width;
+    //     h = int(w / aspectVideo);
+    //     x = 0;
+    //     y = (window_height - 30 - h) / 2;
+    // }
+
+    // ui->openGLContainer->setGeometry(x, y, w, h);
 }
 
 void MainWindow::changeEvent(QEvent *event)
@@ -87,20 +124,62 @@ void MainWindow::changeEvent(QEvent *event)
     QMainWindow::changeEvent(event);
 
     if (event->type() == QEvent::WindowStateChange) {
-        if (isFullScreen()) {
-            ui->openGLContainer->setGeometry(0, 0, width(), height());
-        } else {
-            ui->openGLContainer->setGeometry(0, 0, window_width, window_height - 28);
+        if (windowState() & Qt::WindowMaximized) {
+            toggleFullScreen();
         }
+    }
+}
+
+// MainWindow.cpp
+void MainWindow::toggleFullScreen()
+{
+    if (!isFullScreenMode) {
+        //フルスクリーン化
+        container->setParent(nullptr);
+        container->setWindowFlags(Qt::FramelessWindowHint);
+        container->showFullScreen();
+
+        //UIを隠す
+        ui->Live_horizontalSlider->hide();
+        ui->play_pushButton->hide();
+        ui->pause_pushButton->hide();
+        ui->reverse_pushButton->hide();
+        ui->save_pushButton->hide();
+
+        glWidget->GLresize();
+
+        isFullScreenMode = true;
+    } else {
+        //元に戻す
+        container->setWindowFlags(Qt::Widget);
+        container->setParent(ui->openGLContainer);
+
+        QLayout* layout = ui->openGLContainer->layout();
+        if (!layout) {
+            layout = new QVBoxLayout(ui->openGLContainer);
+            ui->openGLContainer->setLayout(layout);
+        }
+        layout->addWidget(container);
+
+        container->showNormal();
+
+        //UIを再表示
+        ui->Live_horizontalSlider->show();
+        ui->play_pushButton->show();
+        ui->pause_pushButton->show();
+        ui->reverse_pushButton->show();
+        ui->save_pushButton->show();
+
+        glWidget->GLresize();
+
+        isFullScreenMode = false;
     }
 }
 
 void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width){
     QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
-    if(d_y&&d_uv){
-        //OpenGLへ画像を渡して描画
-        glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,width,height,slider_No);
-    }
+    //OpenGLへ画像を渡して描画
+    glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,width,height,slider_No);
 }
 
 //fps表示
@@ -132,6 +211,7 @@ void MainWindow::slider_set_range(int pts,int maxframe,int frame_rate){
     slider_max=maxframe;
     frame_pts=pts;
     ui->Live_horizontalSlider->setRange(0, maxframe);
+    glWidget->GLresize();
 }
 
 //ライブスレッド開始
@@ -141,9 +221,9 @@ void MainWindow::start_decode_thread() {
     }
 
     if (run_decode_thread == 0) {
-        const char* input_filename = "D:/4K.mp4";
+        //const char* input_filename = "D:/4K.mp4";
         //const char* input_filename = "D:/test2.mp4";
-        //const char* input_filename = "D:/ph8K120fps.mp4";
+        const char* input_filename = "D:/ph8K120fps.mp4";
         decodestream = new decode_thread(input_filename);
         decode__thread = new QThread;
 

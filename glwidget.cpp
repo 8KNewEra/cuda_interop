@@ -9,7 +9,7 @@ GLWidget::GLWidget(QWindow *parent)
     cudaResource2(nullptr),
     inputTextureID(0)
 {
-    sobelfilterEnabled = 1;
+    sobelfilterEnabled = 0;
 
     if(CUDA_IMG_Proc==nullptr){
         CUDA_IMG_Proc=new CUDA_ImageProcess();
@@ -93,57 +93,81 @@ void GLWidget::initializeGL() {
     emit initialized();
 }
 
-//リサイズ
-void GLWidget::resizeGL(int w, int h) {
-    viewport_height=h;
-    viewport_width=w;
-    glViewport(0, 0, w, h);
-}
-
 //描画
 void GLWidget::paintGL() {
-    if(encode_flag){
-        //fboターゲット
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, width_, height_);
-        glClear(GL_COLOR_BUFFER_BIT);
+    //fboターゲット
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width_, height_);
+    glClear(GL_COLOR_BUFFER_BIT);
 
-        //シェーダの設定
-        program.bind();
-        program.setUniformValue("tex", 0);
-        program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
-        program.setUniformValue("u_filterEnabled", sobelfilterEnabled);
+    //シェーダの設定
+    program.bind();
+    program.setUniformValue("tex", 0);
+    program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
+    program.setUniformValue("u_filterEnabled", sobelfilterEnabled);
 
-        //入力テクスチャ(CUDAから来たもの)を設定
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, inputTextureID);
+    //入力テクスチャ(CUDAから来たもの)を設定
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, inputTextureID);
 
-        //描画エリア、fboTextureIdに描画
-        glBindVertexArray(vao);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
-        glBindVertexArray(0);
-        program.release();
+    //描画エリア、fboTextureIdに描画
+    glBindVertexArray(vao);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+    program.release();
 
+    if (encode_flag) {
+        // GPUエンコード用処理
         downloadToGLTexture();
-    }else{
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    } else {
+        //背景を塗りつぶす
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        program.bind();
-        program.setUniformValue("tex", 0);
-        program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
-        program.setUniformValue("u_filterEnabled", sobelfilterEnabled);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, inputTextureID);
-
-        glBindVertexArray(vao);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
-        glBindVertexArray(0);
-        program.release();
+        // FBO → 画面へ転送
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glBlitFramebuffer(
+            0, 0, width_, height_,
+            x0, y0, x1, y1,
+            GL_COLOR_BUFFER_BIT,
+            GL_LINEAR
+            );
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
+
     g_fps+=1;
     emit decode_please();
+}
+
+//アスペクト比を合わせてリサイズ
+void GLWidget::GLresize() {
+    //現在のウィンドウのDPIスケールを取得
+    float dpr = devicePixelRatio();
+
+    //実ピクセル単位のビューポートサイズを取得
+    GLint viewportWidth  = static_cast<GLint>(this->width()  * dpr);
+    GLint viewportHeight = static_cast<GLint>(this->height() * dpr);
+
+    //ソース（動画/FBO）のサイズ
+    float srcAspect = static_cast<float>(width_) / static_cast<float>(height_);
+    float dstAspect = static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
+
+    if (srcAspect > dstAspect) {
+        int displayHeight = static_cast<int>(viewportWidth / srcAspect);
+        int yOffset = (viewportHeight - displayHeight) / 2;
+        x0 = 0;
+        y0 = yOffset;
+        x1 = viewportWidth;
+        y1 = yOffset + displayHeight;
+    } else {
+        int displayWidth = static_cast<int>(viewportHeight * srcAspect);
+        int xOffset = (viewportWidth - displayWidth) / 2;
+        x0 = xOffset;
+        y0 = 0;
+        x1 = xOffset + displayWidth;
+        y1 = viewportHeight;
+    }
 }
 
 //CUDA→OpenGLの初期化、登録など
@@ -223,6 +247,7 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
         initTextureCuda(width,height);
         width_=width;
         height_=height;
+        GLresize();
         emit decode_please();
     }
 

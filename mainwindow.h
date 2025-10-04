@@ -24,6 +24,7 @@
 #include <QPixmap>
 #include <QFileDialog>
 #include <QOpenGLWindow>
+#include <QShortcut>
 
 extern int g_fps;
 
@@ -55,10 +56,13 @@ public:
     int window_width=480;
     int window_height=360;
     void resizeEvent(QResizeEvent *event) override;
-    void changeEvent(QEvent *event) override; // changeEvent をオーバーライド
+    void changeEvent(QEvent *event) override;
+    void toggleFullScreen();
 
     //OpenGLwidget
     GLWidget* glWidget;
+    QWidget *container;
+    bool isFullScreenMode = false;
 
     //ライブスレッド動作
     void start_decode_thread();
@@ -91,7 +95,6 @@ public:
 
     void gpu_encode();
     void save_image();
-
 private:
     Ui::MainWindow *ui;
     bool encode_flag=false;
