@@ -27,7 +27,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->save_pushButton->setFixedHeight(26);
 
     //ESCショートカット
-    QShortcut *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    QShortcut *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), container);
     escShortcut->setContext(Qt::ApplicationShortcut);
     connect(escShortcut, &QShortcut::activated, this, [this] {
         if (isFullScreenMode) {
@@ -138,6 +138,8 @@ void MainWindow::toggleFullScreen()
         container->setParent(nullptr);
         container->setWindowFlags(Qt::FramelessWindowHint);
         container->showFullScreen();
+        container->raise();
+        container->activateWindow();
 
         //UIを隠す
         ui->Live_horizontalSlider->hide();
@@ -149,7 +151,16 @@ void MainWindow::toggleFullScreen()
         glWidget->GLresize();
 
         isFullScreenMode = true;
+
+        //元ウィンドウは隠す
+        this->hide();
+
     } else {
+        //元ウィンドウを再表示
+        this->showNormal();
+        this->raise();
+        this->activateWindow();
+
         //元に戻す
         container->setWindowFlags(Qt::Widget);
         container->setParent(ui->openGLContainer);
