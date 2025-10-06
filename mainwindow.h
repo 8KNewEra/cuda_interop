@@ -17,13 +17,7 @@
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QTimer>
-#include <QGraphicsScene>
-#include <qgraphicsscene.h>
-#include <QGraphicsPixmapItem>
-#include <QImage>
-#include <QPixmap>
 #include <QFileDialog>
-#include <QOpenGLWindow>
 #include <QShortcut>
 
 extern int g_fps;
@@ -44,6 +38,7 @@ signals:
     void send_manual_pause();
     void send_manual_resumeplayback();
     void send_manual_slider(int value);
+    void decode_please();
 
 public:
     MainWindow(QWidget *parent = nullptr);

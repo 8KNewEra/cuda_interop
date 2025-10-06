@@ -181,9 +181,6 @@ bool save_encode::encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitc
 {
     //qDebug()<<No;
     No+=1;
-    if(No==1){
-        return false;
-    }
 
     //ffmpegへ転送
     cudaMemcpy2D(

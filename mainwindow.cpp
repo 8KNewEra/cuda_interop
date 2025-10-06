@@ -188,9 +188,19 @@ void MainWindow::toggleFullScreen()
 }
 
 void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width){
-    QObject::connect(glWidget, &GLWidget::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+    QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+
+    //コンテキストを作成
+    glWidget->makeCurrent();
+
     //OpenGLへ画像を渡して描画
     glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,width,height,slider_No);
+
+    //コンテキストを破棄
+    glWidget->doneCurrent();
+
+    g_fps+=1;
+    emit decode_please();
 }
 
 //fps表示
@@ -233,8 +243,8 @@ void MainWindow::start_decode_thread() {
 
     if (run_decode_thread == 0) {
         //const char* input_filename = "D:/4K.mp4";
-        //const char* input_filename = "D:/test2.mp4";
-        const char* input_filename = "D:/ph8K120fps.mp4";
+        const char* input_filename = "D:/test2.mp4";
+        //const char* input_filename = "D:/ph8K120fps.mp4";
         decodestream = new decode_thread(input_filename);
         decode__thread = new QThread;
 

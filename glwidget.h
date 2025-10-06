@@ -32,6 +32,7 @@ public:
     void encode_mode(bool flag);
     void encode_maxFrame(int maxFrame);
     void GLresize();
+    void FBO_Rendering();
 
 protected:
     void initializeGL() override;
