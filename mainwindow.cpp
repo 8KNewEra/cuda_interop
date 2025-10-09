@@ -242,8 +242,8 @@ void MainWindow::start_decode_thread() {
     }
 
     if (run_decode_thread == 0) {
-        //const char* input_filename = "D:/4K.mp4";
-        const char* input_filename = "D:/test2.mp4";
+        const char* input_filename = "D:/4K.mp4";
+        //const char* input_filename = "D:/test2.mp4";
         //const char* input_filename = "D:/ph8K120fps.mp4";
         decodestream = new decode_thread(input_filename);
         decode__thread = new QThread;

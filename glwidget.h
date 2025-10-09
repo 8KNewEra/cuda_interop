@@ -32,11 +32,10 @@ public:
     void encode_mode(bool flag);
     void encode_maxFrame(int maxFrame);
     void GLresize();
-    void FBO_Rendering();
+    void OpenGL_Rendering();
 
 protected:
     void initializeGL() override;
-    void paintGL() override;
 
 private:
     bool initialize_completed_flag=false;

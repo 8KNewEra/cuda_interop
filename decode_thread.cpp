@@ -62,7 +62,7 @@ void decode_thread::sliderPlayback(int value){
 }
 
 void decode_thread::resumePlayback() {
-    processFrame();
+    receve_decode_flag();
     QMutexLocker locker(&mutex);
     video_play_flag = true;
     video_reverse_flag = false;
@@ -74,7 +74,7 @@ void decode_thread::pausePlayback() {
 }
 
 void decode_thread::reversePlayback(){
-    processFrame();
+    receve_decode_flag();
     QMutexLocker locker(&mutex);
     video_play_flag = true;
     video_reverse_flag = true;
@@ -133,10 +133,6 @@ void decode_thread::initialized_ffmpeg() {
     }
 
     double framerate = getFrameRate(fmt_ctx, video_stream_index);
-    interval_ms = static_cast<double>(1000.0 / 1000);
-    elapsedTimer.start();
-    timer->start(interval_ms);
-    connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
 
     //フレームレートを元にタイマー設定
     const char* codec_name = avcodec_get_name(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
@@ -173,7 +169,10 @@ void decode_thread::initialized_ffmpeg() {
     video_play_flag = true;
     video_reverse_flag = false;
 
-    processFrame();
+    interval_ms = static_cast<double>(1000.0 / 1000);
+    elapsedTimer.start();
+    timer->start(interval_ms);
+    connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
 }
 
 // デコーダ設定
@@ -240,6 +239,8 @@ void decode_thread::get_decode_image() {
             avcodec_send_packet(codec_ctx, nullptr);
             if (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
                 ffmpeg_to_CUDA();
+                break;
+            } else {
                 break;
             }
         }

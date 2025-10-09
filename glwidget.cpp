@@ -93,25 +93,7 @@ void GLWidget::initializeGL() {
     emit initialized();
 }
 
-//描画
-void GLWidget::paintGL() {
-    //背景を塗りつぶす
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    // FBO → 画面へ転送
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-    glBlitFramebuffer(
-        0, 0, width_, height_,
-        x0, y0, x1, y1,
-        GL_COLOR_BUFFER_BIT,
-        GL_LINEAR
-        );
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void GLWidget::FBO_Rendering(){
+void GLWidget::OpenGL_Rendering(){
     //fboターゲット
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, width_, height_);
@@ -137,8 +119,22 @@ void GLWidget::FBO_Rendering(){
         // GPUエンコード用処理
         downloadToGLTexture();
     } else {
-        //描画をトリガー
-        update();
+        //描画処理
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // FBO → 画面へ転送
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glBlitFramebuffer(
+            0, 0, width_, height_,
+            x0, y0, x1, y1,
+            GL_COLOR_BUFFER_BIT,
+            GL_LINEAR
+            );
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        context()->swapBuffers(context()->surface());
     }
 }
 
@@ -302,7 +298,7 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 
-    FBO_Rendering();
+    OpenGL_Rendering();
 }
 
 //OpenGLからCUDAへ転送
