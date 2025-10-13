@@ -33,6 +33,7 @@ signals:
     void send_slider(int frame_no);
     void send_video_info(int pts,int maxframe,int framerate);
     void send_software_image(AVFrame *rgba_frame);
+    void finished();
 
 public slots:
     void get_decode_image();
@@ -61,6 +62,7 @@ private:
 
     bool video_play_flag;
     bool video_reverse_flag;
+    bool thread_stop_flag =false;
 
     // FFmpeg関連
     const char* input_filename;

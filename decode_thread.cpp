@@ -22,14 +22,75 @@ decode_thread::decode_thread(QString FilePath, QObject *parent)
 }
 
 decode_thread::~decode_thread() {
-    stopProcessing();
+    // 1) デコードループ停止要求
+    thread_stop_flag = true;
+    QThread::msleep(10);
 
-    if (d_y) {
-        cudaFree(d_y);
-        cudaFree(d_uv);
+    // 2) CUDA同期（非同期処理完了待ち）
+    cudaError_t cerr = cudaDeviceSynchronize();
+    if (cerr != cudaSuccess) {
+        qWarning() << "cudaDeviceSynchronize failed:"
+                   << cudaGetErrorString(cerr);
     }
 
-    qDebug() << "Live Thread: Destructor called";
+    // 3) FFmpeg関係の安全な解放
+    auto safe_free_codec = [&]() {
+        if (codec_ctx) {
+            avcodec_flush_buffers(codec_ctx);
+            avcodec_free_context(&codec_ctx);
+            codec_ctx = nullptr;
+        }
+    };
+
+    auto safe_free_format = [&]() {
+        if (fmt_ctx) {
+            avformat_close_input(&fmt_ctx);
+            fmt_ctx = nullptr;
+        }
+    };
+
+    auto safe_free_frames = [&]() {
+        if (hw_frame) {
+            av_frame_free(&hw_frame);
+            hw_frame = nullptr;
+        }
+        if (packet) {
+            av_packet_free(&packet);
+            packet = nullptr;
+        }
+    };
+
+    auto safe_free_hwctx = [&]() {
+        if (hw_device_ctx) {
+            av_buffer_unref(&hw_device_ctx);
+            hw_device_ctx = nullptr;
+        }
+    };
+
+    try {
+        safe_free_codec();
+        safe_free_format();
+        safe_free_frames();
+        safe_free_hwctx();
+    } catch (...) {
+        qWarning() << "Exception during FFmpeg cleanup (ignored)";
+    }
+
+    // 4) CUDA メモリの安全な解放
+    auto safe_cuda_free = [&](void*& ptr, const char* name) {
+        if (ptr) {
+            cudaError_t err = cudaFree(ptr);
+            if (err != cudaSuccess)
+                qWarning() << name << "cudaFree failed:"
+                           << cudaGetErrorString(err);
+            ptr = nullptr;
+        }
+    };
+
+    safe_cuda_free((void*&)d_y, "d_y");
+    safe_cuda_free((void*&)d_uv, "d_uv");
+
+    qDebug() << "decode_thread: resources released cleanly";
 }
 
 void decode_thread::receve_decode_flag(){
@@ -51,7 +112,16 @@ void decode_thread::startProcessing() {
 }
 
 void decode_thread::stopProcessing() {
-    qDebug() << "Live Thread: Stop Processing";
+    if (timer) {
+        QMetaObject::invokeMethod(timer, "stop", Qt::QueuedConnection);
+        QMetaObject::invokeMethod(timer, "deleteLater", Qt::QueuedConnection);
+        timer = nullptr;
+        delete timer;
+    }
+
+    thread_stop_flag = true;
+
+    qDebug() << "decode_thread: stopProcessing called";
 }
 
 void decode_thread::sliderPlayback(int value){
@@ -90,6 +160,11 @@ void decode_thread::processFrame() {
     if(decode_state==STATE_DECODE_READY){
         decode_state=STATE_DECODING;
         get_decode_image();
+    }
+
+    //デコード修了指示が出た場合は全ての処理を完了してから修了を通知
+    if(thread_stop_flag){
+        emit finished();
     }
 }
 

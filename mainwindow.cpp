@@ -37,17 +37,21 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
 
+    input_filename = "D:/4K.mp4";
+
+
+    QObject::connect(ui->play_pushButton, &QPushButton::clicked, this, &MainWindow::stop_decode_thread, Qt::QueuedConnection);
     QObject::connect(ui->save_pushButton, &QPushButton::clicked, this, &MainWindow::gpu_encode, Qt::QueuedConnection);
 }
 
 MainWindow::~MainWindow()
 {
+    stop_decode_thread();
+
     delete ui;
     delete glWidget;
-    delete decodestream;
     ui = nullptr;
     glWidget = nullptr;
-    decodestream = nullptr;
 }
 
 void MainWindow::GLwidgetInitialized(){
@@ -188,19 +192,21 @@ void MainWindow::toggleFullScreen()
 }
 
 void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width){
-    QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+    if(run_decode_thread){
+        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
 
-    //コンテキストを作成
-    glWidget->makeCurrent();
+        //コンテキストを作成
+        glWidget->makeCurrent();
 
-    //OpenGLへ画像を渡して描画
-    glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,width,height,slider_No);
+        //OpenGLへ画像を渡して描画
+        glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,width,height,slider_No);
 
-    //コンテキストを破棄
-    glWidget->doneCurrent();
+        //コンテキストを破棄
+        glWidget->doneCurrent();
 
-    g_fps+=1;
-    emit decode_please();
+        g_fps+=1;
+        emit decode_please();
+    }
 }
 
 //fps表示
@@ -242,9 +248,10 @@ void MainWindow::start_decode_thread() {
     }
 
     if (run_decode_thread == 0) {
-        const char* input_filename = "D:/4K.mp4";
+        run_decode_thread = 1;
+
+        //const char* input_filename = "D:/4K.mp4";
         //const char* input_filename = "D:/test2.mp4";
-        //const char* input_filename = "D:/ph8K120fps.mp4";
         decodestream = new decode_thread(input_filename);
         decode__thread = new QThread;
 
@@ -254,27 +261,33 @@ void MainWindow::start_decode_thread() {
 
         QObject::connect(decodestream, &decode_thread::send_slider, this, &MainWindow::slider_control);
         QObject::connect(decodestream, &decode_thread::send_video_info, this, &MainWindow::slider_set_range);
-        QObject::connect(decode__thread, &QThread::started, decodestream, &decode_thread::startProcessing);
-        QObject::connect(decode__thread, &QThread::finished, decodestream, &decode_thread::stopProcessing);
 
-        QObject::connect(ui->play_pushButton, &QPushButton::clicked, decodestream, &decode_thread::resumePlayback, Qt::QueuedConnection);
+        //QObject::connect(ui->play_pushButton, &QPushButton::clicked, decodestream, &decode_thread::resumePlayback, Qt::QueuedConnection);
         QObject::connect(ui->pause_pushButton, &QPushButton::clicked, decodestream, &decode_thread::pausePlayback, Qt::QueuedConnection);
         QObject::connect(ui->Live_horizontalSlider, &QSlider::sliderMoved, decodestream, &decode_thread::sliderPlayback, Qt::QueuedConnection);
-        QObject::connect(ui->reverse_pushButton, &QPushButton::clicked, decodestream, &decode_thread::reversePlayback, Qt::QueuedConnection);
+        QObject::connect(ui->reverse_pushButton, &QPushButton::clicked, this, &MainWindow::start_decode_thread, Qt::SingleShotConnection);
         QObject::connect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
         QObject::connect(this, &::MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
         QObject::connect(this, &MainWindow::send_manual_slider, decodestream, &decode_thread::sliderPlayback);
 
-        QObject::connect(decode__thread, &QThread::finished, decodestream, &QObject::deleteLater);
-        QObject::connect(decode__thread, &QThread::finished, decode__thread, &QObject::deleteLater);
+        QObject::connect(decode__thread, &QThread::started,decodestream, &decode_thread::startProcessing,Qt::SingleShotConnection);
+        QObject::connect(decodestream, &decode_thread::finished,decode__thread, &QThread::quit,Qt::SingleShotConnection);
+        QObject::connect(decode__thread, &QThread::finished,decodestream, &QObject::deleteLater,Qt::SingleShotConnection);
+        QObject::connect(decode__thread, &QThread::finished,decode__thread, &QObject::deleteLater,Qt::SingleShotConnection);
 
         decode__thread->start();
-        run_decode_thread = 1;
     }
 }
 
 //ライブスレッド停止
 void MainWindow::stop_decode_thread(){
+    if (run_decode_thread) {
+        run_decode_thread = 0;
+        decodestream->stopProcessing();
+        decode__thread->quit();
+        decode__thread->wait();
+        input_filename = "D:/ph8K120fps.mp4";
+    }
 }
 
 //fpsスレッド開始

@@ -88,6 +88,8 @@ public:
     QThread *info_view_thread;
     info_thread *infostream;
 
+    QString input_filename;
+
     void gpu_encode();
     void save_image();
 private:
