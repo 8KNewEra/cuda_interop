@@ -48,7 +48,7 @@ bool CUDA_ImageProcess::NV12_to_RGBA(uint8_t* d_rgba, size_t pitch_rgba,uint8_t*
                     &d_uv, &pitch_uv,
                     &width, &height };
 
-    dim3 block(16,16);
+    dim3 block(32,32);
     dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
 
     cudaError_t err = cudaLaunchKernel((const void*)nv12_to_rgba_kernel,

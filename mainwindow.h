@@ -62,10 +62,12 @@ public:
     //ライブスレッド動作
     void start_decode_thread();
     void stop_decode_thread();
+    void set_preview_speed(const QString &text);
     void decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
     QThread *decode__thread;
     decode_thread *decodestream;
-    int run_decode_thread=0;
+    bool run_decode_thread=false;
+    int preview_speed=30;
 
     //スライダー
     void slider_control(int Frame_No);
@@ -74,7 +76,7 @@ public:
     int slider_min=1;
     int slider_No=1;
     int frame_pts=1;
-    int framerate=30;
+    int framerate=33;
 
     //fpsスレッド
     void start_fps_thread();
@@ -88,6 +90,8 @@ public:
     QThread *info_view_thread;
     info_thread *infostream;
 
+    //ファイル
+    void Open_Video_File();
     QString input_filename;
 
     void gpu_encode();

@@ -34,9 +34,9 @@
     <property name="geometry">
      <rect>
       <x>140</x>
-      <y>440</y>
-      <width>800</width>
-      <height>5</height>
+      <y>434</y>
+      <width>581</width>
+      <height>16</height>
      </rect>
     </property>
     <property name="orientation">
@@ -82,19 +82,6 @@
      <string>◀</string>
     </property>
    </widget>
-   <widget class="QPushButton" name="save_pushButton">
-    <property name="geometry">
-     <rect>
-      <x>890</x>
-      <y>430</y>
-      <width>56</width>
-      <height>18</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>PushButton</string>
-    </property>
-   </widget>
    <widget class="QWidget" name="openGLContainer" native="true">
     <property name="geometry">
      <rect>
@@ -105,8 +92,43 @@
      </rect>
     </property>
    </widget>
+   <widget class="QComboBox" name="comboBox_speed">
+    <property name="geometry">
+     <rect>
+      <x>850</x>
+      <y>430</y>
+      <width>101</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_speed">
+    <property name="geometry">
+     <rect>
+      <x>760</x>
+      <y>430</y>
+      <width>91</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>10</pointsize>
+      <bold>false</bold>
+     </font>
+    </property>
+    <property name="text">
+     <string>再生速度 (fps)</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
   </widget>
-  <widget class="QMenuBar" name="menubar">
+  <widget class="QMenuBar" name="menuBar">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
    <property name="geometry">
     <rect>
      <x>0</x>
@@ -115,7 +137,48 @@
      <height>18</height>
     </rect>
    </property>
+   <widget class="QMenu" name="menu">
+    <property name="geometry">
+     <rect>
+      <x>339</x>
+      <y>102</y>
+      <width>119</width>
+      <height>80</height>
+     </rect>
+    </property>
+    <property name="title">
+     <string>ファイル</string>
+    </property>
+    <addaction name="actionOpenFile"/>
+    <addaction name="actionFileSave"/>
+   </widget>
+   <addaction name="menu"/>
   </widget>
+  <action name="actionOpenFile">
+   <property name="icon">
+    <iconset theme="QIcon::ThemeIcon::DocumentOpen"/>
+   </property>
+   <property name="text">
+    <string>ファイルを開く</string>
+   </property>
+   <property name="toolTip">
+    <string>動画ファイルを開く</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+O</string>
+   </property>
+  </action>
+  <action name="actionFileSave">
+   <property name="icon">
+    <iconset theme="QIcon::ThemeIcon::DocumentPrint"/>
+   </property>
+   <property name="text">
+    <string>ファイルを保存</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+S</string>
+   </property>
+  </action>
  </widget>
  <resources/>
  <connections/>

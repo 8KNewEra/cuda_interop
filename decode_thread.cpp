@@ -22,8 +22,14 @@ decode_thread::decode_thread(QString FilePath, QObject *parent)
 }
 
 decode_thread::~decode_thread() {
+    if (timer) {
+        QMetaObject::invokeMethod(timer, "stop", Qt::QueuedConnection);
+        QMetaObject::invokeMethod(timer, "deleteLater", Qt::QueuedConnection);
+        timer = nullptr;
+        delete timer;
+    }
+
     // 1) デコードループ停止要求
-    thread_stop_flag = true;
     QThread::msleep(10);
 
     // 2) CUDA同期（非同期処理完了待ち）
@@ -112,13 +118,6 @@ void decode_thread::startProcessing() {
 }
 
 void decode_thread::stopProcessing() {
-    if (timer) {
-        QMetaObject::invokeMethod(timer, "stop", Qt::QueuedConnection);
-        QMetaObject::invokeMethod(timer, "deleteLater", Qt::QueuedConnection);
-        timer = nullptr;
-        delete timer;
-    }
-
     thread_stop_flag = true;
 
     qDebug() << "decode_thread: stopProcessing called";
@@ -157,7 +156,7 @@ void decode_thread::processFrame() {
         return;
     }
 
-    if(decode_state==STATE_DECODE_READY){
+    if(decode_state==STATE_DECODE_READY&&!decode_state){
         decode_state=STATE_DECODING;
         get_decode_image();
     }
@@ -244,7 +243,7 @@ void decode_thread::initialized_ffmpeg() {
     video_play_flag = true;
     video_reverse_flag = false;
 
-    interval_ms = static_cast<double>(1000.0 / 1000);
+    interval_ms = static_cast<double>(1000.0 / 33);
     elapsedTimer.start();
     timer->start(interval_ms);
     connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
