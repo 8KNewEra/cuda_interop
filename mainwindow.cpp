@@ -45,6 +45,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     QObject::connect(ui->comboBox_speed, &QComboBox::currentTextChanged, this, &MainWindow::set_preview_speed, Qt::QueuedConnection);
     QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::Open_Video_File,Qt::QueuedConnection);
+    QObject::connect(ui->actionCloseFile, &QAction::triggered, this, &MainWindow::Close_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionFileSave, &QAction::triggered, this, &MainWindow::gpu_encode,Qt::QueuedConnection);
 }
 
@@ -199,6 +200,17 @@ void MainWindow::Open_Video_File()
     } else {
         qDebug() << "ファイル選択がキャンセルされました";
     }
+}
+
+void MainWindow::Close_Video_File()
+{
+    if(run_decode_thread){
+        stop_decode_thread();
+    }
+
+    glWidget->makeCurrent();
+    glWidget->GLreset();
+    glWidget->doneCurrent();
 }
 
 //動画表示

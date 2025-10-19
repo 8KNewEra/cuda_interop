@@ -140,16 +140,17 @@
    <widget class="QMenu" name="menu">
     <property name="geometry">
      <rect>
-      <x>339</x>
-      <y>102</y>
-      <width>119</width>
-      <height>80</height>
+      <x>947</x>
+      <y>93</y>
+      <width>121</width>
+      <height>100</height>
      </rect>
     </property>
     <property name="title">
      <string>ファイル</string>
     </property>
     <addaction name="actionOpenFile"/>
+    <addaction name="actionCloseFile"/>
     <addaction name="actionFileSave"/>
    </widget>
    <addaction name="menu"/>
@@ -177,6 +178,20 @@
    </property>
    <property name="shortcut">
     <string>Ctrl+S</string>
+   </property>
+  </action>
+  <action name="actionCloseFile">
+   <property name="icon">
+    <iconset theme="QIcon::ThemeIcon::EditClear"/>
+   </property>
+   <property name="text">
+    <string>ファイルを閉じる</string>
+   </property>
+   <property name="toolTip">
+    <string>ファイルを閉じる</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+C</string>
    </property>
   </action>
  </widget>

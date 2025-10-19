@@ -33,6 +33,7 @@ public:
     void encode_maxFrame(int maxFrame);
     void GLresize();
     void OpenGL_Rendering();
+    void GLreset();
 
 protected:
     void initializeGL() override;

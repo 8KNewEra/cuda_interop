@@ -92,10 +92,11 @@ public:
 
     //ファイル
     void Open_Video_File();
+    void Close_Video_File();
     QString input_filename;
 
     void gpu_encode();
-    void save_image();
+
 private:
     Ui::MainWindow *ui;
     bool encode_flag=false;

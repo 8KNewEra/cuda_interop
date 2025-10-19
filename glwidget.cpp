@@ -168,6 +168,13 @@ void GLWidget::GLresize() {
     }
 }
 
+//画面をリセット(真っ黒にする)
+void GLWidget::GLreset(){
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    context()->swapBuffers(context()->surface());
+}
+
 //CUDA→OpenGLの初期化、登録など
 void GLWidget::initCudaTexture(int width,int height) {
     //古いリソースを破棄
