@@ -79,6 +79,7 @@ void MainWindow::GLwidgetInitialized(){
         qDebug() << "GLWidget 初期化完了";
         start_fps_thread();
         start_info_thread();
+        ui->actionOpenFile->setEnabled(true);
     });
 
     glWidget->show();
@@ -210,6 +211,7 @@ void MainWindow::Close_Video_File()
 
     glWidget->makeCurrent();
     glWidget->GLreset();
+    glWidget->GLreset();
     glWidget->doneCurrent();
 }
 
@@ -309,6 +311,15 @@ void MainWindow::start_decode_thread() {
 
             ui->comboBox_speed->setCurrentIndex(6);
 
+            ui->play_pushButton->setEnabled(true);
+            ui->pause_pushButton->setEnabled(true);
+            ui->reverse_pushButton->setEnabled(true);
+            ui->Live_horizontalSlider->setEnabled(true);
+            ui->label_speed->setEnabled(true);
+            ui->comboBox_speed->setEnabled(true);
+            ui->actionFileSave->setEnabled(true);
+            ui->actionCloseFile->setEnabled(true);
+
         }, Qt::AutoConnection);
 
         decode__thread->start();
@@ -319,6 +330,15 @@ void MainWindow::start_decode_thread() {
 void MainWindow::stop_decode_thread(){
     if (run_decode_thread) {
         run_decode_thread=false;
+        ui->play_pushButton->setEnabled(false);
+        ui->pause_pushButton->setEnabled(false);
+        ui->reverse_pushButton->setEnabled(false);
+        ui->Live_horizontalSlider->setEnabled(false);
+        ui->label_speed->setEnabled(false);
+        ui->comboBox_speed->setEnabled(false);
+        ui->actionFileSave->setEnabled(false);
+        ui->actionCloseFile->setEnabled(false);
+
         decodestream->stopProcessing();
         decode__thread->quit();
         decode__thread->wait();

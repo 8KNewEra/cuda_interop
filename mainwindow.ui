@@ -31,6 +31,9 @@
     </property>
    </widget>
    <widget class="QSlider" name="Live_horizontalSlider">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>140</x>
@@ -44,6 +47,9 @@
     </property>
    </widget>
    <widget class="QPushButton" name="play_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>50</x>
@@ -57,6 +63,9 @@
     </property>
    </widget>
    <widget class="QPushButton" name="pause_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>90</x>
@@ -70,6 +79,9 @@
     </property>
    </widget>
    <widget class="QPushButton" name="reverse_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>10</x>
@@ -93,6 +105,9 @@
     </property>
    </widget>
    <widget class="QComboBox" name="comboBox_speed">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>850</x>
@@ -103,6 +118,9 @@
     </property>
    </widget>
    <widget class="QLabel" name="label_speed">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>760</x>
@@ -156,6 +174,9 @@
    <addaction name="menu"/>
   </widget>
   <action name="actionOpenFile">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="icon">
     <iconset theme="QIcon::ThemeIcon::DocumentOpen"/>
    </property>
@@ -170,6 +191,9 @@
    </property>
   </action>
   <action name="actionFileSave">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="icon">
     <iconset theme="QIcon::ThemeIcon::DocumentPrint"/>
    </property>
@@ -181,6 +205,9 @@
    </property>
   </action>
   <action name="actionCloseFile">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="icon">
     <iconset theme="QIcon::ThemeIcon::EditClear"/>
    </property>
