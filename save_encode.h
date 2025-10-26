@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 #include <QDebug>
 #include <QFile>
+#include "__global__.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -23,9 +24,12 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    void initialized_ffmpeg();
-    void initialized_output(const std::string& path);
     bool encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv);
+
+private:
+    void initialized_ffmpeg_hardware_context();
+    void initialized_ffmpeg_codec_context();
+    void initialized_ffmpeg_output(const std::string& path);
     int height_,width_;
 
     // --- FFmpeg 関連 ---
@@ -46,6 +50,8 @@ public:
 
     int No=0;
     int No2=0;
+
+    const EncodeSettings& encode_settings = EncodeSettingsManager::getInstance().getSettings();
 };
 
 #endif // SAVE_ENCODE_H

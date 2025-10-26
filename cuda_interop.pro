@@ -19,6 +19,7 @@ CONFIG += c++17
 SOURCES += \
     cuda_imageprocess.cpp \
     decode_thread.cpp \
+    encode_setting.cpp \
     fps_thread.cpp \
     glwidget.cpp \
     info_thread.cpp \
@@ -27,8 +28,10 @@ SOURCES += \
     save_encode.cpp
 
 HEADERS += \
+    __global__.h \
     cuda_imageprocess.h \
     decode_thread.h \
+    encode_setting.h \
     fps_thread.h \
     glwidget.h \
     info_thread.h \
@@ -36,6 +39,7 @@ HEADERS += \
     save_encode.h
 
 FORMS += \
+    encode_setting.ui \
     mainwindow.ui
 
 TRANSLATIONS += \
@@ -43,12 +47,12 @@ TRANSLATIONS += \
 CONFIG += lrelease
 CONFIG += embed_translations
 
-#open cvリンク
-OPENCV_DIR = "$$PWD/OpenCV_withCUDA"
+# #open cvリンク
+# OPENCV_DIR = "$$PWD/OpenCV_withCUDA"
 
-INCLUDEPATH += $$OPENCV_DIR/include
-LIBS += -L$$OPENCV_DIR/x64/vc17/lib \
-        -lopencv_world4120  # ← ".lib" は不要！
+# INCLUDEPATH += $$OPENCV_DIR/include
+# LIBS += -L$$OPENCV_DIR/x64/vc17/lib \
+#         -lopencv_world4120  # ← ".lib" は不要！
 
 #CUDAリンク
 CUDA_DIR = "$$PWD/NVIDIAGPUComputingToolkit/CUDA/v12.8"

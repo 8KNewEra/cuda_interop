@@ -66,6 +66,8 @@ private:
 
     uint8_t *d_y = nullptr, *d_uv = nullptr,*d_rgba=nullptr;
     size_t pitch_y = 0, pitch_uv = 0,pitch_rgba=0;
+
+    const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 };
 
 

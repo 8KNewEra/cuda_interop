@@ -4,12 +4,14 @@
 #include "fps_thread.h"
 #include "decode_thread.h"
 #include "info_thread.h"
+#include "encode_setting.h"
 #define NOMINMAX
 
 #include <QMainWindow>
 #include <QVBoxLayout>
 #include <windows.h>
 #include "glwidget.h"
+#include "__global__.h"
 
 #include <windows.h>
 #include <QMainWindow>
@@ -44,6 +46,7 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
+private:
     void GLwidgetInitialized();
     QProgressDialog *progress;
 
@@ -71,12 +74,9 @@ public:
 
     //スライダー
     void slider_control(int Frame_No);
-    void slider_set_range(int pts,int maxframe,int framerate);
-    int slider_max=0;
-    int slider_min=1;
+    void slider_set_range();
     int slider_No=1;
-    int frame_pts=1;
-    int framerate=33;
+    int Now_Frame;
 
     //fpsスレッド
     void start_fps_thread();
@@ -95,11 +95,16 @@ public:
     void Close_Video_File();
     QString input_filename;
 
-    void gpu_encode();
+    void encode_set();
+    void start_encode();
+    void finished_encode();
+    encode_setting *encodeSetting;
+    bool encode_window_flag=false;
+
+    const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
 private:
     Ui::MainWindow *ui;
-    bool encode_flag=false;
 };
 #endif // MAINWINDOW_H
 

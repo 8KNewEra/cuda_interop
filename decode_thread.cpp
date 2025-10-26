@@ -17,6 +17,7 @@ extern "C" {
 
 decode_thread::decode_thread(QString FilePath, QObject *parent)
     : QObject(parent), video_play_flag(true), timer(new QTimer(this))  {
+    VideoInfo.Path = FilePath.toStdString();
     File_byteArray = FilePath.toUtf8();
     input_filename = File_byteArray.constData();
 }
@@ -125,7 +126,7 @@ void decode_thread::stopProcessing() {
 
 void decode_thread::sliderPlayback(int value){
     pausePlayback();
-    slider_No=value*pts_per_frame;
+    slider_No=value*VideoInfo.pts_per_frame;
     video_play_flag = false;
     video_reverse_flag = false;
 }
@@ -152,6 +153,7 @@ void decode_thread::reversePlayback(){
 void decode_thread::processFrame() {
     QMutexLocker locker(&mutex);
 
+    //停止ボタン押下でシークしていない場合は停止
     if (!video_play_flag && slider_No == Get_Frame_No){
         return;
     }
@@ -159,6 +161,12 @@ void decode_thread::processFrame() {
     if(decode_state==STATE_DECODE_READY&&!decode_state){
         decode_state=STATE_DECODING;
         get_decode_image();
+        decode_state=STATE_WAIT_DECODE_FLAG;
+    }
+
+    //最終フレームまで行ったら自動で最初に戻す
+    if(Get_Frame_No==VideoInfo.max_frames_pts-VideoInfo.pts_per_frame){
+        slider_No=0;
     }
 
     //デコード修了指示が出た場合は全ての処理を完了してから修了を通知
@@ -206,7 +214,7 @@ void decode_thread::initialized_ffmpeg() {
         return;
     }
 
-    double framerate = getFrameRate(fmt_ctx, video_stream_index);
+    VideoInfo.fps = getFrameRate(fmt_ctx, video_stream_index);
 
     //フレームレートを元にタイマー設定
     const char* codec_name = avcodec_get_name(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
@@ -233,11 +241,13 @@ void decode_thread::initialized_ffmpeg() {
 
     //1フレームのPTSを計算
     double time_base_d = av_q2d(fmt_ctx->streams[video_stream_index]->time_base);
-    pts_per_frame = 1.0 / (framerate * time_base_d);
-    qDebug() << "1フレームのPTS数:" << pts_per_frame;
+    VideoInfo.pts_per_frame = 1.0 / (VideoInfo.fps * time_base_d);
+    VideoInfo.max_frames_pts = fmt_ctx->streams[video_stream_index]->duration;
+    VideoInfo.max_framesNo = fmt_ctx->streams[video_stream_index]->duration/VideoInfo.pts_per_frame-1;
+    qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
 
     //スライダー設定
-    emit send_video_info(pts_per_frame, (fmt_ctx->streams[video_stream_index]->duration)/pts_per_frame-1,framerate);
+    emit send_video_info();
 
     //再生
     video_play_flag = true;
@@ -251,17 +261,19 @@ void decode_thread::initialized_ffmpeg() {
 
 // デコーダ設定
 const char*decode_thread::selectDecoder(const char* codec_name) {
+    const char*codec="";
     if (strcmp(codec_name, "h264") == 0) {
-        qDebug()<<"h264_cuvid";
-        return "h264_cuvid";
+        codec="h264_cuvid";
+        qDebug()<<codec;
     } else if (strcmp(codec_name, "hevc") == 0) {
-        qDebug()<<"hevc_cuvid";
-        return "hevc_cuvid";
+        codec="hevc_cuvid";
+        qDebug()<<codec;
     }else if (strcmp(codec_name, "av1") == 0){
-        qDebug()<<"av1_cuvid";
-        return "av1_cuvid";
+        codec="av1_cuvid";
+        qDebug()<<codec;
     }
-    return nullptr;
+    VideoInfo.Codec=codec;
+    return codec;
 }
 
 //フレームレートを取得する関数
@@ -292,7 +304,7 @@ void decode_thread::get_decode_image() {
     //シーク処理
     if (slider_No != Get_Frame_No || video_reverse_flag == true) {
         if (video_reverse_flag == true) {
-            slider_No = slider_No - pts_per_frame;
+            slider_No = slider_No - VideoInfo.pts_per_frame;
         }
         avcodec_flush_buffers(codec_ctx);
         av_seek_frame(fmt_ctx, video_stream_index, slider_No, AVSEEK_FLAG_BACKWARD);
@@ -350,9 +362,7 @@ void decode_thread::ffmpeg_to_CUDA(){
     slider_No = Get_Frame_No;
 
     emit send_decode_image(d_y,pitch_y,d_uv,pitch_uv,width,height);
-    emit send_slider(Get_Frame_No/pts_per_frame);
-
-    decode_state=STATE_WAIT_DECODE_FLAG;
+    emit send_slider(Get_Frame_No/VideoInfo.pts_per_frame);
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 }

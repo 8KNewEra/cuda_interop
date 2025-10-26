@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 #include <QDebug>
 #include <QFile>
+#include "__global__.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -31,7 +32,7 @@ public:
 signals:
     void send_decode_image(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
     void send_slider(int frame_no);
-    void send_video_info(int pts,int maxframe,int framerate);
+    void send_video_info();
     void send_software_image(AVFrame *rgba_frame);
     void finished();
 
@@ -80,6 +81,7 @@ private:
     int Slider_Frame_No;
     int slider_No;
     double pts_per_frame ;
+    int maxFrames;
     QMutex mutex;
 
     QTimer *timer;
@@ -91,6 +93,8 @@ private:
 
     uint8_t *d_y = nullptr, *d_uv = nullptr;
     size_t pitch_y = 0, pitch_uv = 0;
+
+    DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
 };
 
 #endif // DECODE_THREAD_H

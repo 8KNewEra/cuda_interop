@@ -11,7 +11,13 @@ MainWindow::MainWindow(QWidget *parent)
 
     //qDebug() <<cv::getBuildInformation();
 
+    //MainWindow
     ui->setupUi(this);
+
+    //エンコード設定用
+    encodeSetting = new encode_setting();
+    encodeSetting->setWindowModality(Qt::ApplicationModal);
+    encodeSetting->hide();
 
     GLwidgetInitialized();
 
@@ -46,7 +52,9 @@ MainWindow::MainWindow(QWidget *parent)
     QObject::connect(ui->comboBox_speed, &QComboBox::currentTextChanged, this, &MainWindow::set_preview_speed, Qt::QueuedConnection);
     QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::Open_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionCloseFile, &QAction::triggered, this, &MainWindow::Close_Video_File,Qt::QueuedConnection);
-    QObject::connect(ui->actionFileSave, &QAction::triggered, this, &MainWindow::gpu_encode,Qt::QueuedConnection);
+    QObject::connect(ui->actionFileSave, &QAction::triggered, this, &MainWindow::encode_set,Qt::QueuedConnection);
+    QObject::connect(encodeSetting, &encode_setting::signal_encode_start,this, &MainWindow::start_encode,Qt::QueuedConnection);
+    QObject::connect(encodeSetting, &encode_setting::signal_encode_finished,this, &MainWindow::finished_encode,Qt::QueuedConnection);
 }
 
 MainWindow::~MainWindow()
@@ -242,17 +250,11 @@ void MainWindow::fps_view(){
 
 //動画の進捗に合わせてスライダーを動かす
 void MainWindow::slider_control(int Frame_No){
-    if (!ui->Live_horizontalSlider->isSliderDown()&&!encode_flag) {
+    if (!ui->Live_horizontalSlider->isSliderDown()&&!encode_window_flag) {
         ui->Live_horizontalSlider->setValue(Frame_No);
     }
     slider_No=Frame_No;
-
-    //最終フレームまで行ったら再度0フレームへ遷移
-    // qDebug()<<slider_No<<":"<<slider_max;
-    if(slider_No==slider_max&&!encode_flag){
-        emit send_manual_slider(0);
-        emit send_manual_resumeplayback();
-    }
+    //qDebug()<<slider_No;
 }
 
 void MainWindow::set_preview_speed(const QString &text){
@@ -270,13 +272,10 @@ void MainWindow::set_preview_speed(const QString &text){
 }
 
 //動画の範囲に合わせてスライダーの範囲を変更
-void MainWindow::slider_set_range(int pts,int maxframe,int frame_rate){
-    qDebug() << "Framerate:" << framerate;
-    qDebug()<<"MaxFrames:" <<maxframe;
-    framerate=frame_rate;
-    slider_max=maxframe;
-    frame_pts=pts;
-    ui->Live_horizontalSlider->setRange(0, maxframe);
+void MainWindow::slider_set_range(){
+    qDebug() << "Framerate:" << VideoInfo.fps;
+    qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
+    ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
     glWidget->GLresize();
 }
 
@@ -368,7 +367,22 @@ void MainWindow::start_info_thread(){
     infostream->start();
 }
 
-void MainWindow::gpu_encode(){
+void MainWindow::encode_set(){
+    //ウィンドウ起動フラグを立てる
+    encode_window_flag=true;
+
+    //現在のフレーム位置を記憶
+    Now_Frame=slider_No;
+
+    //停止/再生速度を最大に、エンコードは最速でやるため
+    emit send_manual_pause();
+    emit send_decode_speed(1000);
+
+    encodeSetting->slider(0,VideoInfo.max_framesNo);
+    encodeSetting->show();
+}
+
+void MainWindow::start_encode(){
     if(run_decode_thread){
         qDebug()<<"エンコード開始";
 
@@ -376,43 +390,36 @@ void MainWindow::gpu_encode(){
         QElapsedTimer timer;
         timer.start();
 
-        //現在のフレーム位置を記憶
-        int Now_Frame=slider_No;
+        //終了検知
+        bool wasCanceled=false;
+        connect(encodeSetting, &encode_setting::signal_encode_stop, this, [&]() {
+            wasCanceled=true;
+        }, Qt::SingleShotConnection);
 
-        //停止→フレームを0番にシーク
-        encode_flag=true;
-        emit send_manual_pause();
-        emit send_decode_speed(1000);
-        emit send_manual_slider(0);
+        //エンコード開始
+        glWidget->encode_mode(true);
+        glWidget->encode_maxFrame(VideoInfo.max_framesNo);
 
         //FrameNoが0なことを確認
+        emit send_manual_slider(0);
         while (slider_No != 0) {
             QThread::msleep(1);
             QCoreApplication::processEvents();
         }
 
-        // 進捗ダイアログを作成
-        progress = new QProgressDialog("エンコード中...", "キャンセル",1, slider_max, this);
-        progress->setWindowModality(Qt::WindowModal);
-        progress->setMinimumDuration(0);
-        progress->setValue(0);
-
-        //エンコード開始
-        glWidget->encode_mode(encode_flag);
-        glWidget->encode_maxFrame(slider_max);
         emit send_manual_resumeplayback();
 
         // 処理ループ内で更新
         while(true) {
-            //qDebug()<<slider_No<<":"<<slider_max;
-            progress->setValue(slider_No);
+            //qDebug()<<slider_No<<":"<<VideoInfo.max_framesNo;
+            encodeSetting->progress_bar(slider_No);
 
-            if (progress->wasCanceled()){
+            if (wasCanceled){
                 glWidget->encode_maxFrame(slider_No);
                 break;
             }
 
-            if(slider_No>=slider_max-1){
+            if(slider_No>=VideoInfo.max_framesNo){
                 glWidget->encode_maxFrame(slider_No);
                 break;
             }
@@ -421,16 +428,24 @@ void MainWindow::gpu_encode(){
         }
 
         connect(glWidget, &GLWidget::encode_finished, this, [=]() {
-            encode_flag=false;
+            emit send_manual_pause();
+
             double seconds = timer.nsecsElapsed() / 1e9;
             qDebug() << "エンコード終了"
                      << QString::number(seconds, 'f', 3)
                      << "秒";
 
-            emit send_decode_speed(preview_speed);
-            emit send_manual_slider(Now_Frame);
-            emit send_manual_resumeplayback();
-            progress->setValue(slider_max);
+            encodeSetting->progress_bar(0);
+            encodeSetting->encode_end();
+
         }, Qt::SingleShotConnection);
     }
+}
+
+void MainWindow::finished_encode(){
+    encode_window_flag=false;
+    slider_No=Now_Frame;
+    emit send_manual_slider(Now_Frame);
+    emit send_decode_speed(preview_speed);
+    emit send_manual_resumeplayback();
 }

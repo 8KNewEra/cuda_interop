@@ -337,8 +337,8 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
 
     //CUDAカーネルの処理
     size_t pitch_pbo=width*4;
-    CUDA_IMG_Proc->NV12_to_RGBA(d_rgba, pitch_rgba, d_y, pitch_y, d_uv, pitch_uv, height, width);
-    CUDA_IMG_Proc->Gradation(pbo_ptr,pitch_pbo,d_rgba,pitch_rgba,height,width);
+    CUDA_IMG_Proc->NV12_to_RGBA(pbo_ptr, pitch_pbo, d_y, pitch_y, d_uv, pitch_uv, height, width);
+    //CUDA_IMG_Proc->Gradation(pbo_ptr,pitch_pbo,d_rgba,pitch_rgba,height,width);
 
     //PBOリソースのマップを解除し、制御をOpenGLに戻す
     err = cudaGraphicsUnmapResources(1, &cudaResource1, 0);
@@ -407,19 +407,17 @@ void GLWidget::downloadToGLTexture() {
         return;
     }
 
-    if(save_encoder!=nullptr){
+    if(save_encoder!=nullptr&&FrameNo<MaxFrame){
         save_encoder->encode(d_y,pitch_y,d_uv,pitch_uv);
-    }
-
-    //qDebug()<<FrameNo<<":"<<MaxFrame;
-
-    if(FrameNo>=MaxFrame){
+    }else{
         delete save_encoder;
         save_encoder=nullptr;
         encode_flag=false;
 
         emit encode_finished();
     }
+
+    //qDebug()<<FrameNo<<":"<<MaxFrame;
 }
 
 void GLWidget::encode_mode(bool flag){

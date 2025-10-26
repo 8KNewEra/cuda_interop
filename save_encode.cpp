@@ -5,64 +5,22 @@ save_encode::save_encode(int h,int w) {
     height_=h;
     width_=w;
     frame_index=0;
-    fps = 120;
-    pts_step = 15000/60;
-
-    //codec_ctxをnullptrで初期化
-    codec_ctx = nullptr;
+    qDebug()<<encode_settings.Codec;
+    qDebug()<<encode_settings.gop_size;
+    qDebug()<<encode_settings.b_frames;
+    qDebug()<<encode_settings.split_encode_mode;
+    qDebug()<<encode_settings.pass_mode;
+    qDebug()<<encode_settings.rc_mode;
+    qDebug()<<encode_settings.preset;
+    qDebug()<<encode_settings.tune;
+    qDebug()<<encode_settings.save_fps;
+    qDebug()<<encode_settings.target_bit_rate;
+    qDebug()<<encode_settings.max_bit_rate;
 
     //CUDA関連初期化（先に必要な ctx ができる）
-    initialized_ffmpeg();
-
-    //エンコーダの取得とコンテキスト作成
-    const AVCodec* codec = avcodec_find_encoder_by_name("av1_nvenc");
-    if (!codec) throw std::runtime_error("hevc_nvenc codec not found");
-
-    codec_ctx = avcodec_alloc_context3(codec);
-    if (!codec_ctx) throw std::runtime_error("Failed to allocate AVCodecContext");
-
-    //これは codec_ctx->pix_fmt に設定するものです
-    enum AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
-    for (int i = 0; ; i++) {
-        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
-        if (!config) {
-            fprintf(stderr, "Encoder %s does not support any hardware config.\n", codec->name);
-            break;
-        }
-        if (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX ) {
-            hw_pix_fmt = config->pix_fmt; // この config->pix_fmt が NVENC が実際に期待するフォーマットです
-            break;
-        }
-    }
-    if (hw_pix_fmt == AV_PIX_FMT_NONE) {
-        fprintf(stderr, "No suitable hardware pixel format found for encoder %s.\n", codec->name);
-    }
-
-    codec_ctx->width = width_;
-    codec_ctx->height = height_;
-    codec_ctx->pix_fmt = AV_PIX_FMT_CUDA;
-
-    fr = {fps, 1};
-    tb = {1, fps * pts_step};
-    codec_ctx->time_base = tb;
-    codec_ctx->framerate = fr;
-    codec_ctx->gop_size =30;
-    codec_ctx->max_b_frames = 0;
-    codec_ctx->bit_rate = 200 * 1000 * 1000;
-
-    //初期化された hw_* を参照
-    codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
-    codec_ctx->hw_frames_ctx = av_buffer_ref(hw_frames_ctx);
-
-    //スプリットエンコードを有効化
-    AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "split_encode_mode", "1", 0);
-
-    int ret = avcodec_open2(codec_ctx, codec, &opts);
-    if (ret < 0) throw std::runtime_error("Failed to open codec");
-    av_dict_free(&opts);
-
-    initialized_output("D:/test2.mp4");
+    initialized_ffmpeg_hardware_context();
+    initialized_ffmpeg_codec_context();
+    initialized_ffmpeg_output(encode_settings.Save_Path);
 }
 
 save_encode::~save_encode() {
@@ -124,7 +82,76 @@ save_encode::~save_encode() {
     qDebug() << "save_encode: Destructor called";
 }
 
-void save_encode::initialized_ffmpeg() {
+void save_encode::initialized_ffmpeg_codec_context(){
+    //エンコーダの取得とコンテキスト作成
+    const AVCodec* codec = avcodec_find_encoder_by_name(encode_settings.Codec.c_str());
+    if (!codec) throw std::runtime_error("hevc_nvenc codec not found");
+
+    codec_ctx = avcodec_alloc_context3(codec);
+    if (!codec_ctx) throw std::runtime_error("Failed to allocate AVCodecContext");
+
+    //これは codec_ctx->pix_fmt に設定するものです
+    enum AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
+    for (int i = 0; ; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+        if (!config) {
+            fprintf(stderr, "Encoder %s does not support any hardware config.\n", codec->name);
+            break;
+        }
+        if (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX ) {
+            hw_pix_fmt = config->pix_fmt; // この config->pix_fmt が NVENC が実際に期待するフォーマットです
+            break;
+        }
+    }
+    if (hw_pix_fmt == AV_PIX_FMT_NONE) {
+        fprintf(stderr, "No suitable hardware pixel format found for encoder %s.\n", codec->name);
+    }
+
+    codec_ctx->width = width_;
+    codec_ctx->height = height_;
+    codec_ctx->pix_fmt = hw_pix_fmt;
+
+    fps = encode_settings.save_fps;
+    pts_step = 15000 / 60;
+    fr = { fps, 1 };
+    tb = { 1, fps * pts_step };
+    codec_ctx->time_base = tb;
+    codec_ctx->framerate = fr;
+    codec_ctx->bit_rate=1000000;
+
+    //初期化された hw_* を参照
+    codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+    codec_ctx->hw_frames_ctx = av_buffer_ref(hw_frames_ctx);
+
+    //ビットレート周りの設定
+    AVDictionary* opts = nullptr;
+
+    // 共通オプション
+    av_dict_set(&opts, "preset", encode_settings.preset.c_str(), 0);
+    av_dict_set(&opts, "tune", encode_settings.tune.c_str(), 0);
+    av_dict_set(&opts, "rc", encode_settings.rc_mode.c_str(), 0);
+    av_dict_set_int(&opts, "b:v", encode_settings.target_bit_rate, 0);
+    av_dict_set_int(&opts, "maxrate", encode_settings.max_bit_rate, 0);
+    //av_dict_set_int(&opts, "bufsize", encode_settings.buffer_size, 0);
+    av_dict_set_int(&opts, "g", encode_settings.gop_size, 0);
+    av_dict_set_int(&opts, "bf", encode_settings.b_frames, 0);
+    av_dict_set(&opts, "split_encode_mode", encode_settings.split_encode_mode.c_str(), 0);
+
+    // 1pass / 2pass 切り替え
+    if (encode_settings.pass_mode == "2pass-quarter") {
+        av_dict_set(&opts, "multi_pass", "2pass-quarter-res", 0);
+    } else if (encode_settings.pass_mode == "2pass-full") {
+        av_dict_set(&opts, "multi_pass", "2pass-full-res", 0);
+    } else {
+        av_dict_set(&opts, "multi_pass", "1pass", 0);
+    }
+
+    int ret = avcodec_open2(codec_ctx, codec, &opts);
+    if (ret < 0) throw std::runtime_error("Failed to open codec");
+    av_dict_free(&opts);
+}
+
+void save_encode::initialized_ffmpeg_hardware_context() {
     int ret = 0;
 
     ret = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
@@ -152,7 +179,7 @@ void save_encode::initialized_ffmpeg() {
     if (ret < 0) throw std::runtime_error("Failed to alloc hw_frame");
 }
 
-void save_encode::initialized_output(const std::string& path){
+void save_encode::initialized_ffmpeg_output(const std::string& path){
     int ret = 0;
 
     ret = avformat_alloc_output_context2(&fmt_ctx, nullptr, nullptr, path.c_str());
