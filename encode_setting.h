@@ -7,6 +7,8 @@
 #include <QTextStream>
 #include <QDebug>
 #include <QFileDialog>
+#include <QListView>
+#include <QComboBox>
 #include "__global__.h"
 
 namespace Ui {
@@ -40,7 +42,10 @@ private:
     void init_txt();
     void write_txt();
     int foundIndex(QString key,const QString& item);
-    QString makeUniqueFileName(const QString &filePath);
+    void extracted(QListView *&view, int &target_index, bool &flag);
+    void combo_index_control(QComboBox* comboBox,QListView *view, int ini_index,int target_index, bool flag,bool index_change_flag);
+    void combo_index_control2();
+    QString file_check(const QString &filePath);
     struct SettingEntry {
         QString codec;
         int framerate_items;

@@ -5,17 +5,18 @@ save_encode::save_encode(int h,int w) {
     height_=h;
     width_=w;
     frame_index=0;
-    qDebug()<<encode_settings.Codec;
-    qDebug()<<encode_settings.gop_size;
-    qDebug()<<encode_settings.b_frames;
-    qDebug()<<encode_settings.split_encode_mode;
-    qDebug()<<encode_settings.pass_mode;
-    qDebug()<<encode_settings.rc_mode;
-    qDebug()<<encode_settings.preset;
-    qDebug()<<encode_settings.tune;
-    qDebug()<<encode_settings.save_fps;
-    qDebug()<<encode_settings.target_bit_rate;
-    qDebug()<<encode_settings.max_bit_rate;
+    // qDebug()<<encode_settings.Codec;
+    // qDebug()<<encode_settings.gop_size;
+    // qDebug()<<encode_settings.b_frames;
+    // qDebug()<<encode_settings.split_encode_mode;
+    // qDebug()<<encode_settings.pass_mode;
+    // qDebug()<<encode_settings.rc_mode;
+    // qDebug()<<encode_settings.preset;
+    // qDebug()<<encode_settings.tune;
+    // qDebug()<<encode_settings.save_fps;
+    // qDebug()<<encode_settings.target_bit_rate;
+    // qDebug()<<encode_settings.max_bit_rate;
+    // qDebug()<<encode_settings.crf;
 
     //CUDA関連初期化（先に必要な ctx ができる）
     initialized_ffmpeg_hardware_context();
@@ -117,7 +118,6 @@ void save_encode::initialized_ffmpeg_codec_context(){
     tb = { 1, fps * pts_step };
     codec_ctx->time_base = tb;
     codec_ctx->framerate = fr;
-    codec_ctx->bit_rate=1000000;
 
     //初期化された hw_* を参照
     codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
@@ -126,13 +126,25 @@ void save_encode::initialized_ffmpeg_codec_context(){
     //ビットレート周りの設定
     AVDictionary* opts = nullptr;
 
+    // cbr, vbr, crf 切り替え
+    if (encode_settings.rc_mode == "crf") {
+        // --- CRF モード ---
+        av_dict_set(&opts, "crf", std::to_string(encode_settings.crf).c_str(), 0);
+    } else if (encode_settings.rc_mode == "vbr") {
+        // --- VBR モード ---
+        codec_ctx->bit_rate = encode_settings.target_bit_rate;
+        codec_ctx->rc_max_rate = encode_settings.max_bit_rate;
+        codec_ctx->rc_buffer_size = encode_settings.max_bit_rate;
+    } else if (encode_settings.rc_mode == "cbr") {
+        // --- CBR モード ---
+        codec_ctx->bit_rate = encode_settings.target_bit_rate;
+        codec_ctx->rc_max_rate = encode_settings.max_bit_rate;
+        codec_ctx->rc_buffer_size = encode_settings.target_bit_rate;
+    }
+
     // 共通オプション
     av_dict_set(&opts, "preset", encode_settings.preset.c_str(), 0);
     av_dict_set(&opts, "tune", encode_settings.tune.c_str(), 0);
-    av_dict_set(&opts, "rc", encode_settings.rc_mode.c_str(), 0);
-    av_dict_set_int(&opts, "b:v", encode_settings.target_bit_rate, 0);
-    av_dict_set_int(&opts, "maxrate", encode_settings.max_bit_rate, 0);
-    //av_dict_set_int(&opts, "bufsize", encode_settings.buffer_size, 0);
     av_dict_set_int(&opts, "g", encode_settings.gop_size, 0);
     av_dict_set_int(&opts, "bf", encode_settings.b_frames, 0);
     av_dict_set(&opts, "split_encode_mode", encode_settings.split_encode_mode.c_str(), 0);
