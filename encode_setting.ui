@@ -1,0 +1,640 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>encode_setting</class>
+ <widget class="QWidget" name="encode_setting">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>515</width>
+    <height>464</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>エンコード設定</string>
+  </property>
+  <widget class="QPushButton" name="encodeStart_pushbutton">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>432</y>
+     <width>75</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>エンコード開始</string>
+   </property>
+  </widget>
+  <widget class="QProgressBar" name="encode_progressBar">
+   <property name="geometry">
+    <rect>
+     <x>180</x>
+     <y>432</y>
+     <width>321</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="value">
+    <number>0</number>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="encodecancel_pushButton">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>93</x>
+     <y>432</y>
+     <width>75</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>キャンセル</string>
+   </property>
+  </widget>
+  <widget class="QGroupBox" name="filepath_groupBox">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>6</y>
+     <width>491</width>
+     <height>81</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <pointsize>11</pointsize>
+    </font>
+   </property>
+   <property name="title">
+    <string>ファイル名</string>
+   </property>
+   <widget class="QLabel" name="label_2">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>34</y>
+      <width>49</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>保存パス</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="filesave_pushButton">
+    <property name="geometry">
+     <rect>
+      <x>390</x>
+      <y>31</y>
+      <width>75</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>保存</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_filepath">
+    <property name="geometry">
+     <rect>
+      <x>81</x>
+      <y>34</y>
+      <width>311</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="allow_overwrite_checkBox">
+    <property name="geometry">
+     <rect>
+      <x>385</x>
+      <y>59</y>
+      <width>101</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>上書きを許可</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="normalsetting_groupBox">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>91</y>
+     <width>491</width>
+     <height>101</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <pointsize>11</pointsize>
+    </font>
+   </property>
+   <property name="title">
+    <string>一般設定</string>
+   </property>
+   <widget class="QComboBox" name="comboBox_codec">
+    <property name="geometry">
+     <rect>
+      <x>120</x>
+      <y>34</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_3">
+    <property name="geometry">
+     <rect>
+      <x>35</x>
+      <y>35</y>
+      <width>49</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>コーデック</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_4">
+    <property name="geometry">
+     <rect>
+      <x>261</x>
+      <y>35</y>
+      <width>81</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>フレームレート</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_framerate">
+    <property name="geometry">
+     <rect>
+      <x>370</x>
+      <y>34</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_6">
+    <property name="geometry">
+     <rect>
+      <x>17</x>
+      <y>67</y>
+      <width>101</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>スプリットエンコード</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_splitencode">
+    <property name="geometry">
+     <rect>
+      <x>120</x>
+      <y>66</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_7">
+    <property name="geometry">
+     <rect>
+      <x>259</x>
+      <y>67</y>
+      <width>71</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>エンコードパス</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_encodepass">
+    <property name="geometry">
+     <rect>
+      <x>370</x>
+      <y>66</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="advancesetting_groupBox">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>197</y>
+     <width>491</width>
+     <height>226</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <pointsize>11</pointsize>
+    </font>
+   </property>
+   <property name="title">
+    <string>詳細設定</string>
+   </property>
+   <widget class="QSlider" name="horizontalSlider_targetbitrate">
+    <property name="geometry">
+     <rect>
+      <x>120</x>
+      <y>132</y>
+      <width>281</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="orientation">
+     <enum>Qt::Orientation::Horizontal</enum>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_targetbitrate">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>133</y>
+      <width>111</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>ターゲットビットレート</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_8">
+    <property name="geometry">
+     <rect>
+      <x>40</x>
+      <y>33</y>
+      <width>49</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>プリセット</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_9">
+    <property name="geometry">
+     <rect>
+      <x>252</x>
+      <y>33</y>
+      <width>91</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>最適化プロファイル</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_10">
+    <property name="geometry">
+     <rect>
+      <x>38</x>
+      <y>65</y>
+      <width>51</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>GOPサイズ</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_11">
+    <property name="geometry">
+     <rect>
+      <x>30</x>
+      <y>97</y>
+      <width>81</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>ビットレート設定</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_maxbitrate">
+    <property name="geometry">
+     <rect>
+      <x>19</x>
+      <y>165</y>
+      <width>81</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>最大ビットレート</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_preset">
+    <property name="geometry">
+     <rect>
+      <x>120</x>
+      <y>32</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_profile">
+    <property name="geometry">
+     <rect>
+      <x>370</x>
+      <y>32</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_gop">
+    <property name="geometry">
+     <rect>
+      <x>120</x>
+      <y>64</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QSlider" name="horizontalSlider_maxbitrate">
+    <property name="geometry">
+     <rect>
+      <x>120</x>
+      <y>163</y>
+      <width>281</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="orientation">
+     <enum>Qt::Orientation::Horizontal</enum>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_rc">
+    <property name="geometry">
+     <rect>
+      <x>120</x>
+      <y>95</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_13">
+    <property name="geometry">
+     <rect>
+      <x>254</x>
+      <y>65</y>
+      <width>81</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>Bフレーム挿入数</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_b_frame">
+    <property name="geometry">
+     <rect>
+      <x>370</x>
+      <y>64</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_targetbitrare_value">
+    <property name="geometry">
+     <rect>
+      <x>404</x>
+      <y>133</y>
+      <width>61</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>80 Mbps</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_maxbitrate_value">
+    <property name="geometry">
+     <rect>
+      <x>404</x>
+      <y>165</y>
+      <width>61</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>120 Mbps</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_crf">
+    <property name="geometry">
+     <rect>
+      <x>19</x>
+      <y>194</y>
+      <width>81</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>品質(CRF)</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_crf_value">
+    <property name="geometry">
+     <rect>
+      <x>404</x>
+      <y>194</y>
+      <width>61</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>120</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QSlider" name="horizontalSlider_crf">
+    <property name="geometry">
+     <rect>
+      <x>120</x>
+      <y>192</y>
+      <width>281</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="orientation">
+     <enum>Qt::Orientation::Horizontal</enum>
+    </property>
+   </widget>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

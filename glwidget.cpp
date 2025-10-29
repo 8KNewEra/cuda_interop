@@ -9,7 +9,7 @@ GLWidget::GLWidget(QWindow *parent)
     cudaResource2(nullptr),
     inputTextureID(0)
 {
-    sobelfilterEnabled = 1;
+    sobelfilterEnabled = 0;
 
     if(CUDA_IMG_Proc==nullptr){
         CUDA_IMG_Proc=new CUDA_ImageProcess();
@@ -93,62 +93,107 @@ void GLWidget::initializeGL() {
     emit initialized();
 }
 
-//リサイズ
-void GLWidget::resizeGL(int w, int h) {
-    viewport_height=h;
-    viewport_width=w;
-    glViewport(0, 0, w, h);
+void GLWidget::OpenGL_Rendering(){
+    //fboターゲット
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width_, height_);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    //シェーダの設定
+    program.bind();
+    program.setUniformValue("tex", 0);
+    program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
+    program.setUniformValue("u_filterEnabled", sobelfilterEnabled);
+
+    //入力テクスチャ(CUDAから来たもの)を設定
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, inputTextureID);
+
+    //描画エリア、fboTextureIdに描画
+    glBindVertexArray(vao);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+    program.release();
+
+    if (encode_flag) {
+        // GPUエンコード用処理
+        downloadToGLTexture();
+    } else {
+        //描画処理
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // FBO → 画面へ転送
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glBlitFramebuffer(
+            0, 0, width_, height_,
+            x0, y0, x1, y1,
+            GL_COLOR_BUFFER_BIT,
+            GL_LINEAR
+            );
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        context()->swapBuffers(context()->surface());
+    }
 }
 
-//描画
-void GLWidget::paintGL() {
-    if(encode_flag){
-        //fboターゲット
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, width_, height_);
-        glClear(GL_COLOR_BUFFER_BIT);
+//アスペクト比を合わせてリサイズ
+void GLWidget::GLresize() {
+    //現在のウィンドウのDPIスケールを取得
+    float dpr = devicePixelRatio();
 
-        //シェーダの設定
-        program.bind();
-        program.setUniformValue("tex", 0);
-        program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
-        program.setUniformValue("u_filterEnabled", sobelfilterEnabled);
+    //実ピクセル単位のビューポートサイズを取得
+    GLint viewportWidth  = static_cast<GLint>(this->width()  * dpr);
+    GLint viewportHeight = static_cast<GLint>(this->height() * dpr);
 
-        //入力テクスチャ(CUDAから来たもの)を設定
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, inputTextureID);
+    //ソース（動画/FBO）のサイズ
+    float srcAspect = static_cast<float>(width_) / static_cast<float>(height_);
+    float dstAspect = static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
 
-        //描画エリア、fboTextureIdに描画
-        glBindVertexArray(vao);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
-        glBindVertexArray(0);
-        program.release();
-
-        downloadToGLTexture();
-    }else{
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glClear(GL_COLOR_BUFFER_BIT);
-
-        program.bind();
-        program.setUniformValue("tex", 0);
-        program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
-        program.setUniformValue("u_filterEnabled", sobelfilterEnabled);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, inputTextureID);
-
-        glBindVertexArray(vao);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
-        glBindVertexArray(0);
-        program.release();
+    if (srcAspect > dstAspect) {
+        int displayHeight = static_cast<int>(viewportWidth / srcAspect);
+        int yOffset = (viewportHeight - displayHeight) / 2;
+        x0 = 0;
+        y0 = yOffset;
+        x1 = viewportWidth;
+        y1 = yOffset + displayHeight;
+    } else {
+        int displayWidth = static_cast<int>(viewportHeight * srcAspect);
+        int xOffset = (viewportWidth - displayWidth) / 2;
+        x0 = xOffset;
+        y0 = 0;
+        x1 = xOffset + displayWidth;
+        y1 = viewportHeight;
     }
-    g_fps+=1;
-    emit decode_please();
+}
+
+//画面をリセット(真っ黒にする)
+void GLWidget::GLreset(){
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    context()->swapBuffers(context()->surface());
 }
 
 //CUDA→OpenGLの初期化、登録など
 void GLWidget::initCudaTexture(int width,int height) {
-    //PBO作成
+    //古いリソースを破棄
+    if (cudaResource1) {
+        cudaGraphicsUnregisterResource(cudaResource1);
+        cudaResource1 = nullptr;
+    }
+
+    if (input_pbo) {
+        glDeleteBuffers(1, &input_pbo);
+        input_pbo = 0;
+    }
+
+    if (inputTextureID) {
+        glDeleteTextures(1, &inputTextureID);
+        inputTextureID = 0;
+    }
+
+    //新しい解像度で作り直し
     glGenBuffers(1, &input_pbo);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, input_pbo);
     glBufferData(GL_PIXEL_PACK_BUFFER, width * height * 4, NULL, GL_DYNAMIC_DRAW);
@@ -160,49 +205,85 @@ void GLWidget::initCudaTexture(int width,int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    //CUDAGraphicResorceとして登録
+    //CUDAリソース再登録
     cudaError_t err = cudaGraphicsGLRegisterBuffer(&cudaResource1, input_pbo, cudaGraphicsRegisterFlagsWriteDiscard);
     if (err != cudaSuccess) {
         qDebug() << "Failed to register PBO: " << cudaGetErrorString(err);
         return;
     }
+
 }
 
 //OpenGL→CUDAの初期化、登録など
 void GLWidget::initTextureCuda(int width,int height) {
-    //PBO作成
-    glGenBuffers(1, &output_pbo);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, output_pbo);
-    glBufferData(GL_PIXEL_PACK_BUFFER, width * height * 4, NULL, GL_STREAM_READ);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        //既存リソースの破棄
+        if (cudaResource2) {
+            cudaGraphicsUnregisterResource(cudaResource2);
+            cudaResource2 = nullptr;
+        }
 
-    //FBO登録
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glGenTextures(1, &fboTextureID);
-    glBindTexture(GL_TEXTURE_2D, fboTextureID);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTextureID, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (output_pbo) {
+            glDeleteBuffers(1, &output_pbo);
+            output_pbo = 0;
+        }
 
-    //CUDAGraphicResorceとして登録
-    cudaError_t err = cudaGraphicsGLRegisterBuffer(&cudaResource2, output_pbo, cudaGraphicsRegisterFlagsReadOnly);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsGLRegisterImage (fbo) error:" << cudaGetErrorString(err);
-        cudaResource2 = nullptr;
-    }
+        if (fboTextureID) {
+            glDeleteTextures(1, &fboTextureID);
+            fboTextureID = 0;
+        }
+
+        if (fbo) {
+            glDeleteFramebuffers(1, &fbo);
+            fbo = 0;
+        }
+
+        //新しいサイズで再作成
+        glGenBuffers(1, &output_pbo);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, output_pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, width * height * 4, NULL, GL_STREAM_READ);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glGenTextures(1, &fboTextureID);
+        glBindTexture(GL_TEXTURE_2D, fboTextureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTextureID, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        //CUDA登録
+        cudaError_t err = cudaGraphicsGLRegisterBuffer(&cudaResource2, output_pbo, cudaGraphicsRegisterFlagsReadOnly);
+        if (err != cudaSuccess) {
+            qDebug() << "cudaGraphicsGLRegisterBuffer (output_pbo) error:" << cudaGetErrorString(err);
+            cudaResource2 = nullptr;
+        }
 }
 
 //初回、解像度が変わった場合再Malloc
-void GLWidget::initCudaMalloc(int width,int height){
-    if (!d_y||!d_uv) {
-        cudaMallocPitch(&d_y, &pitch_y, width, height);
-        cudaMallocPitch(&d_uv, &pitch_uv, width, height / 2);
-        cudaMallocPitch(&d_rgba, &pitch_rgba, width*4, height);
+void GLWidget::initCudaMalloc(int width, int height)
+{
+    //すでに確保済みなら一度解放
+    if (d_y) {
+        cudaFree(d_y);
+        d_y = nullptr;
     }
+    if (d_uv) {
+        cudaFree(d_uv);
+        d_uv = nullptr;
+    }
+    if (d_rgba) {
+        cudaFree(d_rgba);
+        d_rgba = nullptr;
+    }
+
+    //再確保
+    cudaMallocPitch(&d_y, &pitch_y, width, height);
+    cudaMallocPitch(&d_uv, &pitch_uv, width, height / 2);
+    cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
 }
+
 
 //CUDAからOpenGLへ転送
 void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,int a) {
@@ -223,6 +304,7 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
         initTextureCuda(width,height);
         width_=width;
         height_=height;
+        GLresize();
         emit decode_please();
     }
 
@@ -255,8 +337,8 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
 
     //CUDAカーネルの処理
     size_t pitch_pbo=width*4;
-    CUDA_IMG_Proc->NV12_to_RGBA(d_rgba, pitch_rgba, d_y, pitch_y, d_uv, pitch_uv, height, width);
-    CUDA_IMG_Proc->Gradation(pbo_ptr,pitch_pbo,d_rgba,pitch_rgba,height,width);
+    CUDA_IMG_Proc->NV12_to_RGBA(pbo_ptr, pitch_pbo, d_y, pitch_y, d_uv, pitch_uv, height, width);
+    //CUDA_IMG_Proc->Gradation(pbo_ptr,pitch_pbo,d_rgba,pitch_rgba,height,width);
 
     //PBOリソースのマップを解除し、制御をOpenGLに戻す
     err = cudaGraphicsUnmapResources(1, &cudaResource1, 0);
@@ -275,8 +357,7 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 
-    //描画をトリガー
-    update();
+    OpenGL_Rendering();
 }
 
 //OpenGLからCUDAへ転送
@@ -326,19 +407,17 @@ void GLWidget::downloadToGLTexture() {
         return;
     }
 
-    if(save_encoder!=nullptr){
+    if(save_encoder!=nullptr&&FrameNo<MaxFrame){
         save_encoder->encode(d_y,pitch_y,d_uv,pitch_uv);
-    }
-
-    //qDebug()<<FrameNo<<":"<<MaxFrame;
-
-    if(FrameNo>=MaxFrame){
+    }else{
         delete save_encoder;
         save_encoder=nullptr;
         encode_flag=false;
 
         emit encode_finished();
     }
+
+    //qDebug()<<FrameNo<<":"<<MaxFrame;
 }
 
 void GLWidget::encode_mode(bool flag){
