@@ -7,7 +7,6 @@
 #include <QStyleFactory>
 
 int g_gpu_usage;
-int g_fps;
 
 int main(int argc, char *argv[])
 {

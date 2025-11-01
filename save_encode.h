@@ -17,8 +17,6 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 }
 
-extern int g_fps;
-
 class save_encode
 {
 public:

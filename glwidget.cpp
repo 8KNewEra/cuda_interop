@@ -89,6 +89,8 @@ void GLWidget::initializeGL() {
 
     glBindVertexArray(0);
 
+    fpsTimer.start();
+
     initialize_completed_flag=true;
     emit initialized();
 }
@@ -133,6 +135,29 @@ void GLWidget::OpenGL_Rendering(){
             GL_LINEAR
             );
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // --- FPSを算出 ---
+        fpsCount++;
+        if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
+            fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
+            fpsCount = 0;
+            fpsTimer.restart();
+        }
+
+        //動画情報描画
+        QPainter painter(this);
+        painter.setPen(Qt::white);
+        painter.setFont(QFont("Consolas", 16));
+        painter.drawText(2, 20, "OpenGL Device:" + QString::fromLatin1((const char*)glGetString(GL_RENDERER))+"\n");
+        painter.drawText(2, 40, QString("FPS: %1").arg(fps, 0, 'f', 1));
+        painter.drawText(2, 60, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
+        painter.drawText(2, 80, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
+        painter.drawText(2, 100, "Codec:" + QString::fromStdString(VideoInfo.Codec)+"\n");
+        painter.drawText(2, 120, "Resolution:" + QString::number(VideoInfo.width)+"×"+QString::number(VideoInfo.height)+"\n");
+        painter.drawText(2, 140, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
+        painter.drawText(2, 160, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
+        painter.drawText(2, 180, "Current Frame:" + QString::number(VideoInfo.current_frameNo)+"\n");
+        painter.end();
 
         context()->swapBuffers(context()->surface());
     }
@@ -286,7 +311,7 @@ void GLWidget::initCudaMalloc(int width, int height)
 
 
 //CUDAからOpenGLへ転送
-void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,int a) {
+void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int a) {
     // QElapsedTimer timer;
     // timer.start();
 
@@ -298,12 +323,12 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
     };
 
     //解像度の変更に対応
-    if (width != width_ || height != height_) {
-        initCudaMalloc(width,height);
-        initCudaTexture(width,height);
-        initTextureCuda(width,height);
-        width_=width;
-        height_=height;
+    if (VideoInfo.width != width_ || VideoInfo.height != height_) {
+        initCudaMalloc(VideoInfo.width,VideoInfo.height);
+        initCudaTexture(VideoInfo.width,VideoInfo.height);
+        initTextureCuda(VideoInfo.width,VideoInfo.height);
+        width_=VideoInfo.width;
+        height_=VideoInfo.height;
         GLresize();
         emit decode_please();
     }
@@ -336,8 +361,8 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
     }
 
     //CUDAカーネルの処理
-    size_t pitch_pbo=width*4;
-    CUDA_IMG_Proc->NV12_to_RGBA(pbo_ptr, pitch_pbo, d_y, pitch_y, d_uv, pitch_uv, height, width);
+    size_t pitch_pbo=width_*4;
+    CUDA_IMG_Proc->NV12_to_RGBA(pbo_ptr, pitch_pbo, d_y, pitch_y, d_uv, pitch_uv, height_, width_);
     //CUDA_IMG_Proc->Gradation(pbo_ptr,pitch_pbo,d_rgba,pitch_rgba,height,width);
 
     //PBOリソースのマップを解除し、制御をOpenGLに戻す
@@ -351,7 +376,7 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
     //OpenGLのコマンドで、PBOからテクスチャへデータを転送する
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, input_pbo);
     glBindTexture(GL_TEXTURE_2D, inputTextureID);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
@@ -407,17 +432,17 @@ void GLWidget::downloadToGLTexture() {
         return;
     }
 
-    if(save_encoder!=nullptr&&FrameNo<MaxFrame){
+    if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
         save_encoder->encode(d_y,pitch_y,d_uv,pitch_uv);
+        encode_FrameCount++;
     }else{
         delete save_encoder;
         save_encoder=nullptr;
         encode_flag=false;
+        encode_FrameCount=0;
 
         emit encode_finished();
     }
-
-    //qDebug()<<FrameNo<<":"<<MaxFrame;
 }
 
 void GLWidget::encode_mode(bool flag){

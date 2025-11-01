@@ -330,7 +330,7 @@ void encode_setting::init_txt(){
             out << "preset:\"p4\"\n";
             out << "tune:\"default\"\n";
             out << "b_frames:\"0\"\n";
-            out << "gop_size:\"1\"\n";
+            out << "gop_size:\"15\"\n";
             out << "split_encode_mode:\"0\"\n";
             out << "pass_mode:\"1pass\"\n";
             out << "rc_mode:\"cbr\"\n";

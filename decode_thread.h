@@ -20,7 +20,6 @@ extern "C" {
 }
 
 extern int g_gpu_usage;
-extern int g_fps;
 
 class decode_thread : public QObject {
     Q_OBJECT
@@ -30,11 +29,11 @@ public:
     ~decode_thread() override;
 
 signals:
-    void send_decode_image(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
-    void send_slider(int frame_no);
+    void send_decode_image(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int slider);
     void send_video_info();
     void send_software_image(AVFrame *rgba_frame);
     void finished();
+    void decode_end();
 
 public slots:
     void get_decode_image();
@@ -59,7 +58,9 @@ private:
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     void ffmpeg_to_CUDA();
+    void get_last_frame_pts();
     void ffmpeg_software_process();
+
 
     bool video_play_flag;
     bool video_reverse_flag;
@@ -77,8 +78,7 @@ private:
     const AVCodec* decoder;
     int video_stream_index;
 
-    int Get_Frame_No;
-    int Slider_Frame_No;
+    uint64_t Get_Frame_No;
     int slider_No;
     double pts_per_frame ;
     int maxFrames;

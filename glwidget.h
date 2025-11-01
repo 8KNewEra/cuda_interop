@@ -9,6 +9,7 @@
 #include <QOpenGLShader>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLFunctions>
+#include <QPainter>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <QTimer>
@@ -28,7 +29,7 @@ public:
     void initCudaTexture(int width,int height);
     void initCudaMalloc(int width,int height);
     void downloadToGLTexture();
-    void uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,int a);
+    void uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int a);
     void encode_mode(bool flag);
     void encode_maxFrame(int maxFrame);
     void GLresize();
@@ -63,11 +64,16 @@ private:
 
     int FrameNo=0;
     int MaxFrame=0;
+    int encode_FrameCount=0;
 
     uint8_t *d_y = nullptr, *d_uv = nullptr,*d_rgba=nullptr;
     size_t pitch_y = 0, pitch_uv = 0,pitch_rgba=0;
 
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
+
+    QElapsedTimer fpsTimer;
+    int fpsCount = 0;
+    double fps = 0.0;
 };
 
 

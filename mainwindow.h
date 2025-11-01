@@ -22,8 +22,6 @@
 #include <QFileDialog>
 #include <QShortcut>
 
-extern int g_fps;
-
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class MainWindow;
@@ -66,14 +64,13 @@ private:
     void start_decode_thread();
     void stop_decode_thread();
     void set_preview_speed(const QString &text);
-    void decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width);
+    void decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int slider);
     QThread *decode__thread;
     decode_thread *decodestream;
     bool run_decode_thread=false;
     int preview_speed=30;
 
     //スライダー
-    void slider_control(int Frame_No);
     void slider_set_range();
     int slider_No=1;
     int Now_Frame;
@@ -83,7 +80,6 @@ private:
     void fps_view();
     QThread *fps_view_thread;
     fps_thread *fpsstream;
-    int fps_count=0;
 
     //使用率取得
     void start_info_thread();

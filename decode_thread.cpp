@@ -1,4 +1,5 @@
 #include "decode_thread.h"
+#include "qfileinfo.h"
 #include <QDebug>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
@@ -17,6 +18,9 @@ extern "C" {
 
 decode_thread::decode_thread(QString FilePath, QObject *parent)
     : QObject(parent), video_play_flag(true), timer(new QTimer(this))  {
+    QFileInfo fileInfo(FilePath);
+    VideoInfo.Name = fileInfo.completeBaseName().toStdString()+".mp4";
+
     VideoInfo.Path = FilePath.toStdString();
     File_byteArray = FilePath.toUtf8();
     input_filename = File_byteArray.constData();
@@ -164,11 +168,6 @@ void decode_thread::processFrame() {
         decode_state=STATE_WAIT_DECODE_FLAG;
     }
 
-    //最終フレームまで行ったら自動で最初に戻す
-    if(Get_Frame_No==VideoInfo.max_frames_pts-VideoInfo.pts_per_frame){
-        slider_No=0;
-    }
-
     //デコード修了指示が出た場合は全ての処理を完了してから修了を通知
     if(thread_stop_flag){
         emit finished();
@@ -242,9 +241,10 @@ void decode_thread::initialized_ffmpeg() {
     //1フレームのPTSを計算
     double time_base_d = av_q2d(fmt_ctx->streams[video_stream_index]->time_base);
     VideoInfo.pts_per_frame = 1.0 / (VideoInfo.fps * time_base_d);
-    VideoInfo.max_frames_pts = fmt_ctx->streams[video_stream_index]->duration;
-    VideoInfo.max_framesNo = fmt_ctx->streams[video_stream_index]->duration/VideoInfo.pts_per_frame-1;
     qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
+
+    //最終フレームptsを取得
+    get_last_frame_pts();
 
     //スライダー設定
     emit send_video_info();
@@ -299,6 +299,61 @@ double decode_thread::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_in
     return frame_rate_value;
 }
 
+void decode_thread::get_last_frame_pts() {
+    avcodec_flush_buffers(codec_ctx);
+
+    int64_t duration_pts = fmt_ctx->streams[video_stream_index]->duration;
+    if (duration_pts <= 0) {
+        // durationが不明な場合はファイル末尾にシーク
+        duration_pts = INT64_MAX;
+    }
+
+    // 後方シーク（できるだけ終端に近づく）
+    if (av_seek_frame(fmt_ctx, video_stream_index, duration_pts, AVSEEK_FLAG_BACKWARD) < 0) {
+        qDebug() << "seek failed";
+        return;
+    }
+
+    avcodec_flush_buffers(codec_ctx);
+
+    int64_t last_pts = AV_NOPTS_VALUE;
+    bool frame_received = false;
+
+    while (true) {
+        int ret = av_read_frame(fmt_ctx, packet);
+        if (ret < 0) {
+            // EOFに到達：デコーダに残りを流す
+            avcodec_send_packet(codec_ctx, nullptr);
+            while (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
+                last_pts = hw_frame->best_effort_timestamp;
+                frame_received = true;
+            }
+            break;
+        }
+
+        if (packet->stream_index == video_stream_index) {
+            if (avcodec_send_packet(codec_ctx, packet) == 0) {
+                while (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
+                    last_pts = hw_frame->best_effort_timestamp;
+                    frame_received = true;
+                }
+            }
+        }
+        av_packet_unref(packet);
+    }
+
+    if (frame_received) {
+        AVRational tb = fmt_ctx->streams[video_stream_index]->time_base;
+        double seconds = last_pts * av_q2d(tb);
+        qDebug() << "Last PTS:" << last_pts << " (" << seconds << "sec)";
+        VideoInfo.max_frames_pts = last_pts;
+        VideoInfo.max_framesNo = fmt_ctx->streams[video_stream_index]->duration/VideoInfo.pts_per_frame-1;
+    } else {
+        qDebug() << "No frame found at end.";
+    }
+}
+
+
 // フレーム取得
 void decode_thread::get_decode_image() {
     //シーク処理
@@ -327,7 +382,17 @@ void decode_thread::get_decode_image() {
                 ffmpeg_to_CUDA();
                 break;
             } else {
-                break;
+                // EOFならループで再シークして続行
+                uint64_t seek_frame{};
+                if (Get_Frame_No < VideoInfo.max_frames_pts - VideoInfo.pts_per_frame) {
+                    seek_frame=Get_Frame_No+VideoInfo.pts_per_frame;
+                }else{
+                    emit decode_end();
+                    seek_frame=0;
+                }
+                avcodec_flush_buffers(codec_ctx);
+                av_seek_frame(fmt_ctx, video_stream_index, seek_frame, AVSEEK_FLAG_ANY);
+                continue;
             }
         }
     }
@@ -337,32 +402,32 @@ void decode_thread::get_decode_image() {
 void decode_thread::ffmpeg_to_CUDA(){
     // QElapsedTimer timer;
     // timer.start();
-    int width = hw_frame->width;
-    int height = hw_frame->height;
+    VideoInfo.width = hw_frame->width;
+    VideoInfo.height = hw_frame->height;
 
     //初回時にのみmalloc
     if (!d_y || !d_uv) {
-        cudaMallocPitch(&d_y, &pitch_y, width, height);
-        cudaMallocPitch(&d_uv, &pitch_uv, width, height / 2);
+        cudaMallocPitch(&d_y, &pitch_y,VideoInfo.width, VideoInfo.height);
+        cudaMallocPitch(&d_uv, &pitch_uv, VideoInfo.width, VideoInfo.height / 2);
     }
 
     cudaMemcpy2D(d_y, pitch_y,
                  hw_frame->data[0], hw_frame->linesize[0],
-                 width, height,
+                 VideoInfo.width, VideoInfo.height,
                  cudaMemcpyDeviceToDevice);
 
     cudaMemcpy2D(d_uv, pitch_uv,
                  hw_frame->data[1], hw_frame->linesize[1],
-                 width, height / 2,
+                 VideoInfo.width, VideoInfo.height / 2,
                  cudaMemcpyDeviceToDevice);
 
     //フレーム番号更新
     AVRational time_base = fmt_ctx->streams[video_stream_index]->time_base;
     Get_Frame_No = hw_frame->best_effort_timestamp;
     slider_No = Get_Frame_No;
+    VideoInfo.current_frameNo= Get_Frame_No/VideoInfo.pts_per_frame;
 
-    emit send_decode_image(d_y,pitch_y,d_uv,pitch_uv,width,height);
-    emit send_slider(Get_Frame_No/VideoInfo.pts_per_frame);
+    emit send_decode_image(d_y,pitch_y,d_uv,pitch_uv,VideoInfo.current_frameNo);
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 }

@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QPushButton>
 #include <QFile>
+#include "qfileinfo.h"
 #include <QTextStream>
 #include <QDebug>
 #include <QFileDialog>

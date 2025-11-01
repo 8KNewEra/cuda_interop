@@ -7,8 +7,6 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
-    g_fps=0;
-
     //qDebug() <<cv::getBuildInformation();
 
     //MainWindow
@@ -224,37 +222,30 @@ void MainWindow::Close_Video_File()
 }
 
 //動画表示
-void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width){
+void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int slider){
     if(run_decode_thread){
+        if (!ui->Live_horizontalSlider->isSliderDown()&&!encode_window_flag) {
+            ui->Live_horizontalSlider->setValue(slider);
+        }
+        slider_No=slider;
+
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
 
         //コンテキストを作成
         glWidget->makeCurrent();
 
         //OpenGLへ画像を渡して描画
-        glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,width,height,slider_No);
+        glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,slider);
 
         //コンテキストを破棄
         glWidget->doneCurrent();
 
-        g_fps+=1;
         emit decode_please();
     }
 }
 
 //fps表示
 void MainWindow::fps_view(){
-    qDebug()<<g_fps<<" fps";
-    g_fps=0;
-}
-
-//動画の進捗に合わせてスライダーを動かす
-void MainWindow::slider_control(int Frame_No){
-    if (!ui->Live_horizontalSlider->isSliderDown()&&!encode_window_flag) {
-        ui->Live_horizontalSlider->setValue(Frame_No);
-    }
-    slider_No=Frame_No;
-    //qDebug()<<slider_No;
 }
 
 void MainWindow::set_preview_speed(const QString &text){
@@ -289,7 +280,6 @@ void MainWindow::start_decode_thread() {
         QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
         QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
 
-        QObject::connect(decodestream, &decode_thread::send_slider, this, &MainWindow::slider_control);
         QObject::connect(decodestream, &decode_thread::send_video_info, this, &MainWindow::slider_set_range);
 
         QObject::connect(ui->play_pushButton, &QPushButton::clicked, decodestream, &decode_thread::resumePlayback, Qt::QueuedConnection);
@@ -395,6 +385,9 @@ void MainWindow::start_encode(){
         connect(encodeSetting, &encode_setting::signal_encode_stop, this, [&]() {
             wasCanceled=true;
         }, Qt::SingleShotConnection);
+        connect(decodestream, &decode_thread::decode_end, this, [&]() {
+            wasCanceled=true;
+        }, Qt::SingleShotConnection);
 
         //エンコード開始
         glWidget->encode_mode(true);
@@ -406,7 +399,6 @@ void MainWindow::start_encode(){
             QThread::msleep(1);
             QCoreApplication::processEvents();
         }
-
         emit send_manual_resumeplayback();
 
         // 処理ループ内で更新

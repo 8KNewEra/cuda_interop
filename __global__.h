@@ -68,11 +68,15 @@ private:
 // エンコード設定の構造体
 struct DecodeInfo {
     std::string Path = "D:/test2.mp4";
+    std::string Name = "";
     std::string Codec = "av1";
     double max_frames_pts = 0;
     int max_framesNo=0;
     int pts_per_frame=0;
+    int current_frameNo=0;
     double fps = 30;
+    int width=0;
+    int height=0;
 };
 
 // ★書き込みを許可したいクラスをここで「前方宣言」
