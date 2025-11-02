@@ -47,6 +47,11 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
+    //動画情報
+    QObject::connect(ui->action_videoinfo, &QAction::triggered,this, [&](bool flag) {
+        glWidget->video_info_changed(flag);
+    }, Qt::QueuedConnection);
+
     QObject::connect(ui->comboBox_speed, &QComboBox::currentTextChanged, this, &MainWindow::set_preview_speed, Qt::QueuedConnection);
     QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::Open_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionCloseFile, &QAction::triggered, this, &MainWindow::Close_Video_File,Qt::QueuedConnection);
@@ -65,6 +70,7 @@ MainWindow::~MainWindow()
     glWidget = nullptr;
 }
 
+//OpenGL初期化
 void MainWindow::GLwidgetInitialized(){
     glWidget = new GLWidget();
 
@@ -86,6 +92,7 @@ void MainWindow::GLwidgetInitialized(){
         start_fps_thread();
         start_info_thread();
         ui->actionOpenFile->setEnabled(true);
+        ui->info->setEnabled(true);
     });
 
     glWidget->show();
@@ -209,6 +216,7 @@ void MainWindow::Open_Video_File()
     }
 }
 
+//ファイルを閉じる
 void MainWindow::Close_Video_File()
 {
     if(run_decode_thread){
@@ -224,7 +232,7 @@ void MainWindow::Close_Video_File()
 //動画表示
 void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int slider){
     if(run_decode_thread){
-        if (!ui->Live_horizontalSlider->isSliderDown()&&!encode_window_flag) {
+        if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
             ui->Live_horizontalSlider->setValue(slider);
         }
         slider_No=slider;
@@ -234,8 +242,12 @@ void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t 
         //コンテキストを作成
         glWidget->makeCurrent();
 
-        //OpenGLへ画像を渡して描画
-        glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,slider);
+        //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
+        if(d_y&&d_uv&&pitch_y>0&&pitch_uv>0&&encode_state!=STATE_ENCODE_READY){
+            glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,slider);
+        }else if(encode_state==STATE_NOT_ENCODE){
+            glWidget->Monitor_Rendering();
+        }
 
         //コンテキストを破棄
         glWidget->doneCurrent();
@@ -248,6 +260,7 @@ void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t 
 void MainWindow::fps_view(){
 }
 
+//再生速度コンボボックス
 void MainWindow::set_preview_speed(const QString &text){
     preview_speed=text.toInt();
 
@@ -270,7 +283,7 @@ void MainWindow::slider_set_range(){
     glWidget->GLresize();
 }
 
-//ライブスレッド開始
+//デコードスレッド開始
 void MainWindow::start_decode_thread() {
     if (!run_decode_thread) {
         decodestream = new decode_thread(input_filename);
@@ -315,7 +328,7 @@ void MainWindow::start_decode_thread() {
     }
 }
 
-//ライブスレッド停止
+//デコードスレッド停止
 void MainWindow::stop_decode_thread(){
     if (run_decode_thread) {
         run_decode_thread=false;
@@ -357,9 +370,11 @@ void MainWindow::start_info_thread(){
     infostream->start();
 }
 
+//エンコードウィンドウ起動時
 void MainWindow::encode_set(){
     //ウィンドウ起動フラグを立てる
-    encode_window_flag=true;
+    encode_state=STATE_ENCODE_READY;
+    glWidget->encode_mode(encode_state);
 
     //現在のフレーム位置を記憶
     Now_Frame=slider_No;
@@ -372,6 +387,7 @@ void MainWindow::encode_set(){
     encodeSetting->show();
 }
 
+//エンコード開始
 void MainWindow::start_encode(){
     if(run_decode_thread){
         qDebug()<<"エンコード開始";
@@ -390,7 +406,8 @@ void MainWindow::start_encode(){
         }, Qt::SingleShotConnection);
 
         //エンコード開始
-        glWidget->encode_mode(true);
+        encode_state=STATE_ENCODING;
+        glWidget->encode_mode(encode_state);
         glWidget->encode_maxFrame(VideoInfo.max_framesNo);
 
         //FrameNoが0なことを確認
@@ -427,6 +444,8 @@ void MainWindow::start_encode(){
                      << QString::number(seconds, 'f', 3)
                      << "秒";
 
+            encode_state=STATE_ENCODE_READY;
+            glWidget->encode_mode(encode_state);
             encodeSetting->progress_bar(0);
             encodeSetting->encode_end();
 
@@ -434,10 +453,13 @@ void MainWindow::start_encode(){
     }
 }
 
+//エンコードウィンドウを閉じる
 void MainWindow::finished_encode(){
-    encode_window_flag=false;
+    encode_state=STATE_NOT_ENCODE;
     slider_No=Now_Frame;
     emit send_manual_slider(Now_Frame);
     emit send_decode_speed(preview_speed);
     emit send_manual_resumeplayback();
+    qDebug()<<"bbb";
+    glWidget->encode_mode(encode_state);
 }

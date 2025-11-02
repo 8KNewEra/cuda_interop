@@ -78,18 +78,14 @@ private:
     const AVCodec* decoder;
     int video_stream_index;
 
-    uint64_t Get_Frame_No;
+    DecodeState decode_state = STATE_DECODE_READY;
+
     int slider_No;
-    double pts_per_frame ;
-    int maxFrames;
     QMutex mutex;
 
     QTimer *timer;
     QElapsedTimer elapsedTimer;
     int interval_ms;
-
-    DecodeState decode_state = STATE_DECODE_READY;
-    int No=0;
 
     uint8_t *d_y = nullptr, *d_uv = nullptr;
     size_t pitch_y = 0, pitch_uv = 0;

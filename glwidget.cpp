@@ -40,47 +40,39 @@ GLWidget::~GLWidget() {
 }
 
 //OpenGL初期化
-void GLWidget::initializeGL() {
+void GLWidget::initializeGL()
+{
+    // Qtが作成したGLコンテキストで関数を初期化
     initializeOpenGLFunctions();
 
-    // シェーダ読み込み
-    bool ok1=program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../shaders/sobel.vert");
-    bool ok2 =program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../shaders/sobel.frag");
-    program.link();
-
-    if (!ok1 || !ok2) {
-        qDebug() << "Shader loading failed:" << program.log();
-        return;
-    }
-
-    if (!program.link()) {
-        qDebug() << "Shader program link failed:" << program.log();
-        return;
-    }
-
-    // 四角形頂点とテクスチャ座標
-    float vertices[] = {
+    // === 頂点データ設定 ===
+    static const float vertices[] = {
+        // 位置(x, y), テクスチャ座標(u, v)
         -1.0f, -1.0f, 0.0f, 1.0f,
         1.0f, -1.0f, 1.0f, 1.0f,
         1.0f,  1.0f, 1.0f, 0.0f,
-        -1.0f,  1.0f, 0.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 0.0f
     };
-    GLuint indices[] = { 0, 1, 2, 2, 3, 0 };
+    static const GLuint indices[] = { 0, 1, 2, 2, 3, 0 };
 
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
 
-    GLuint ebo;
+    GLuint ebo = 0;
     glGenBuffers(1, &vbo);
     glGenBuffers(1, &ebo);
 
+    // 頂点バッファ
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
+    // インデックスバッファ
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    int posLoc = 0, texLoc = 1;
+    // 頂点属性設定
+    constexpr GLint posLoc = 0;
+    constexpr GLint texLoc = 1;
     glEnableVertexAttribArray(posLoc);
     glVertexAttribPointer(posLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
 
@@ -89,9 +81,29 @@ void GLWidget::initializeGL() {
 
     glBindVertexArray(0);
 
-    fpsTimer.start();
+    // === シェーダ読み込み ===
+    bool ok1 = program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../shaders/sobel.vert");
+    bool ok2 = program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../shaders/sobel.frag");
 
-    initialize_completed_flag=true;
+    if (!ok1 || !ok2) {
+        qDebug() << "Shader compile failed:" << program.log();
+        return;
+    }
+
+    if (!program.link()) {
+        qDebug() << "Shader link failed:" << program.log();
+        return;
+    }
+
+    // === Uniform location 取得 ===
+    shader.progId = program.programId();
+    shader.loc_tex           = glGetUniformLocation(shader.progId, "tex");
+    shader.loc_texelSize     = glGetUniformLocation(shader.progId, "texelSize");
+    shader.loc_filterEnabled = glGetUniformLocation(shader.progId, "u_filterEnabled");
+
+    // === 初期化完了 ===
+    fpsTimer.start();
+    initialize_completed_flag = true;
     emit initialized();
 }
 
@@ -102,10 +114,12 @@ void GLWidget::OpenGL_Rendering(){
     glClear(GL_COLOR_BUFFER_BIT);
 
     //シェーダの設定
-    program.bind();
-    program.setUniformValue("tex", 0);
-    program.setUniformValue("texelSize", QVector2D(1.0f / width_, 1.0f / height_));
-    program.setUniformValue("u_filterEnabled", sobelfilterEnabled);
+    glUseProgram(shader.progId);
+
+    // uniform 設定
+    glUniform1i(shader.loc_tex, 0);
+    glUniform2f(shader.loc_texelSize, 1.0f / width_, 1.0f / height_);
+    glUniform1i(shader.loc_filterEnabled, sobelfilterEnabled);
 
     //入力テクスチャ(CUDAから来たもの)を設定
     glActiveTexture(GL_TEXTURE0);
@@ -115,52 +129,61 @@ void GLWidget::OpenGL_Rendering(){
     glBindVertexArray(vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
-    program.release();
+    glUseProgram(0);
 
-    if (encode_flag) {
+    if (encode_state==STATE_ENCODING) {
         // GPUエンコード用処理
         downloadToGLTexture();
-    } else {
-        //描画処理
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-
-        // FBO → 画面へ転送
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-        glBlitFramebuffer(
-            0, 0, width_, height_,
-            x0, y0, x1, y1,
-            GL_COLOR_BUFFER_BIT,
-            GL_LINEAR
-            );
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        // --- FPSを算出 ---
+    } else if(encode_state==STATE_NOT_ENCODE){
+        qDebug()<<"aaa";
+        //画面に描画
+        Monitor_Rendering();
         fpsCount++;
-        if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
-            fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
-            fpsCount = 0;
-            fpsTimer.restart();
-        }
+    }
+}
 
+//一時停止用
+void GLWidget::Monitor_Rendering(){
+    //描画処理
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // FBO → 画面へ転送
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glBlitFramebuffer(
+        0, 0, width_, height_,
+        x0, y0, x1, y1,
+        GL_COLOR_BUFFER_BIT,
+        GL_LINEAR
+        );
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // --- FPSを算出 ---
+    if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
+        fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
+        fpsCount = 0;
+        fpsTimer.restart();
+    }
+
+    if(videoInfo_flag){
         //動画情報描画
-        QPainter painter(this);
+        painter.begin(this);
         painter.setPen(Qt::white);
         painter.setFont(QFont("Consolas", 16));
         painter.drawText(2, 20, "OpenGL Device:" + QString::fromLatin1((const char*)glGetString(GL_RENDERER))+"\n");
         painter.drawText(2, 40, QString("FPS: %1").arg(fps, 0, 'f', 1));
         painter.drawText(2, 60, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
         painter.drawText(2, 80, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
-        painter.drawText(2, 100, "Codec:" + QString::fromStdString(VideoInfo.Codec)+"\n");
+        painter.drawText(2, 100, "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
         painter.drawText(2, 120, "Resolution:" + QString::number(VideoInfo.width)+"×"+QString::number(VideoInfo.height)+"\n");
         painter.drawText(2, 140, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
         painter.drawText(2, 160, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
         painter.drawText(2, 180, "Current Frame:" + QString::number(VideoInfo.current_frameNo)+"\n");
         painter.end();
-
-        context()->swapBuffers(context()->surface());
     }
+
+    context()->swapBuffers(context()->surface());
 }
 
 //アスペクト比を合わせてリサイズ
@@ -309,7 +332,6 @@ void GLWidget::initCudaMalloc(int width, int height)
     cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
 }
 
-
 //CUDAからOpenGLへ転送
 void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int a) {
     // QElapsedTimer timer;
@@ -438,22 +460,27 @@ void GLWidget::downloadToGLTexture() {
     }else{
         delete save_encoder;
         save_encoder=nullptr;
-        encode_flag=false;
         encode_FrameCount=0;
 
         emit encode_finished();
     }
 }
 
-void GLWidget::encode_mode(bool flag){
-    if(flag==true){
+void GLWidget::encode_mode(int flag){
+    if(flag==STATE_ENCODING){
         if(save_encoder==nullptr){
             save_encoder = new save_encode(height_,width_);
         }
-        encode_flag=flag;
+        encode_state=flag;
+    }else{
+        encode_state=flag;
     }
 }
 
 void GLWidget::encode_maxFrame(int maxFrame){
     MaxFrame = maxFrame;
+}
+
+void GLWidget::video_info_changed(bool flag){
+    videoInfo_flag=flag;
 }

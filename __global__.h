@@ -2,6 +2,9 @@
 #define __GLOBAL___H
 
 #include <string> // std::string を使うために必要
+#define STATE_NOT_ENCODE 0
+#define STATE_ENCODE_READY 1
+#define STATE_ENCODING 2
 
 // エンコード設定の構造体
 struct EncodeSettings {
@@ -70,7 +73,6 @@ struct DecodeInfo {
     std::string Path = "D:/test2.mp4";
     std::string Name = "";
     std::string Codec = "av1";
-    double max_frames_pts = 0;
     int max_framesNo=0;
     int pts_per_frame=0;
     int current_frameNo=0;

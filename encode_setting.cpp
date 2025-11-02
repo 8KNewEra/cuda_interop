@@ -514,6 +514,16 @@ void encode_setting::encode_end(){
 void encode_setting::slider(int min,int max){
     ui->encode_progressBar->setRange(min, max);
     ui->encode_progressBar->setValue(min);
+
+    if(VideoInfo.width>4096||VideoInfo.height>4096){
+        qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
+        if(ui->comboBox_codec->currentIndex()==0){
+            ui->comboBox_codec->setCurrentIndex(1);
+        }
+    }else{
+        qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,false);
+    }
+
 }
 
 //進捗バーを動かす

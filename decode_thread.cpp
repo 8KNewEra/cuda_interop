@@ -130,7 +130,7 @@ void decode_thread::stopProcessing() {
 
 void decode_thread::sliderPlayback(int value){
     pausePlayback();
-    slider_No=value*VideoInfo.pts_per_frame;
+    slider_No=value;
     video_play_flag = false;
     video_reverse_flag = false;
 }
@@ -158,11 +158,16 @@ void decode_thread::processFrame() {
     QMutexLocker locker(&mutex);
 
     //停止ボタン押下でシークしていない場合は停止
-    if (!video_play_flag && slider_No == Get_Frame_No){
+    if (!video_play_flag && slider_No == VideoInfo.current_frameNo){
+        if(decode_state==STATE_DECODE_READY){
+            decode_state=STATE_DECODING;
+            emit send_decode_image(nullptr,0,nullptr,0,VideoInfo.current_frameNo);
+            decode_state=STATE_WAIT_DECODE_FLAG;
+        }
         return;
     }
 
-    if(decode_state==STATE_DECODE_READY&&!decode_state){
+    if(decode_state==STATE_DECODE_READY){
         decode_state=STATE_DECODING;
         get_decode_image();
         decode_state=STATE_WAIT_DECODE_FLAG;
@@ -254,9 +259,9 @@ void decode_thread::initialized_ffmpeg() {
     video_reverse_flag = false;
 
     interval_ms = static_cast<double>(1000.0 / 33);
+    connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
     elapsedTimer.start();
     timer->start(interval_ms);
-    connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
 }
 
 // デコーダ設定
@@ -346,24 +351,25 @@ void decode_thread::get_last_frame_pts() {
         AVRational tb = fmt_ctx->streams[video_stream_index]->time_base;
         double seconds = last_pts * av_q2d(tb);
         qDebug() << "Last PTS:" << last_pts << " (" << seconds << "sec)";
-        VideoInfo.max_frames_pts = last_pts;
         VideoInfo.max_framesNo = fmt_ctx->streams[video_stream_index]->duration/VideoInfo.pts_per_frame-1;
+
+        avcodec_flush_buffers(codec_ctx);
+        av_seek_frame(fmt_ctx, video_stream_index, 0, AVSEEK_FLAG_ANY);
     } else {
         qDebug() << "No frame found at end.";
     }
 }
 
-
 // フレーム取得
 void decode_thread::get_decode_image() {
     //シーク処理
-    if (slider_No != Get_Frame_No || video_reverse_flag == true) {
+    if (slider_No != VideoInfo.current_frameNo || video_reverse_flag == true) {
         if (video_reverse_flag == true) {
             slider_No = slider_No - VideoInfo.pts_per_frame;
         }
         avcodec_flush_buffers(codec_ctx);
-        av_seek_frame(fmt_ctx, video_stream_index, slider_No, AVSEEK_FLAG_BACKWARD);
-        Get_Frame_No = slider_No;
+        av_seek_frame(fmt_ctx, video_stream_index, slider_No*VideoInfo.pts_per_frame, AVSEEK_FLAG_BACKWARD);
+        VideoInfo.current_frameNo = slider_No;
     }
 
     while (true) {
@@ -384,18 +390,20 @@ void decode_thread::get_decode_image() {
             } else {
                 // EOFならループで再シークして続行
                 uint64_t seek_frame{};
-                if (Get_Frame_No < VideoInfo.max_frames_pts - VideoInfo.pts_per_frame) {
-                    seek_frame=Get_Frame_No+VideoInfo.pts_per_frame;
+                if (VideoInfo.current_frameNo < VideoInfo.max_framesNo - 1) {
+                    seek_frame=VideoInfo.current_frameNo+1;
                 }else{
                     emit decode_end();
                     seek_frame=0;
                 }
                 avcodec_flush_buffers(codec_ctx);
-                av_seek_frame(fmt_ctx, video_stream_index, seek_frame, AVSEEK_FLAG_ANY);
+                av_seek_frame(fmt_ctx, video_stream_index, seek_frame*VideoInfo.pts_per_frame, AVSEEK_FLAG_ANY);
                 continue;
             }
         }
+        av_packet_unref(packet);
     }
+    av_packet_unref(packet);
 }
 
 //CUDAに渡して画像処理
@@ -423,9 +431,8 @@ void decode_thread::ffmpeg_to_CUDA(){
 
     //フレーム番号更新
     AVRational time_base = fmt_ctx->streams[video_stream_index]->time_base;
-    Get_Frame_No = hw_frame->best_effort_timestamp;
-    slider_No = Get_Frame_No;
-    VideoInfo.current_frameNo= Get_Frame_No/VideoInfo.pts_per_frame;
+    VideoInfo.current_frameNo = hw_frame->best_effort_timestamp/VideoInfo.pts_per_frame;
+    slider_No = VideoInfo.current_frameNo;
 
     emit send_decode_image(d_y,pitch_y,d_uv,pitch_uv,VideoInfo.current_frameNo);
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒

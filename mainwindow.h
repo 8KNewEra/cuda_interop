@@ -95,7 +95,7 @@ private:
     void start_encode();
     void finished_encode();
     encode_setting *encodeSetting;
-    bool encode_window_flag=false;
+    int encode_state=STATE_NOT_ENCODE;
 
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
