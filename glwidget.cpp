@@ -135,7 +135,6 @@ void GLWidget::OpenGL_Rendering(){
         // GPUエンコード用処理
         downloadToGLTexture();
     } else if(encode_state==STATE_NOT_ENCODE){
-        qDebug()<<"aaa";
         //画面に描画
         Monitor_Rendering();
         fpsCount++;

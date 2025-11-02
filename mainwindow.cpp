@@ -252,7 +252,8 @@ void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t 
         //コンテキストを破棄
         glWidget->doneCurrent();
 
-        emit decode_please();
+        if(encode_state!=STATE_ENCODE_READY)
+            emit decode_please();
     }
 }
 
@@ -407,6 +408,7 @@ void MainWindow::start_encode(){
 
         //エンコード開始
         encode_state=STATE_ENCODING;
+        emit decode_please();
         glWidget->encode_mode(encode_state);
         glWidget->encode_maxFrame(VideoInfo.max_framesNo);
 
@@ -457,9 +459,9 @@ void MainWindow::start_encode(){
 void MainWindow::finished_encode(){
     encode_state=STATE_NOT_ENCODE;
     slider_No=Now_Frame;
+    emit decode_please();
     emit send_manual_slider(Now_Frame);
     emit send_decode_speed(preview_speed);
     emit send_manual_resumeplayback();
-    qDebug()<<"bbb";
     glWidget->encode_mode(encode_state);
 }
