@@ -34,6 +34,7 @@ signals:
     void send_software_image(AVFrame *rgba_frame);
     void finished();
     void decode_end();
+    void decode_error(QString error);
 
 public slots:
     void get_decode_image();
@@ -55,6 +56,7 @@ private:
     };
 
     void initialized_ffmpeg();
+    QString ffmpegErrStr(int errnum);
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     void ffmpeg_to_CUDA();

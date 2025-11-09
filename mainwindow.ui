@@ -12,8 +12,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>960</width>
-    <height>480</height>
+    <width>1280</width>
+    <height>720</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -37,8 +37,8 @@
     <property name="geometry">
      <rect>
       <x>140</x>
-      <y>434</y>
-      <width>581</width>
+      <y>672</y>
+      <width>931</width>
       <height>16</height>
      </rect>
     </property>
@@ -53,7 +53,7 @@
     <property name="geometry">
      <rect>
       <x>50</x>
-      <y>430</y>
+      <y>668</y>
       <width>30</width>
       <height>26</height>
      </rect>
@@ -69,7 +69,7 @@
     <property name="geometry">
      <rect>
       <x>90</x>
-      <y>430</y>
+      <y>668</y>
       <width>30</width>
       <height>26</height>
      </rect>
@@ -85,7 +85,7 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>430</y>
+      <y>668</y>
       <width>30</width>
       <height>26</height>
      </rect>
@@ -99,8 +99,8 @@
      <rect>
       <x>0</x>
       <y>0</y>
-      <width>961</width>
-      <height>421</height>
+      <width>1271</width>
+      <height>661</height>
      </rect>
     </property>
    </widget>
@@ -110,8 +110,8 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>850</x>
-      <y>430</y>
+      <x>1160</x>
+      <y>668</y>
       <width>101</width>
       <height>22</height>
      </rect>
@@ -123,8 +123,8 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>760</x>
-      <y>430</y>
+      <x>1070</x>
+      <y>668</y>
       <width>91</width>
       <height>21</height>
      </rect>
@@ -151,15 +151,15 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>960</width>
+     <width>1280</width>
      <height>18</height>
     </rect>
    </property>
    <widget class="QMenu" name="menu">
     <property name="geometry">
      <rect>
-      <x>737</x>
-      <y>157</y>
+      <x>644</x>
+      <y>119</y>
       <width>121</width>
       <height>120</height>
      </rect>
@@ -178,6 +178,7 @@
       <iconset theme="QIcon::ThemeIcon::DialogInformation"/>
      </property>
      <addaction name="action_videoinfo"/>
+     <addaction name="action_histgram"/>
     </widget>
     <addaction name="actionOpenFile"/>
     <addaction name="info"/>
@@ -249,6 +250,20 @@
    </property>
    <property name="shortcut">
     <string>Ctrl+I</string>
+   </property>
+  </action>
+  <action name="action_histgram">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>ヒストグラム</string>
+   </property>
+   <property name="toolTip">
+    <string>histgram</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+H</string>
    </property>
   </action>
  </widget>

@@ -14,6 +14,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/frame.h>
+#include <libavutil/error.h>
 }
 
 decode_thread::decode_thread(QString FilePath, QObject *parent)
@@ -47,7 +48,8 @@ decode_thread::~decode_thread() {
     // 3) FFmpeg関係の安全な解放
     auto safe_free_codec = [&]() {
         if (codec_ctx) {
-            avcodec_flush_buffers(codec_ctx);
+            if (codec_ctx->codec && codec_ctx->internal)
+                avcodec_flush_buffers(codec_ctx);
             avcodec_free_context(&codec_ctx);
             codec_ctx = nullptr;
         }
@@ -102,6 +104,12 @@ decode_thread::~decode_thread() {
     safe_cuda_free((void*&)d_uv, "d_uv");
 
     qDebug() << "decode_thread: resources released cleanly";
+}
+
+QString decode_thread::ffmpegErrStr(int errnum) {
+    char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
+    av_strerror(errnum, buf, sizeof(buf));
+    return QString::fromUtf8(buf);
 }
 
 void decode_thread::receve_decode_flag(){
@@ -185,23 +193,29 @@ void decode_thread::initialized_ffmpeg() {
     hw_frame = av_frame_alloc();
     int ret;
 
-    //CUDA デバイスコンテキスト作成
+    // CUDA デバイスコンテキスト作成
     ret = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
     if (ret < 0) {
-        qDebug() << "Failed to create CUDA device context";
+        QString error= "Failed to create CUDA device context:"+ffmpegErrStr(ret);
+        qDebug()<<error;
+        emit decode_error(error);
         return;
     }
 
-    //ファイルを開く
+    // ファイルを開く
     ret = avformat_open_input(&fmt_ctx, input_filename, nullptr, nullptr);
     if (ret < 0) {
-        qDebug() << "Could not open input file";
+        QString error="Could not open input file:" + ffmpegErrStr(ret);
+        qDebug()<<error;
+        emit decode_error(error);
         return;
     }
 
     ret = avformat_find_stream_info(fmt_ctx, nullptr);
     if (ret < 0) {
-        qDebug() << "Failed to retrieve input stream information";
+        QString error="Failed to retrieve input stream information:"+ ffmpegErrStr(ret);
+        qDebug()<<error;
+        emit decode_error(error);
         return;
     }
 
@@ -214,24 +228,31 @@ void decode_thread::initialized_ffmpeg() {
     }
 
     if (video_stream_index == -1) {
-        qDebug() << "Could not find video stream";
+        QString error= "Could not find video stream";
+        qDebug()<<error;
+        emit decode_error(error);
         return;
     }
 
+    //フレームレートを取得
     VideoInfo.fps = getFrameRate(fmt_ctx, video_stream_index);
 
-    //フレームレートを元にタイマー設定
+    //デコーダ設定
     const char* codec_name = avcodec_get_name(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
     const char* decoder_name = selectDecoder(codec_name);
 
     if (!decoder_name) {
-        qDebug() << "Unsupported codec:" << codec_name;
+        QString error= "Unsupported codec:"+QString::fromStdString(codec_name);
+        qDebug()<<error;
+        emit decode_error(error);
         return;
     }
 
     decoder = avcodec_find_decoder_by_name(decoder_name);
     if (!decoder) {
-        qDebug() << "Decoder not found:" << decoder_name;
+        QString error= "Decoder not found:" + QString::fromStdString(decoder_name);
+        qDebug()<<error;
+        emit decode_error(error);
         return;
     }
 
@@ -241,7 +262,14 @@ void decode_thread::initialized_ffmpeg() {
     codec_ctx = avcodec_alloc_context3(decoder);
     codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
     avcodec_parameters_to_context(codec_ctx, fmt_ctx->streams[video_stream_index]->codecpar);
-    avcodec_open2(codec_ctx, decoder, &opts);
+
+    ret = avcodec_open2(codec_ctx, decoder, &opts);
+    if (ret < 0) {
+        QString error= "Codec open error (" + QString::fromStdString(decoder_name) + "):" + ffmpegErrStr(ret);
+        qDebug()<<error;
+        emit decode_error(error);
+        return;
+    }
 
     //1フレームのPTSを計算
     double time_base_d = av_q2d(fmt_ctx->streams[video_stream_index]->time_base);
@@ -257,6 +285,7 @@ void decode_thread::initialized_ffmpeg() {
     //再生
     video_play_flag = true;
     video_reverse_flag = false;
+    slider_No=0;
 
     interval_ms = static_cast<double>(1000.0 / 33);
     connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
@@ -352,9 +381,7 @@ void decode_thread::get_last_frame_pts() {
         double seconds = last_pts * av_q2d(tb);
         qDebug() << "Last PTS:" << last_pts << " (" << seconds << "sec)";
         VideoInfo.max_framesNo = fmt_ctx->streams[video_stream_index]->duration/VideoInfo.pts_per_frame-1;
-
-        avcodec_flush_buffers(codec_ctx);
-        av_seek_frame(fmt_ctx, video_stream_index, 0, AVSEEK_FLAG_ANY);
+        VideoInfo.current_frameNo = VideoInfo.max_framesNo;
     } else {
         qDebug() << "No frame found at end.";
     }
@@ -364,8 +391,12 @@ void decode_thread::get_last_frame_pts() {
 void decode_thread::get_decode_image() {
     //シーク処理
     if (slider_No != VideoInfo.current_frameNo || video_reverse_flag == true) {
+        //逆再生時の処理
         if (video_reverse_flag == true) {
-            slider_No = slider_No - VideoInfo.pts_per_frame;
+            slider_No = slider_No - 1;
+            //マイナスになった場合最後尾まで戻る
+            if(slider_No<0)
+                slider_No = VideoInfo.max_framesNo;
         }
         avcodec_flush_buffers(codec_ctx);
         av_seek_frame(fmt_ctx, video_stream_index, slider_No*VideoInfo.pts_per_frame, AVSEEK_FLAG_BACKWARD);

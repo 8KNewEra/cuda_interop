@@ -10,6 +10,7 @@
 #include <QFileDialog>
 #include <QListView>
 #include <QComboBox>
+#include <QMessageBox>
 #include "__global__.h"
 
 namespace Ui {
@@ -27,7 +28,7 @@ public:
     ~encode_setting();
     void progress_bar(int value);
     void slider(int min,int max);
-    void encode_end();
+    void encode_end(QString encode_time);
 
 signals:
     void signal_encode_start();

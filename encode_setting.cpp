@@ -500,8 +500,17 @@ void encode_setting::closeEvent(QCloseEvent *event)
 }
 
 //エンコード終了(最後までやって終了)
-void encode_setting::encode_end(){
+void encode_setting::encode_end(QString encode_time){
+    // Qtのメインスレッドで警告ポップアップを表示
+    QMetaObject::invokeMethod(this, [this,encode_time]() {
+        QMessageBox::information(this,
+                             tr("エンコード終了"),
+                             tr("処理時間:\n%1").arg(encode_time),
+                             QMessageBox::Ok);
+    }, Qt::QueuedConnection);
+
     //UI制御
+    progress_bar(0);
     ui->encodeStart_pushbutton->setEnabled(true);
     ui->encodecancel_pushButton->setEnabled(false);
     ui->filepath_groupBox->setEnabled(true);

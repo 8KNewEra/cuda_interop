@@ -1,7 +1,7 @@
 extern "C"
 __global__ void gradetion_kernel(
-    uchar4* output_rgba, int output_rgba_step,
-    const uchar4* input_rgba, int input_rgba_step,
+    uint8_t* output_rgba, int output_rgba_step,
+    const uint8_t* input_rgba, int input_rgba_step,
     int width, int height)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;

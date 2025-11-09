@@ -49,7 +49,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     //動画情報
     QObject::connect(ui->action_videoinfo, &QAction::triggered,this, [&](bool flag) {
-        glWidget->video_info_changed(flag);
+        glWidget->videoInfo_flag=flag;
+    }, Qt::QueuedConnection);
+    QObject::connect(ui->action_histgram, &QAction::triggered,this, [&](bool flag) {
+        glWidget->histgram_flag=flag;
     }, Qt::QueuedConnection);
 
     QObject::connect(ui->comboBox_speed, &QComboBox::currentTextChanged, this, &MainWindow::set_preview_speed, Qt::QueuedConnection);
@@ -114,7 +117,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->comboBox_speed->setGeometry(window_width-65, window_height-53,window_width-120,window_height-5);
     ui->openGLContainer->setGeometry(0, 0, window_width, window_height-48); // 位置とサイズを指定
 
-    setMinimumSize(QSize(480, 320));
+    setMinimumSize(QSize(640, 480));
 
     glWidget->GLresize();
 }
@@ -259,6 +262,7 @@ void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t 
 
 //fps表示
 void MainWindow::fps_view(){
+
 }
 
 //再生速度コンボボックス
@@ -308,8 +312,20 @@ void MainWindow::start_decode_thread() {
         QObject::connect(decode__thread, &QThread::finished,decodestream, &QObject::deleteLater,Qt::SingleShotConnection);
         QObject::connect(decode__thread, &QThread::finished,decode__thread, &QObject::deleteLater,Qt::SingleShotConnection);
 
+        QObject::connect(decodestream, &decode_thread::decode_error, this, [this](const QString &error) {
+            Close_Video_File();
+
+            // Qtのメインスレッドで警告ポップアップを表示
+            QMetaObject::invokeMethod(this, [this, error]() {
+                QMessageBox::warning(this,
+                                     tr("デコードエラー"),
+                                     tr("デコード中にエラーが発生しました:\n%1").arg(error),
+                                     QMessageBox::Ok);
+            }, Qt::QueuedConnection);
+        });
+
         QObject::connect(decode__thread, &QThread::started, this, [this]() {
-            this->run_decode_thread = true;
+            run_decode_thread = true;
             QMetaObject::invokeMethod(decodestream, "startProcessing", Qt::QueuedConnection);
 
             ui->comboBox_speed->setCurrentIndex(6);
@@ -410,7 +426,7 @@ void MainWindow::start_encode(){
         encode_state=STATE_ENCODING;
         emit decode_please();
         glWidget->encode_mode(encode_state);
-        glWidget->encode_maxFrame(VideoInfo.max_framesNo);
+        glWidget->MaxFrame=VideoInfo.max_framesNo;
 
         //FrameNoが0なことを確認
         emit send_manual_slider(0);
@@ -426,14 +442,14 @@ void MainWindow::start_encode(){
             encodeSetting->progress_bar(slider_No);
 
             if (wasCanceled){
-                glWidget->encode_maxFrame(slider_No);
+                glWidget->MaxFrame=slider_No;
                 break;
             }
 
-            if(slider_No>=VideoInfo.max_framesNo){
-                glWidget->encode_maxFrame(slider_No);
-                break;
-            }
+            // if(slider_No>=VideoInfo.max_framesNo){
+            //     glWidget->encode_maxFrame(slider_No);
+            //     break;
+            // }
 
             QCoreApplication::processEvents();
         }
@@ -441,15 +457,13 @@ void MainWindow::start_encode(){
         connect(glWidget, &GLWidget::encode_finished, this, [=]() {
             emit send_manual_pause();
 
-            double seconds = timer.nsecsElapsed() / 1e9;
-            qDebug() << "エンコード終了"
-                     << QString::number(seconds, 'f', 3)
-                     << "秒";
-
             encode_state=STATE_ENCODE_READY;
             glWidget->encode_mode(encode_state);
-            encodeSetting->progress_bar(0);
-            encodeSetting->encode_end();
+
+            //エンコード設定uiに終了通知と処理時間
+            double seconds = timer.nsecsElapsed() / 1e9;
+            QString encode_time = QString::number(seconds, 'f', 3)+"秒";
+            encodeSetting->encode_end(encode_time);
 
         }, Qt::SingleShotConnection);
     }
