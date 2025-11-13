@@ -19,8 +19,6 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 }
 
-extern int g_gpu_usage;
-
 class decode_thread : public QObject {
     Q_OBJECT
 

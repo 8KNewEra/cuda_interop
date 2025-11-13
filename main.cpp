@@ -1,5 +1,4 @@
 #include "mainwindow.h"
-#include "__global__.h"
 
 #include <QApplication>
 #include <QLocale>

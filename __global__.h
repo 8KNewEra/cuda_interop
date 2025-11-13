@@ -123,4 +123,23 @@ private:
     DecodeInfo m_settings;
 };
 
+//UI表示CPUダウンロード用
+struct HistStats {
+    int min_r, max_r;
+    int min_g, max_g;
+    int min_b, max_b;
+    double avg_r, avg_g, avg_b;
+    int max_y_axis;
+};
+
+//GPU内で保持する
+struct HistData {
+    unsigned int hist_r[256];
+    unsigned int hist_g[256];
+    unsigned int hist_b[256];
+    unsigned int max_r;
+    unsigned int max_g;
+    unsigned int max_b;
+};
+
 #endif // __GLOBAL___H

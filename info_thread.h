@@ -3,6 +3,7 @@
 
 #include <QThread>
 #include <QTimer>
+#include "__global__.h"
 
 extern int g_gpu_usage;
 
