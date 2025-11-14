@@ -8,7 +8,7 @@ struct HistData {
 };
 
 extern "C"
-__global__ void histogram_normal_kernel(
+__global__ void calc_histogram_normal_kernel(
     HistData* Histdata,
     cudaTextureObject_t texObj,
     int width, int height)

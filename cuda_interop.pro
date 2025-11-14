@@ -55,7 +55,7 @@ CONFIG += embed_translations
 #         -lopencv_world4120  # ← ".lib" は不要！
 
 #CUDAリンク
-CUDA_DIR = "$$PWD/NVIDIAGPUComputingToolkit/CUDA/v12.8"
+CUDA_DIR = "$$PWD/NVIDIAGPUComputingToolkit/CUDA/v13.0"
 
 INCLUDEPATH += $$CUDA_DIR/include
 LIBS += -L$$CUDA_DIR/lib/x64 \

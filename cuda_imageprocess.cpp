@@ -5,8 +5,8 @@ extern "C"{
     __global__ void nv12_to_rgba_kernel(uint8_t* rgba, int rgba_pitch,const uint8_t* y_plane, int y_pitch,const uint8_t* uv_plane, int uv_pitch,int width, int height);
     __global__ void gradetion_kernel(uint8_t* output_rgba, int output_rgba_step,const uint8_t* input_rgba, int input_rgba_step,int width, int height);
     __global__ void flip_rgba_to_nv12_kernel(uint8_t* y_plane, int y_step,uint8_t* uv_plane, int uv_step,const uint8_t* rgba, int rgba_step,int width, int height);
-    __global__ void histogram_shared_kernel(HistData* Histdata,cudaTextureObject_t texObj, int width, int height);
-    __global__ void histogram_normal_kernel(HistData* Histdata,cudaTextureObject_t texObj, int width, int height);
+    __global__ void calc_histogram_shared_kernel(HistData* Histdata,cudaTextureObject_t texObj, int width, int height);
+    __global__ void calc_histogram_normal_kernel(HistData* Histdata,cudaTextureObject_t texObj, int width, int height);
     __global__ void histgram_normalize_kernel(float* vbo,int num_bins,HistData* Histdata,HistStats* input_stats);
     __global__ void histgram_status_kernel(HistData* Histdata,HistStats* out_stats);
     //__global__ void draw_histogram_kernel(cudaSurfaceObject_t surface,int width,int height,const unsigned int* hist_r,const unsigned int* hist_g,const unsigned int* hist_b);
@@ -117,7 +117,7 @@ bool CUDA_ImageProcess::calc_histgram(HistData* Histdata,cudaTextureObject_t tex
               (height + block.y - 1) / block.y);
 
     cudaError_t err = cudaLaunchKernel(
-        (void*)histogram_shared_kernel,
+        (void*)calc_histogram_shared_kernel,
         grid, block,
         args,
         0, nullptr);
