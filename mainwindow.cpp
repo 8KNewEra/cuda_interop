@@ -235,12 +235,15 @@ void MainWindow::Close_Video_File()
 //動画表示
 void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int slider){
     if(run_decode_thread){
+        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+
         if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
             ui->Live_horizontalSlider->setValue(slider);
         }
         slider_No=slider;
 
-        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+        if(encode_state!=STATE_ENCODE_READY)
+            emit decode_please();
 
         //コンテキストを作成
         glWidget->makeCurrent();
@@ -254,9 +257,6 @@ void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t 
 
         //コンテキストを破棄
         glWidget->doneCurrent();
-
-        if(encode_state!=STATE_ENCODE_READY)
-            emit decode_please();
     }
 }
 

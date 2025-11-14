@@ -346,17 +346,17 @@ void GLWidget::Monitor_Rendering(){
                     }
                 }
                 //X座標
-                painter.drawText((rect.left() -60)/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,110*monitor_scaling, 20*monitor_scaling,Qt::AlignRight,QString::number(64));
-                painter.drawText((rect.left() -60)/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,192*monitor_scaling, 20*monitor_scaling,Qt::AlignRight,QString::number(128));
-                painter.drawText((rect.left() -60)/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,272*monitor_scaling, 20*monitor_scaling,Qt::AlignRight,QString::number(192));
-                painter.drawText((rect.left() -60)/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,352*monitor_scaling, 20*monitor_scaling,Qt::AlignRight,QString::number(256));
+                painter.drawText(rect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,126, 20*monitor_scaling,Qt::AlignRight,QString::number(64));
+                painter.drawText(rect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,250, 20*monitor_scaling,Qt::AlignRight,QString::number(128));
+                painter.drawText(rect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,370, 20*monitor_scaling,Qt::AlignRight,QString::number(192));
+                painter.drawText(rect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,488, 20*monitor_scaling,Qt::AlignRight,QString::number(256));
             }
 
             //ヒストグラム描画
             {
                 painter.setPen(Qt::white);
                 painter.setFont(QFont("Consolas", 16));
-                QRect rect(viewportWidth - 330, 0, 350, 100);  // 右端に幅300のエリア
+                QRect rect(viewportWidth/monitor_scaling -(316), 0, 350*monitor_scaling, 100*monitor_scaling);  // 右端に幅300のエリア
                 painter.drawText(rect, Qt::AlignLeft,"R: min:" + QString::number(h_hist_stats.min_r) +" max:" + QString::number(h_hist_stats.max_r) +" avg:" + QString::number(h_hist_stats.avg_r));
                 painter.drawText(rect.adjusted(0, 20, 0, 0), Qt::AlignLeft,"G: min:" + QString::number(h_hist_stats.min_g) +" max:" + QString::number(h_hist_stats.max_g) +" avg:" + QString::number(h_hist_stats.avg_g));
                 painter.drawText(rect.adjusted(0, 40, 0, 0), Qt::AlignLeft,"B: min:" + QString::number(h_hist_stats.min_b) +" max:" + QString::number(h_hist_stats.max_b) +" avg:" + QString::number(h_hist_stats.avg_b));
