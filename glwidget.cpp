@@ -8,8 +8,6 @@ GLWidget::GLWidget(QWindow *parent)
     cudaResource2(nullptr),
     inputTextureID(0)
 {
-    sobelfilterEnabled = 0;
-
     if(CUDA_IMG_Proc==nullptr){
         CUDA_IMG_Proc=new CUDA_ImageProcess();
     }
@@ -141,24 +139,47 @@ void GLWidget::initializeGL()
     glBindVertexArray(0);
 
     // === シェーダ読み込み ===
-    bool ok1 = program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../shaders/sobel.vert");
-    bool ok2 = program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../shaders/sobel.frag");
+    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../shaders/sobel.vert");
+    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../shaders/sobel.frag");
+    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../shaders/gaussian.vert");
+    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../shaders/gaussian.frag");
+    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../shaders/averaging.vert");
+    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../shaders/averaging.frag");
 
-    if (!ok1 || !ok2) {
-        qDebug() << "Shader compile failed:" << program.log();
+    //シェーダーリンク
+    if (!Sobel_program.link()) {
+        qDebug() << "Shader link failed:" << Sobel_program.log();
         return;
     }
 
-    if (!program.link()) {
-        qDebug() << "Shader link failed:" << program.log();
+    if (!Gaussian_program.link()) {
+        qDebug() << "Shader compile failed:" << Gaussian_program.log();
+        return;
+    }
+
+    if (!Averaging_program.link()) {
+        qDebug() << "Shader compile failed:" << Averaging_program.log();
         return;
     }
 
     // === Uniform location 取得 ===
-    shader.progId = program.programId();
-    shader.loc_tex           = glGetUniformLocation(shader.progId, "tex");
-    shader.loc_texelSize     = glGetUniformLocation(shader.progId, "texelSize");
-    shader.loc_filterEnabled = glGetUniformLocation(shader.progId, "u_filterEnabled");
+    //ソーベル
+    Sobel_shader.progId = Sobel_program.programId();
+    Sobel_shader.loc_tex           = glGetUniformLocation(Sobel_shader.progId, "tex");
+    Sobel_shader.loc_texelSize     = glGetUniformLocation(Sobel_shader.progId, "texelSize");
+    Sobel_shader.loc_filterEnabled = glGetUniformLocation(Sobel_shader.progId, "u_filterEnabled");
+
+    //ガウシアン
+    Gaussian_shader.progId = Gaussian_program.programId();
+    Gaussian_shader.loc_tex           = glGetUniformLocation(Gaussian_shader.progId, "tex");
+    Gaussian_shader.loc_texelSize     = glGetUniformLocation(Gaussian_shader.progId, "texelSize");
+    Gaussian_shader.loc_filterEnabled = glGetUniformLocation(Gaussian_shader.progId, "u_filterEnabled");
+
+    //平均化
+    Averaging_shader.progId = Averaging_program.programId();
+    Averaging_shader.loc_tex           = glGetUniformLocation(Averaging_shader.progId, "tex");
+    Averaging_shader.loc_texelSize     = glGetUniformLocation(Averaging_shader.progId, "texelSize");
+    Averaging_shader.loc_filterEnabled = glGetUniformLocation(Averaging_shader.progId, "u_filterEnabled");
 
     //stream
     cudaStreamCreate(&stream);
@@ -171,25 +192,71 @@ void GLWidget::initializeGL()
 }
 
 //FBOレンダリング
-void GLWidget::OpenGL_Rendering(){
-    //fboターゲット
+void GLWidget::FBO_Rendering(){
+    //--------------------------------
+    // ガウシアン inputTexture → fbo
+    //--------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, width_, height_);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    //シェーダの設定
-    glUseProgram(shader.progId);
+    // Gaussian 用 uniform
+    glUseProgram(Gaussian_shader.progId);
+    glUniform1i(Gaussian_shader.loc_tex, 0);
+    glUniform2f(Gaussian_shader.loc_texelSize, 1.0f / width_, 1.0f / height_);
+    glUniform1i(Gaussian_shader.loc_filterEnabled, gaussianfilterEnabled);
 
-    // uniform 設定
-    glUniform1i(shader.loc_tex, 0);
-    glUniform2f(shader.loc_texelSize, 1.0f / width_, 1.0f / height_);
-    glUniform1i(shader.loc_filterEnabled, sobelfilterEnabled);
-
-    //入力テクスチャ(CUDAから来たもの)を設定
+    // Gaussian の入力
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, inputTextureID);
 
-    //描画エリア、fboTextureIdに描画
+    // 描画
+    glBindVertexArray(vao);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+    glUseProgram(0);
+
+    //--------------------------------
+    // ソーベルフィルタ fbo → tempfbo
+    //--------------------------------
+    glBindFramebuffer(GL_FRAMEBUFFER, tempfbo);
+    glViewport(0, 0, width_, height_);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // Sobel 用 uniform
+    glUseProgram(Sobel_shader.progId);
+    glUniform1i(Sobel_shader.loc_tex, 0);
+    glUniform2f(Sobel_shader.loc_texelSize, 1.0f / width_, 1.0f / height_);
+    glUniform1i(Sobel_shader.loc_filterEnabled, sobelfilterEnabled);
+
+    // Sobel の入力
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, fboTextureID);
+
+    // 描画
+    glBindVertexArray(vao);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+    glUseProgram(0);
+
+    //--------------------------------
+    // 平均化 tempfbo → fbo
+    //--------------------------------
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width_, height_);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // 平均化 用 uniform
+    glUseProgram(Averaging_shader.progId);
+    glUniform1i(Averaging_shader.loc_tex, 0);
+    glUniform2f(Averaging_shader.loc_texelSize, 1.0f / width_, 1.0f / height_);
+    glUniform1i(Averaging_shader.loc_filterEnabled, averagingfilterEnabled);
+
+    // 平均化 の入力
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tempTextureID);
+
+    // 描画
     glBindVertexArray(vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
@@ -201,7 +268,6 @@ void GLWidget::OpenGL_Rendering(){
     } else if(encode_state==STATE_NOT_ENCODE){
         //画面に描画
         Monitor_Rendering();
-        fpsCount++;
     }
 }
 
@@ -531,12 +597,23 @@ void GLWidget::initTextureCuda(int width,int height) {
             fbo = 0;
         }
 
+        if (tempTextureID) {
+            glDeleteTextures(1, &tempTextureID);
+            tempTextureID = 0;
+        }
+
+        if (tempfbo) {
+            glDeleteFramebuffers(1, &tempfbo);
+            tempfbo = 0;
+        }
+
         //新しいサイズで再作成
         glGenBuffers(1, &output_pbo);
         glBindBuffer(GL_PIXEL_PACK_BUFFER, output_pbo);
         glBufferData(GL_PIXEL_PACK_BUFFER, width * height * 4, NULL, GL_STREAM_READ);
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
+        //fbo
         glGenFramebuffers(1, &fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glGenTextures(1, &fboTextureID);
@@ -545,6 +622,17 @@ void GLWidget::initTextureCuda(int width,int height) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTextureID, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        //tempfbo
+        glGenFramebuffers(1, &tempfbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, tempfbo);
+        glGenTextures(1, &tempTextureID);
+        glBindTexture(GL_TEXTURE_2D, tempTextureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tempTextureID, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         //outputpbo登録
@@ -712,7 +800,8 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 
-    OpenGL_Rendering();
+    FBO_Rendering();
+    fpsCount++;
 }
 
 //OpenGLからCUDAへ転送+ヒストグラム解析

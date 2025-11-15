@@ -32,11 +32,17 @@ public:
     void encode_mode(int flag);
     void GLresize();
     void GLreset();
+    void FBO_Rendering();
     void Monitor_Rendering();
 
     bool videoInfo_flag=false;
     bool histgram_flag=false;
     int MaxFrame=0;
+
+    //画像処理
+    int sobelfilterEnabled=0;
+    int gaussianfilterEnabled=0;
+    int averagingfilterEnabled=0;
 
 protected:
     void initializeGL() override;
@@ -48,7 +54,6 @@ private:
     void initCudaHist();
     void histgram_Analysys();
     void downloadToGLTexture_and_Encode();
-    void OpenGL_Rendering();
     std::vector<int> make_nice_y_labels(int max_value);
 
     //CUDA Interop
@@ -62,24 +67,29 @@ private:
     bool initialize_completed_flag=false;
     GLuint inputTextureID;  // ← 入力用
     GLuint fboTextureID;    // ← 出力先（FBOバインド用）
+    GLuint tempTextureID;
     GLuint vbo_hist = 0;
     GLuint fbo = 0;
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint input_pbo=0;
     GLuint output_pbo=0;
+    GLuint tempfbo = 0;
     QPainter painter;
 
     //シェーダ―
-    QOpenGLShaderProgram program;
-    int sobelfilterEnabled;
+    QOpenGLShaderProgram Sobel_program;
+    QOpenGLShaderProgram Gaussian_program;
+    QOpenGLShaderProgram Averaging_program;
     struct shader{
         GLuint progId=0;
         GLint loc_tex           = 0;
         GLint loc_texelSize     = 0;
         GLint loc_filterEnabled =0;
     };
-    shader shader;
+    shader Sobel_shader;
+    shader Gaussian_shader;
+    shader Averaging_shader;
 
     //動画データ
     uint8_t *d_y = nullptr, *d_uv = nullptr,*d_rgba=nullptr;

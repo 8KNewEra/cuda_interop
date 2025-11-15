@@ -61,6 +61,31 @@ MainWindow::MainWindow(QWidget *parent)
     QObject::connect(ui->actionFileSave, &QAction::triggered, this, &MainWindow::encode_set,Qt::QueuedConnection);
     QObject::connect(encodeSetting, &encode_setting::signal_encode_start,this, &MainWindow::start_encode,Qt::QueuedConnection);
     QObject::connect(encodeSetting, &encode_setting::signal_encode_finished,this, &MainWindow::finished_encode,Qt::QueuedConnection);
+
+    //画像処理
+    QObject::connect(ui->action_filter_sobel, &QAction::triggered,this, [&](bool flag) {
+        if(flag){
+            glWidget->sobelfilterEnabled=1;
+        }else{
+            glWidget->sobelfilterEnabled=0;
+        }
+    }, Qt::QueuedConnection);
+
+    QObject::connect(ui->action_filter_gausian, &QAction::triggered,this, [&](bool flag) {
+        if(flag){
+            glWidget->gaussianfilterEnabled=1;
+        }else{
+            glWidget->gaussianfilterEnabled=0;
+        }
+    }, Qt::QueuedConnection);
+
+    QObject::connect(ui->action_filter_averaging, &QAction::triggered,this, [&](bool flag) {
+        if(flag){
+            glWidget->averagingfilterEnabled=1;
+        }else{
+            glWidget->averagingfilterEnabled=0;
+        }
+    }, Qt::QueuedConnection);
 }
 
 MainWindow::~MainWindow()
@@ -252,7 +277,7 @@ void MainWindow::decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t 
         if(d_y&&d_uv&&pitch_y>0&&pitch_uv>0&&encode_state!=STATE_ENCODE_READY){
             glWidget->uploadToGLTexture(d_y,pitch_y,d_uv,pitch_uv,slider);
         }else if(encode_state==STATE_NOT_ENCODE){
-            glWidget->Monitor_Rendering();
+            glWidget->FBO_Rendering();
         }
 
         //コンテキストを破棄

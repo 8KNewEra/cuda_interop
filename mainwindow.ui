@@ -185,7 +185,16 @@
     <addaction name="actionCloseFile"/>
     <addaction name="actionFileSave"/>
    </widget>
+   <widget class="QMenu" name="menu_2">
+    <property name="title">
+     <string>画像処理</string>
+    </property>
+    <addaction name="action_filter_sobel"/>
+    <addaction name="action_filter_gausian"/>
+    <addaction name="action_filter_averaging"/>
+   </widget>
    <addaction name="menu"/>
+   <addaction name="menu_2"/>
   </widget>
   <action name="actionOpenFile">
    <property name="enabled">
@@ -257,13 +266,40 @@
     <bool>true</bool>
    </property>
    <property name="text">
-    <string>ヒストグラム</string>
+    <string>ヒストグラム(CUDA)</string>
    </property>
    <property name="toolTip">
     <string>histgram</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+H</string>
+   </property>
+  </action>
+  <action name="action_filter_sobel">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>ソーベルフィルタ(GLSL)</string>
+   </property>
+  </action>
+  <action name="action_filter_gausian">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>ガウシアンフィルタ(GLSL)</string>
+   </property>
+  </action>
+  <action name="action_filter_averaging">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>平均化フィルタ(GLSL)</string>
+   </property>
+   <property name="toolTip">
+    <string>averaging</string>
    </property>
   </action>
  </widget>
