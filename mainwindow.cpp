@@ -69,6 +69,7 @@ MainWindow::MainWindow(QWidget *parent)
         }else{
             glWidget->sobelfilterEnabled=0;
         }
+        glWidget->filter_change_flag=true;
     }, Qt::QueuedConnection);
 
     QObject::connect(ui->action_filter_gausian, &QAction::triggered,this, [&](bool flag) {
@@ -77,6 +78,7 @@ MainWindow::MainWindow(QWidget *parent)
         }else{
             glWidget->gaussianfilterEnabled=0;
         }
+        glWidget->filter_change_flag=true;
     }, Qt::QueuedConnection);
 
     QObject::connect(ui->action_filter_averaging, &QAction::triggered,this, [&](bool flag) {
@@ -85,6 +87,7 @@ MainWindow::MainWindow(QWidget *parent)
         }else{
             glWidget->averagingfilterEnabled=0;
         }
+        glWidget->filter_change_flag=true;
     }, Qt::QueuedConnection);
 }
 

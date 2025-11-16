@@ -33,13 +33,14 @@ public:
     void GLresize();
     void GLreset();
     void FBO_Rendering();
-    void Monitor_Rendering();
+    void setShaderUniformEnable();
 
     bool videoInfo_flag=false;
     bool histgram_flag=false;
     int MaxFrame=0;
 
     //画像処理
+    bool filter_change_flag = true;
     int sobelfilterEnabled=0;
     int gaussianfilterEnabled=0;
     int averagingfilterEnabled=0;
@@ -51,6 +52,8 @@ private:
     void initTextureCuda(int width,int height);
     void initCudaTexture(int width,int height);
     void initCudaMalloc(int width,int height);
+    void setShaderUniform(int width,int height);
+    void Monitor_Rendering();
     void initCudaHist();
     void histgram_Analysys();
     void downloadToGLTexture_and_Encode();

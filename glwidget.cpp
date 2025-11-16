@@ -193,72 +193,43 @@ void GLWidget::initializeGL()
 
 //FBOレンダリング
 void GLWidget::FBO_Rendering(){
-    //--------------------------------
-    // ガウシアン inputTexture → fbo
-    //--------------------------------
+    //フィルター適用チェック
+    if(filter_change_flag){
+        setShaderUniformEnable();
+        filter_change_flag=false;
+    }
+
+    //FBO描画開始
+    glBindVertexArray(vao);
+
+    // Gaussian
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, width_, height_);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // Gaussian 用 uniform
     glUseProgram(Gaussian_shader.progId);
-    glUniform1i(Gaussian_shader.loc_tex, 0);
-    glUniform2f(Gaussian_shader.loc_texelSize, 1.0f / width_, 1.0f / height_);
-    glUniform1i(Gaussian_shader.loc_filterEnabled, gaussianfilterEnabled);
-
-    // Gaussian の入力
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, inputTextureID);
-
-    // 描画
-    glBindVertexArray(vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
-    glBindVertexArray(0);
-    glUseProgram(0);
 
-    //--------------------------------
-    // ソーベルフィルタ fbo → tempfbo
-    //--------------------------------
+    // Sobel
     glBindFramebuffer(GL_FRAMEBUFFER, tempfbo);
-    glViewport(0, 0, width_, height_);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // Sobel 用 uniform
     glUseProgram(Sobel_shader.progId);
-    glUniform1i(Sobel_shader.loc_tex, 0);
-    glUniform2f(Sobel_shader.loc_texelSize, 1.0f / width_, 1.0f / height_);
-    glUniform1i(Sobel_shader.loc_filterEnabled, sobelfilterEnabled);
-
-    // Sobel の入力
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, fboTextureID);
-
-    // 描画
-    glBindVertexArray(vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
-    glBindVertexArray(0);
-    glUseProgram(0);
 
-    //--------------------------------
-    // 平均化 tempfbo → fbo
-    //--------------------------------
+    // Averaging
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, width_, height_);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // 平均化 用 uniform
     glUseProgram(Averaging_shader.progId);
-    glUniform1i(Averaging_shader.loc_tex, 0);
-    glUniform2f(Averaging_shader.loc_texelSize, 1.0f / width_, 1.0f / height_);
-    glUniform1i(Averaging_shader.loc_filterEnabled, averagingfilterEnabled);
-
-    // 平均化 の入力
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tempTextureID);
-
-    // 描画
-    glBindVertexArray(vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+
     glBindVertexArray(0);
     glUseProgram(0);
 
@@ -464,42 +435,6 @@ void GLWidget::Monitor_Rendering(){
     // qDebug()<<seconds;
 }
 
-// 人が見て気持ちいいY軸ラベルを生成
-std::vector<int> GLWidget::make_nice_y_labels(int max_value)
-{
-    int num_divs = 3;
-    std::vector<int> labels;
-    if (max_value <= 0) return labels;
-
-    // 1. 仮の間隔を計算
-    double raw_step = static_cast<double>(max_value) / num_divs;
-    double magnitude = pow(10.0, floor(log10(raw_step))); // 10^n の桁
-    double normalized = raw_step / magnitude;             // 1〜10の範囲に正規化
-
-    // 2. 正規化した値を 1, 2, 5 のいずれかに丸める
-    double nice_factor = 1.0;
-    if (normalized < 1.5)
-        nice_factor = 1.0;
-    else if (normalized < 3.0)
-        nice_factor = 2.0;
-    else if (normalized < 7.0)
-        nice_factor = 5.0;
-    else
-        nice_factor = 10.0;
-
-    double nice_step = nice_factor * magnitude;
-
-    // 3. ラベル値を作成
-    for (double v = nice_step; v < max_value; v += nice_step)
-        labels.push_back(static_cast<int>(v));
-
-    // 4. 必要なら最終ラベルを追加
-    if (labels.empty() || labels.back() < max_value)
-        labels.push_back(static_cast<int>(ceil(max_value / nice_step) * nice_step));
-
-    return labels;
-}
-
 //アスペクト比を合わせてリサイズ
 void GLWidget::GLresize() {
     //現在のウィンドウのDPIスケールを取得
@@ -535,6 +470,37 @@ void GLWidget::GLreset(){
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     context()->swapBuffers(context()->surface());
+}
+
+//シェーダーUniform、UI設定変更時
+void GLWidget::setShaderUniformEnable(){
+    glUseProgram(Gaussian_shader.progId);
+    glUniform1i(Gaussian_shader.loc_filterEnabled, gaussianfilterEnabled);
+
+    glUseProgram(Sobel_shader.progId);
+    glUniform1i(Sobel_shader.loc_filterEnabled, sobelfilterEnabled);
+
+    glUseProgram(Averaging_shader.progId);
+    glUniform1i(Averaging_shader.loc_filterEnabled, averagingfilterEnabled);
+
+    glUseProgram(0);
+}
+
+//シェーダーUniform、解像度変更時
+void GLWidget::setShaderUniform(int width,int height){
+    glUseProgram(Gaussian_shader.progId);
+    glUniform1i(Gaussian_shader.loc_tex, 0);
+    glUniform2f(Gaussian_shader.loc_texelSize, 1.0f / width, 1.0f / height);
+
+    glUseProgram(Sobel_shader.progId);
+    glUniform1i(Sobel_shader.loc_tex, 0);
+    glUniform2f(Sobel_shader.loc_texelSize, 1.0f / width, 1.0f / height);
+
+    glUseProgram(Averaging_shader.progId);
+    glUniform1i(Averaging_shader.loc_tex, 0);
+    glUniform2f(Averaging_shader.loc_texelSize, 1.0f / width, 1.0f / height);
+
+    glUseProgram(0);
 }
 
 //CUDA→OpenGLの初期化、登録など
@@ -643,66 +609,6 @@ void GLWidget::initTextureCuda(int width,int height) {
         }
 }
 
-//ヒストグラム周り
-void GLWidget::initCudaHist() {
-    // --- 1. 既存 CUDA Graphics Resource を解放 ---
-    if (cudaResource_hist) {
-        cudaGraphicsUnregisterResource(cudaResource_hist);
-        cudaResource_hist = nullptr;
-    }
-    if (cudaResource_hist_draw) {
-        cudaGraphicsUnregisterResource(cudaResource_hist_draw);
-        cudaResource_hist_draw = nullptr;
-    }
-
-    // --- 2. 既存 VBO を削除 ---
-    if (vbo_hist != 0) {
-        glDeleteBuffers(1, &vbo_hist);
-        vbo_hist = 0;
-    }
-
-    // --- 3. 既存 CUDA メモリ を解放 ---
-    if (d_hist_stats) {
-        cudaFree(d_hist_stats);
-        d_hist_stats = nullptr;
-    }
-    if (d_hist_data) {
-        cudaFree(d_hist_data);
-        d_hist_stats = nullptr;
-    }
-
-    // --- 4. 新規登録 fbo → cudaResource_hist ---
-    cudaError_t err = cudaGraphicsGLRegisterImage(
-        &cudaResource_hist,
-        fboTextureID,
-        GL_TEXTURE_2D,
-        cudaGraphicsRegisterFlagsNone
-        );
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsGLRegisterImage failed:" << cudaGetErrorString(err);
-    }
-
-    // --- 5. 新規 VBO 作成 ---
-    glGenBuffers(1, &vbo_hist);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_hist);
-    glBufferData(GL_ARRAY_BUFFER, num_bins * 3 * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    // --- 6. VBO → CUDA Resource 登録 ---
-    err = cudaGraphicsGLRegisterBuffer(
-        &cudaResource_hist_draw,
-        vbo_hist,
-        cudaGraphicsRegisterFlagsWriteDiscard
-        );
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsGLRegisterBuffer failed:" << cudaGetErrorString(err);
-    }
-
-    // --- 7. CUDA 側のメモリを確保 ---
-    cudaMalloc(&d_hist_stats, sizeof(HistStats));
-    cudaMalloc(&d_hist_data, sizeof(HistData));
-}
-
 //初回、解像度が変わった場合再Malloc
 void GLWidget::initCudaMalloc(int width, int height)
 {
@@ -743,6 +649,7 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
         initCudaMalloc(VideoInfo.width,VideoInfo.height);
         initCudaTexture(VideoInfo.width,VideoInfo.height);
         initTextureCuda(VideoInfo.width,VideoInfo.height);
+        setShaderUniform(VideoInfo.width,VideoInfo.height);
         initCudaHist();
         width_=VideoInfo.width;
         height_=VideoInfo.height;
@@ -802,6 +709,137 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
 
     FBO_Rendering();
     fpsCount++;
+}
+
+//OpenGLからCUDAへ転送+エンコード
+void GLWidget::downloadToGLTexture_and_Encode() {
+    if (!cudaResource2) {
+        qDebug() << "cudaResource2 is nullptr, can't map";
+        emit decode_please();
+        return;
+    }
+
+    //FBOからPBOへコピー
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, output_pbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glReadPixels(0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    //マッピング
+    cudaError_t err;
+    err = cudaGraphicsMapResources(1, &cudaResource2, 0);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
+        emit decode_please();
+        return;
+    }
+
+    //マップしたPBOのデバイスポインタを取得する
+    uint8_t* pbo_ptr = nullptr;
+    size_t pbo_size;
+    err = cudaGraphicsResourceGetMappedPointer((void**)&pbo_ptr, &pbo_size, cudaResource2);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaGraphicsResourceGetMappedPointer error:" << cudaGetErrorString(err);
+        cudaGraphicsUnmapResources(1, &cudaResource2, 0);
+        emit decode_please();
+        return;
+    }
+
+    //CUDAカーネルの処理
+    size_t pitch_pbo=width_*4;
+    CUDA_IMG_Proc->Flip_RGBA_to_NV12(d_y, pitch_y, d_uv, pitch_uv,pbo_ptr, pitch_pbo,height_, width_);
+
+    //PBOリソースのマップを解除し、制御をOpenGLに戻す
+    err = cudaGraphicsUnmapResources(1, &cudaResource2, 0);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
+        emit decode_please();
+        return;
+    }
+
+    if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
+        save_encoder->encode(d_y,pitch_y,d_uv,pitch_uv);
+        encode_FrameCount++;
+    }else{
+        delete save_encoder;
+        save_encoder=nullptr;
+        encode_FrameCount=0;
+
+        emit encode_finished();
+    }
+}
+
+//エンコード時
+void GLWidget::encode_mode(int flag){
+    if(flag==STATE_ENCODING){
+        if(save_encoder==nullptr){
+            save_encoder = new save_encode(height_,width_);
+        }
+        encode_state=flag;
+    }else{
+        encode_state=flag;
+    }
+}
+
+//ヒストグラム周り
+void GLWidget::initCudaHist() {
+    // --- 1. 既存 CUDA Graphics Resource を解放 ---
+    if (cudaResource_hist) {
+        cudaGraphicsUnregisterResource(cudaResource_hist);
+        cudaResource_hist = nullptr;
+    }
+    if (cudaResource_hist_draw) {
+        cudaGraphicsUnregisterResource(cudaResource_hist_draw);
+        cudaResource_hist_draw = nullptr;
+    }
+
+    // --- 2. 既存 VBO を削除 ---
+    if (vbo_hist != 0) {
+        glDeleteBuffers(1, &vbo_hist);
+        vbo_hist = 0;
+    }
+
+    // --- 3. 既存 CUDA メモリ を解放 ---
+    if (d_hist_stats) {
+        cudaFree(d_hist_stats);
+        d_hist_stats = nullptr;
+    }
+    if (d_hist_data) {
+        cudaFree(d_hist_data);
+        d_hist_stats = nullptr;
+    }
+
+    // --- 4. 新規登録 fbo → cudaResource_hist ---
+    cudaError_t err = cudaGraphicsGLRegisterImage(
+        &cudaResource_hist,
+        fboTextureID,
+        GL_TEXTURE_2D,
+        cudaGraphicsRegisterFlagsNone
+        );
+    if (err != cudaSuccess) {
+        qDebug() << "cudaGraphicsGLRegisterImage failed:" << cudaGetErrorString(err);
+    }
+
+    // --- 5. 新規 VBO 作成 ---
+    glGenBuffers(1, &vbo_hist);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_hist);
+    glBufferData(GL_ARRAY_BUFFER, num_bins * 3 * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // --- 6. VBO → CUDA Resource 登録 ---
+    err = cudaGraphicsGLRegisterBuffer(
+        &cudaResource_hist_draw,
+        vbo_hist,
+        cudaGraphicsRegisterFlagsWriteDiscard
+        );
+    if (err != cudaSuccess) {
+        qDebug() << "cudaGraphicsGLRegisterBuffer failed:" << cudaGetErrorString(err);
+    }
+
+    // --- 7. CUDA 側のメモリを確保 ---
+    cudaMalloc(&d_hist_stats, sizeof(HistStats));
+    cudaMalloc(&d_hist_data, sizeof(HistData));
 }
 
 //OpenGLからCUDAへ転送+ヒストグラム解析
@@ -938,73 +976,38 @@ void GLWidget::histgram_Analysys(){
     }
 }
 
-//OpenGLからCUDAへ転送+エンコード
-void GLWidget::downloadToGLTexture_and_Encode() {
-    if (!cudaResource2) {
-        qDebug() << "cudaResource2 is nullptr, can't map";
-        emit decode_please();
-        return;
-    }
+// 人が見て気持ちいいY軸ラベルを生成
+std::vector<int> GLWidget::make_nice_y_labels(int max_value)
+{
+    int num_divs = 3;
+    std::vector<int> labels;
+    if (max_value <= 0) return labels;
 
-    //FBOからPBOへコピー
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, output_pbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glReadPixels(0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // 1. 仮の間隔を計算
+    double raw_step = static_cast<double>(max_value) / num_divs;
+    double magnitude = pow(10.0, floor(log10(raw_step))); // 10^n の桁
+    double normalized = raw_step / magnitude;             // 1〜10の範囲に正規化
 
-    //マッピング
-    cudaError_t err;
-    err = cudaGraphicsMapResources(1, &cudaResource2, 0);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
-        return;
-    }
+    // 2. 正規化した値を 1, 2, 5 のいずれかに丸める
+    double nice_factor = 1.0;
+    if (normalized < 1.5)
+        nice_factor = 1.0;
+    else if (normalized < 3.0)
+        nice_factor = 2.0;
+    else if (normalized < 7.0)
+        nice_factor = 5.0;
+    else
+        nice_factor = 10.0;
 
-    //マップしたPBOのデバイスポインタを取得する
-    uint8_t* pbo_ptr = nullptr;
-    size_t pbo_size;
-    err = cudaGraphicsResourceGetMappedPointer((void**)&pbo_ptr, &pbo_size, cudaResource2);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsResourceGetMappedPointer error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(1, &cudaResource2, 0);
-        emit decode_please();
-        return;
-    }
+    double nice_step = nice_factor * magnitude;
 
-    //CUDAカーネルの処理
-    size_t pitch_pbo=width_*4;
-    CUDA_IMG_Proc->Flip_RGBA_to_NV12(d_y, pitch_y, d_uv, pitch_uv,pbo_ptr, pitch_pbo,height_, width_);
+    // 3. ラベル値を作成
+    for (double v = nice_step; v < max_value; v += nice_step)
+        labels.push_back(static_cast<int>(v));
 
-    //PBOリソースのマップを解除し、制御をOpenGLに戻す
-    err = cudaGraphicsUnmapResources(1, &cudaResource2, 0);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
-        return;
-    }
+    // 4. 必要なら最終ラベルを追加
+    if (labels.empty() || labels.back() < max_value)
+        labels.push_back(static_cast<int>(ceil(max_value / nice_step) * nice_step));
 
-    if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
-        save_encoder->encode(d_y,pitch_y,d_uv,pitch_uv);
-        encode_FrameCount++;
-    }else{
-        delete save_encoder;
-        save_encoder=nullptr;
-        encode_FrameCount=0;
-
-        emit encode_finished();
-    }
-}
-
-//エンコード時
-void GLWidget::encode_mode(int flag){
-    if(flag==STATE_ENCODING){
-        if(save_encoder==nullptr){
-            save_encoder = new save_encode(height_,width_);
-        }
-        encode_state=flag;
-    }else{
-        encode_state=flag;
-    }
+    return labels;
 }
