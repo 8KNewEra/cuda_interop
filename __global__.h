@@ -1,7 +1,8 @@
 #ifndef __GLOBAL___H
 #define __GLOBAL___H
 
-#include <string> // std::string を使うために必要
+#include <string>
+#include <cuda_runtime.h>
 #define STATE_NOT_ENCODE 0
 #define STATE_ENCODE_READY 1
 #define STATE_ENCODING 2
@@ -141,5 +142,8 @@ struct HistData {
     unsigned int max_g;
     unsigned int max_b;
 };
+
+//デバイス情報
+extern cudaDeviceProp g_prop;
 
 #endif // __GLOBAL___H

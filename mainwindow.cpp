@@ -12,11 +12,6 @@ MainWindow::MainWindow(QWidget *parent)
     //MainWindow
     ui->setupUi(this);
 
-    //エンコード設定用
-    encodeSetting = new encode_setting();
-    encodeSetting->setWindowModality(Qt::ApplicationModal);
-    encodeSetting->hide();
-
     GLwidgetInitialized();
 
     //スライダー
@@ -59,8 +54,6 @@ MainWindow::MainWindow(QWidget *parent)
     QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::Open_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionCloseFile, &QAction::triggered, this, &MainWindow::Close_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionFileSave, &QAction::triggered, this, &MainWindow::encode_set,Qt::QueuedConnection);
-    QObject::connect(encodeSetting, &encode_setting::signal_encode_start,this, &MainWindow::start_encode,Qt::QueuedConnection);
-    QObject::connect(encodeSetting, &encode_setting::signal_encode_finished,this, &MainWindow::finished_encode,Qt::QueuedConnection);
 
     //画像処理
     QObject::connect(ui->action_filter_sobel, &QAction::triggered,this, [&](bool flag) {
@@ -124,6 +117,13 @@ void MainWindow::GLwidgetInitialized(){
         start_info_thread();
         ui->actionOpenFile->setEnabled(true);
         ui->info->setEnabled(true);
+
+        //エンコード設定用
+        encodeSetting = new encode_setting();
+        encodeSetting->setWindowModality(Qt::ApplicationModal);
+        encodeSetting->hide();
+        QObject::connect(encodeSetting, &encode_setting::signal_encode_start,this, &MainWindow::start_encode,Qt::QueuedConnection);
+        QObject::connect(encodeSetting, &encode_setting::signal_encode_finished,this, &MainWindow::finished_encode,Qt::QueuedConnection);
     });
 
     glWidget->show();

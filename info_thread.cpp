@@ -39,7 +39,7 @@ int info_thread::get_gpu_usage() {
     nvmlUtilization_t utilization;
 
     // 最初の GPU の使用率を取得
-    nvmlReturn_t result = nvmlDeviceGetHandleByIndex(1, &device);
+    nvmlReturn_t result = nvmlDeviceGetHandleByIndex(g_cudaDeviceID, &device);
     if (result != NVML_SUCCESS) {
         qDebug() << "Failed to get device handle:" << nvmlErrorString(result);
         return -1;

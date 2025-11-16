@@ -6,6 +6,7 @@
 #include "__global__.h"
 
 extern int g_gpu_usage;
+extern int g_cudaDeviceID;
 
 class info_thread : public QThread {
     Q_OBJECT

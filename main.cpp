@@ -6,6 +6,8 @@
 #include <QStyleFactory>
 
 int g_gpu_usage;
+int g_cudaDeviceID=0;
+cudaDeviceProp g_prop;
 
 int main(int argc, char *argv[])
 {

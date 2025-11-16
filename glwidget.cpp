@@ -181,6 +181,9 @@ void GLWidget::initializeGL()
     Averaging_shader.loc_texelSize     = glGetUniformLocation(Averaging_shader.progId, "texelSize");
     Averaging_shader.loc_filterEnabled = glGetUniformLocation(Averaging_shader.progId, "u_filterEnabled");
 
+    //ComputeCapability取得
+    getCudaCapabilityForOpenGLGPU();
+
     //stream
     cudaStreamCreate(&stream);
     cudaEventCreate(&e);
@@ -417,14 +420,15 @@ void GLWidget::Monitor_Rendering(){
             painter.setPen(Qt::white);
             painter.setFont(QFont("Consolas", 16));
             painter.drawText(2, 20, "OpenGL Device:" + QString::fromLatin1((const char*)glGetString(GL_RENDERER))+"\n");
-            painter.drawText(2, 40, QString("FPS: %1").arg(fps, 0, 'f', 1));
-            painter.drawText(2, 60, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
-            painter.drawText(2, 80, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
-            painter.drawText(2, 100, "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
-            painter.drawText(2, 120, "Resolution:" + QString::number(VideoInfo.width)+"×"+QString::number(VideoInfo.height)+"\n");
-            painter.drawText(2, 140, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
-            painter.drawText(2, 160, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
-            painter.drawText(2, 180, "Current Frame:" + QString::number(VideoInfo.current_frameNo)+"\n");
+            painter.drawText(2, 40, "CUDA Device:" + QString::fromStdString(g_prop.name)+"(Compute Capability:"+QString::number(g_prop.major)+"."+QString::number(g_prop.minor)+")\n");
+            painter.drawText(2, 60, QString("FPS: %1").arg(fps, 0, 'f', 1));
+            painter.drawText(2, 80, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
+            painter.drawText(2, 100, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
+            painter.drawText(2, 120, "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
+            painter.drawText(2, 140, "Resolution:" + QString::number(VideoInfo.width)+"×"+QString::number(VideoInfo.height)+"\n");
+            painter.drawText(2, 160, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
+            painter.drawText(2, 180, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
+            painter.drawText(2, 200, "Current Frame:" + QString::number(VideoInfo.current_frameNo)+"\n");
         }
     }
 
@@ -1010,4 +1014,37 @@ std::vector<int> GLWidget::make_nice_y_labels(int max_value)
         labels.push_back(static_cast<int>(ceil(max_value / nice_step) * nice_step));
 
     return labels;
+}
+
+//CUDAとopenGLのデバイス設定
+void GLWidget::getCudaCapabilityForOpenGLGPU()
+{
+    // OpenGL が使用している CUDA デバイスを取得
+    unsigned int deviceCount = 0;
+    int deviceIDs[8] = {0};
+
+    cudaError_t err = cudaGLGetDevices(
+        &deviceCount,
+        deviceIDs,
+        8,
+        cudaGLDeviceListAll
+        );
+
+    if (err != cudaSuccess || deviceCount == 0) {
+        qDebug() << "cudaGLGetDevices failed:" << cudaGetErrorString(err);
+    }
+
+    int glCudaDevice = deviceIDs[0];  // OpenGLが使っているCUDAデバイス
+
+    // CUDA の使用デバイスを設定
+    //cudaSetDevice(glCudaDevice);
+
+    // 確認用にプロパティを取得
+    cudaGetDeviceProperties(&g_prop, glCudaDevice);
+
+    qDebug() << "OpenGL GPU に CUDA を同期:";
+    qDebug() << "  CUDA Device ID =" << glCudaDevice;
+    qDebug() << "  GPU Name =" << g_prop.name;
+    qDebug() << "  Compute Capability ="
+             << g_prop.major << "." << g_prop.minor;
 }

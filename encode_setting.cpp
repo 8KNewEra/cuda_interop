@@ -46,7 +46,12 @@ encode_setting::encode_setting(QWidget *parent)
     //コーデック
     {
         QStringList codec_items;
-        codec_items << "H.264" << "H.265" << "AV1";
+        if(g_prop.major > 8 || (g_prop.major == 8 && g_prop.minor >= 9)){
+            codec_items << "H.264" << "H.265" << "AV1";
+        }else{
+            codec_items << "H.264" << "H.265";
+        }
+
         ui->comboBox_codec->addItems(codec_items);
         QObject::connect(ui->comboBox_codec, &QComboBox::currentIndexChanged, this, [&](int index) {
             settings.Codec= settingmap[index].codec.toStdString();

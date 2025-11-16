@@ -17,7 +17,7 @@ namespace Ui {
 class encode_setting;
 }
 
-extern EncodeSettings g_encode_settings;
+extern QString g_compute_capability;
 
 class encode_setting : public QWidget
 {
