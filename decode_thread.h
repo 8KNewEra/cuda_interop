@@ -19,6 +19,8 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 }
 
+extern int g_cudaDeviceID;
+
 class decode_thread : public QObject {
     Q_OBJECT
 

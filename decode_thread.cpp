@@ -194,10 +194,11 @@ void decode_thread::initialized_ffmpeg() {
     int ret;
 
     // CUDA デバイスコンテキスト作成
-    ret = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+    QString gpuId = QString::number(g_cudaDeviceID);   // GPU1 を使う例
+    ret = av_hwdevice_ctx_create(&hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
+
     if (ret < 0) {
-        QString error= "Failed to create CUDA device context:"+ffmpegErrStr(ret);
-        qDebug()<<error;
+        QString error = "Failed to create CUDA device ctx on GPU " + gpuId + ":" + ffmpegErrStr(ret);
         emit decode_error(error);
         return;
     }

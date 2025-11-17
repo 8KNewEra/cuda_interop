@@ -362,8 +362,18 @@ void encode_setting::read_txt(){
             if (line.startsWith("Save_Path:")){
                 settings.Save_Path = line.mid(line.indexOf(':') + 1).remove('"').toStdString();
             }else if (line.startsWith("Codec:")){
-                settings.Codec = line.split(':')[1].remove('"').toStdString();
-                combo_index[0]=foundIndex("codec",line.split(':')[1].remove('"'));
+                if(g_prop.major > 8 || (g_prop.major == 8 && g_prop.minor >= 9)){
+                    settings.Codec = line.split(':')[1].remove('"').toStdString();
+                    combo_index[0]=foundIndex("codec",line.split(':')[1].remove('"'));
+                }else{
+                    if(line.split(':')[1].remove('"').toStdString()=="av1_nvenc"){
+                        settings.Codec = "hevc_nvenc";
+                        combo_index[0]=foundIndex("codec","hevc_nvenc");
+                    }else{
+                        settings.Codec = line.split(':')[1].remove('"').toStdString();
+                        combo_index[0]=foundIndex("codec",line.split(':')[1].remove('"'));
+                    }
+                }
             }else if (line.startsWith("save_fps:")){
                 settings.save_fps = line.split(':')[1].toInt();
                 combo_index[1]=foundIndex("fps",line.split(':')[1].remove('"'));

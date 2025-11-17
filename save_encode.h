@@ -17,6 +17,8 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 }
 
+extern int g_cudaDeviceID;
+
 class save_encode
 {
 public:

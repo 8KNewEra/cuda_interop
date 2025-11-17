@@ -166,7 +166,9 @@ void save_encode::initialized_ffmpeg_codec_context(){
 void save_encode::initialized_ffmpeg_hardware_context() {
     int ret = 0;
 
-    ret = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+    // CUDA デバイスコンテキスト作成
+    QString gpuId = QString::number(g_cudaDeviceID);
+    ret = av_hwdevice_ctx_create(&hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
     if (ret < 0) throw std::runtime_error("Failed to create CUDA device");
 
     hw_frames_ctx = av_hwframe_ctx_alloc(hw_device_ctx);
