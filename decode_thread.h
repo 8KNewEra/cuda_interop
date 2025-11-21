@@ -5,7 +5,6 @@
 #include <QObject>
 #include <QWaitCondition>
 #include <QMutex>
-#include <cuda_runtime.h>
 #include <QDebug>
 #include <QFile>
 #include "__global__.h"
@@ -29,7 +28,7 @@ public:
     ~decode_thread() override;
 
 signals:
-    void send_decode_image(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int slider);
+    void send_decode_image(AVFrame* rgbaFrame,int slider);
     void send_video_info();
     void send_software_image(AVFrame *rgba_frame);
     void finished();
@@ -73,12 +72,15 @@ private:
     QByteArray File_byteArray;
     AVPacket* packet;
     AVFrame* hw_frame;
+    AVFrame* sw_frame;
+    AVFrame* rgbaFrame;
     AVFormatContext* fmt_ctx = nullptr;
     AVCodecContext* codec_ctx = nullptr;
     AVHWDeviceContext* hw_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
     const AVCodec* decoder;
     int video_stream_index;
+    SwsContext* sws_ctx;
 
     DecodeState decode_state = STATE_DECODE_READY;
 
@@ -88,9 +90,6 @@ private:
     QTimer *timer;
     QElapsedTimer elapsedTimer;
     int interval_ms;
-
-    uint8_t *d_y = nullptr, *d_uv = nullptr;
-    size_t pitch_y = 0, pitch_uv = 0;
 
     DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
 };

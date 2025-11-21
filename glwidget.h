@@ -29,7 +29,7 @@ signals:
 public:
     explicit GLWidget(QWindow *parent = nullptr);
     ~GLWidget();
-    void uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int a);
+    void uploadToGLTexture(AVFrame* rgbaFrame,int a);
     void encode_mode(int flag);
     void GLresize();
     void GLreset();

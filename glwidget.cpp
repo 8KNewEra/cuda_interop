@@ -637,7 +637,7 @@ void GLWidget::initCudaMalloc(int width, int height)
 }
 
 //CUDAからOpenGLへ転送
-void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int a) {
+void GLWidget::uploadToGLTexture(AVFrame* rgbaFrame,int a) {
     // QElapsedTimer timer;
     // timer.start();
 
@@ -662,60 +662,22 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
         return;
     }
 
-    //入力データチェック
-    if (!d_y||!d_uv) {
-        qDebug() << "入力データがNULLです";
-        emit decode_please();
-        return;
-    }
-
-    //PBOリソースをCUDAからアクセスできるようにマップする
-    cudaError_t err = cudaSuccess;
-    err = cudaGraphicsMapResources(1, &cudaResource1, 0);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
-        return;
-    }
-
-    //マップしたPBOのデバイスポインタを取得する
-    uint8_t* pbo_ptr = nullptr;
-    size_t pbo_size;
-    err = cudaGraphicsResourceGetMappedPointer((void**)&pbo_ptr, &pbo_size, cudaResource1);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsResourceGetMappedPointer error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(1, &cudaResource1, 0);
-        emit decode_please();
-        return;
-    }
-
-    //CUDAカーネルの処理
-    size_t pitch_pbo=width_*4;
-    CUDA_IMG_Proc->NV12_to_RGBA(pbo_ptr, pitch_pbo, d_y, pitch_y, d_uv, pitch_uv, height_, width_);
-    //CUDA_IMG_Proc->Gradation(pbo_ptr,pitch_pbo,d_rgba,pitch_rgba,height,width);
-
-    // std::vector<uchar4> cpu_image(width_ * height_);
-
-    // cudaMemcpy(cpu_image.data(), pbo_ptr,
-    //            width_ * height_ * 4, cudaMemcpyDeviceToHost);
-
-    // cudaMemcpy(d_rgba, cpu_image.data(),
-    //            width_ * height_ * 4, cudaMemcpyHostToDevice);
-
-
-    //PBOリソースのマップを解除し、制御をOpenGLに戻す
-    err = cudaGraphicsUnmapResources(1, &cudaResource1, 0);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
-        return;
-    }
-
-    //OpenGLのコマンドで、PBOからテクスチャへデータを転送する
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, input_pbo);
     glBindTexture(GL_TEXTURE_2D, inputTextureID);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+    // テクスチャ更新（メモリは確保済みなので SubImage）
+    glTexSubImage2D(
+        GL_TEXTURE_2D,
+        0,
+        0, 0,
+        width_,
+        height_,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        rgbaFrame->data[0]
+        );
+
+    // 元に戻す
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;

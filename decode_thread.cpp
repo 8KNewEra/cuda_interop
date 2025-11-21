@@ -38,13 +38,6 @@ decode_thread::~decode_thread() {
     // 1) デコードループ停止要求
     QThread::msleep(10);
 
-    // 2) CUDA同期（非同期処理完了待ち）
-    cudaError_t cerr = cudaDeviceSynchronize();
-    if (cerr != cudaSuccess) {
-        qWarning() << "cudaDeviceSynchronize failed:"
-                   << cudaGetErrorString(cerr);
-    }
-
     // 3) FFmpeg関係の安全な解放
     auto safe_free_codec = [&]() {
         if (codec_ctx) {
@@ -66,6 +59,10 @@ decode_thread::~decode_thread() {
         if (hw_frame) {
             av_frame_free(&hw_frame);
             hw_frame = nullptr;
+        }
+        if (sw_frame) {
+            av_frame_free(&sw_frame);
+            sw_frame = nullptr;
         }
         if (packet) {
             av_packet_free(&packet);
@@ -99,9 +96,6 @@ decode_thread::~decode_thread() {
             ptr = nullptr;
         }
     };
-
-    safe_cuda_free((void*&)d_y, "d_y");
-    safe_cuda_free((void*&)d_uv, "d_uv");
 
     qDebug() << "decode_thread: resources released cleanly";
 }
@@ -169,7 +163,7 @@ void decode_thread::processFrame() {
     if (!video_play_flag && slider_No == VideoInfo.current_frameNo){
         if(decode_state==STATE_DECODE_READY){
             decode_state=STATE_DECODING;
-            emit send_decode_image(nullptr,0,nullptr,0,VideoInfo.current_frameNo);
+            emit send_decode_image(nullptr,VideoInfo.current_frameNo);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
         return;
@@ -191,6 +185,8 @@ void decode_thread::processFrame() {
 void decode_thread::initialized_ffmpeg() {
     packet = av_packet_alloc();
     hw_frame = av_frame_alloc();
+    sw_frame = av_frame_alloc();
+    rgbaFrame = av_frame_alloc();
     int ret;
 
     // CUDA デバイスコンテキスト作成
@@ -281,6 +277,31 @@ void decode_thread::initialized_ffmpeg() {
     //最終フレームptsを取得
     get_last_frame_pts();
 
+    //RGBAフレーム設定
+    qDebug()<<VideoInfo.width;
+    sws_ctx = sws_getContext(
+        VideoInfo.width , VideoInfo.height ,
+        AV_PIX_FMT_NV12,             // 入力
+        VideoInfo.width , VideoInfo.height ,
+        AV_PIX_FMT_RGBA,             // ★出力：RGBA
+        SWS_BILINEAR,
+        nullptr, nullptr, nullptr
+        );
+
+    if (!sws_ctx) {
+        qDebug() << "sws_getContext failed";
+        return;
+    }
+
+    rgbaFrame->format = AV_PIX_FMT_RGBA;
+    rgbaFrame->width  = VideoInfo.width;
+    rgbaFrame->height = VideoInfo.height;
+
+    if (av_frame_get_buffer(rgbaFrame, 32) < 0) {
+        qDebug() << "av_frame_get_buffer failed";
+        return;
+    }
+
     //スライダー設定
     emit send_video_info();
 
@@ -362,6 +383,8 @@ void decode_thread::get_last_frame_pts() {
             avcodec_send_packet(codec_ctx, nullptr);
             while (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
                 last_pts = hw_frame->best_effort_timestamp;
+                VideoInfo.width = hw_frame->width;
+                VideoInfo.height = hw_frame->height;
                 frame_received = true;
             }
             break;
@@ -371,6 +394,8 @@ void decode_thread::get_last_frame_pts() {
             if (avcodec_send_packet(codec_ctx, packet) == 0) {
                 while (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
                     last_pts = hw_frame->best_effort_timestamp;
+                    VideoInfo.width = hw_frame->width;
+                    VideoInfo.height = hw_frame->height;
                     frame_received = true;
                 }
             }
@@ -443,31 +468,32 @@ void decode_thread::get_decode_image() {
 void decode_thread::ffmpeg_to_CUDA(){
     // QElapsedTimer timer;
     // timer.start();
-    VideoInfo.width = hw_frame->width;
-    VideoInfo.height = hw_frame->height;
 
-    //初回時にのみmalloc
-    if (!d_y || !d_uv) {
-        cudaMallocPitch(&d_y, &pitch_y,VideoInfo.width, VideoInfo.height);
-        cudaMallocPitch(&d_uv, &pitch_uv, VideoInfo.width, VideoInfo.height / 2);
+
+    // GPU → CPU 転送
+    int ret = av_hwframe_transfer_data(sw_frame, hw_frame, 0);
+    if (ret < 0) {
+        qDebug() << "av_hwframe_transfer_data failed:" << ffmpegErrStr(ret);
+        av_frame_free(&sw_frame);
+        return;
     }
 
-    cudaMemcpy2D(d_y, pitch_y,
-                 hw_frame->data[0], hw_frame->linesize[0],
-                 VideoInfo.width, VideoInfo.height,
-                 cudaMemcpyDeviceToDevice);
-
-    cudaMemcpy2D(d_uv, pitch_uv,
-                 hw_frame->data[1], hw_frame->linesize[1],
-                 VideoInfo.width, VideoInfo.height / 2,
-                 cudaMemcpyDeviceToDevice);
+    sws_scale(
+        sws_ctx,
+        sw_frame->data,
+        sw_frame->linesize,
+        0,
+        VideoInfo.height,
+        rgbaFrame->data,
+        rgbaFrame->linesize
+    );
 
     //フレーム番号更新
     AVRational time_base = fmt_ctx->streams[video_stream_index]->time_base;
     VideoInfo.current_frameNo = hw_frame->best_effort_timestamp/VideoInfo.pts_per_frame;
     slider_No = VideoInfo.current_frameNo;
 
-    emit send_decode_image(d_y,pitch_y,d_uv,pitch_uv,VideoInfo.current_frameNo);
+    emit send_decode_image(rgbaFrame,VideoInfo.current_frameNo);
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 }
