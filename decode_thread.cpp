@@ -195,6 +195,7 @@ void decode_thread::initialized_ffmpeg() {
 
     // CUDA デバイスコンテキスト作成
     QString gpuId = QString::number(g_cudaDeviceID);   // GPU1 を使う例
+    qDebug()<<gpuId;
     ret = av_hwdevice_ctx_create(&hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
 
     if (ret < 0) {

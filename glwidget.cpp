@@ -396,7 +396,7 @@ void GLWidget::Monitor_Rendering(){
             {
                 painter.setPen(Qt::white);
                 painter.setFont(QFont("Consolas", 16));
-                QRect rect(viewportWidth/monitor_scaling -(316), 0, 350*monitor_scaling, 100*monitor_scaling);  // 右端に幅300のエリア
+                QRect rect(viewportWidth/monitor_scaling -(325), 0, 350*monitor_scaling, 100*monitor_scaling);  // 右端に幅300のエリア
                 painter.drawText(rect, Qt::AlignLeft,"R: min:" + QString::number(h_hist_stats.min_r) +" max:" + QString::number(h_hist_stats.max_r) +" avg:" + QString::number(h_hist_stats.avg_r));
                 painter.drawText(rect.adjusted(0, 20, 0, 0), Qt::AlignLeft,"G: min:" + QString::number(h_hist_stats.min_g) +" max:" + QString::number(h_hist_stats.max_g) +" avg:" + QString::number(h_hist_stats.avg_g));
                 painter.drawText(rect.adjusted(0, 40, 0, 0), Qt::AlignLeft,"B: min:" + QString::number(h_hist_stats.min_b) +" max:" + QString::number(h_hist_stats.max_b) +" avg:" + QString::number(h_hist_stats.avg_b));
@@ -694,6 +694,15 @@ void GLWidget::uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, siz
     CUDA_IMG_Proc->NV12_to_RGBA(pbo_ptr, pitch_pbo, d_y, pitch_y, d_uv, pitch_uv, height_, width_);
     //CUDA_IMG_Proc->Gradation(pbo_ptr,pitch_pbo,d_rgba,pitch_rgba,height,width);
 
+    // std::vector<uchar4> cpu_image(width_ * height_);
+
+    // cudaMemcpy(cpu_image.data(), pbo_ptr,
+    //            width_ * height_ * 4, cudaMemcpyDeviceToHost);
+
+    // cudaMemcpy(d_rgba, cpu_image.data(),
+    //            width_ * height_ * 4, cudaMemcpyHostToDevice);
+
+
     //PBOリソースのマップを解除し、制御をOpenGLに戻す
     err = cudaGraphicsUnmapResources(1, &cudaResource1, 0);
     if (err != cudaSuccess) {
@@ -749,6 +758,14 @@ void GLWidget::downloadToGLTexture_and_Encode() {
         emit decode_please();
         return;
     }
+
+    // std::vector<uchar4> cpu_image(width_ * height_);
+
+    // cudaMemcpy(cpu_image.data(), pbo_ptr,
+    //            width_ * height_ * 4, cudaMemcpyDeviceToHost);
+
+    // cudaMemcpy(d_rgba, cpu_image.data(),
+    //            width_ * height_ * 4, cudaMemcpyHostToDevice);
 
     //CUDAカーネルの処理
     size_t pitch_pbo=width_*4;
@@ -1034,16 +1051,16 @@ void GLWidget::getCudaCapabilityForOpenGLGPU()
         qDebug() << "cudaGLGetDevices failed:" << cudaGetErrorString(err);
     }
 
-    int glCudaDevice = deviceIDs[0];  // OpenGLが使っているCUDAデバイス
+    g_cudaDeviceID = deviceIDs[0];  // OpenGLが使っているCUDAデバイス
 
     // CUDA の使用デバイスを設定
     //cudaSetDevice(glCudaDevice);
 
     // 確認用にプロパティを取得
-    cudaGetDeviceProperties(&g_prop, glCudaDevice);
+    cudaGetDeviceProperties(&g_prop, g_cudaDeviceID);
 
     qDebug() << "OpenGL GPU に CUDA を同期:";
-    qDebug() << "  CUDA Device ID =" << glCudaDevice;
+    qDebug() << "  CUDA Device ID =" << g_cudaDeviceID;
     qDebug() << "  GPU Name =" << g_prop.name;
     qDebug() << "  Compute Capability ="
              << g_prop.major << "." << g_prop.minor;

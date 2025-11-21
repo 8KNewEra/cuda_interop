@@ -122,7 +122,7 @@ encode_setting::encode_setting(QWidget *parent)
     }
 
     // ターゲットビットレートスライダー
-    ui->horizontalSlider_targetbitrate->setRange(1, max_bit_rate);
+    ui->horizontalSlider_targetbitrate->setRange(1, 200);
     QObject::connect(ui->horizontalSlider_targetbitrate, &QSlider::valueChanged, this, [&](int value){
         target_bit_rate = value;
         ui->label_targetbitrare_value->setText(QString::number(value) + " Mbps");
@@ -136,10 +136,13 @@ encode_setting::encode_setting(QWidget *parent)
 
         // ターゲットスライダーの範囲を更新
         int target = target_bit_rate;
-        ui->horizontalSlider_targetbitrate->setMaximum(value);
+
+        if(settings.rc_mode=="vbr"){
+            ui->horizontalSlider_targetbitrate->setMaximum(value);
+        }
 
         // 現在のターゲットが最大を超えた場合は調整
-        if(target > value){
+        if(target > value&&settings.rc_mode=="vbr"){
             target = value;
             target_bit_rate = target;
             ui->horizontalSlider_targetbitrate->setValue(target);
@@ -223,6 +226,20 @@ encode_setting::encode_setting(QWidget *parent)
             settings.max_bit_rate=max_bit_rate*1000*1000;
             settings.target_bit_rate=target_bit_rate*1000*1000;
         }
+
+        //パスが存在するか確認
+        QFileInfo info(QString::fromStdString(settings.Save_Path));
+        QString dirPath = info.absolutePath();
+        QDir dir(dirPath);
+
+        if (!dir.exists()) {
+            QMessageBox::warning(this,
+                                 tr("エンコードエラー"),
+                                 tr("エンコード保存パスがありません"),
+                                 QMessageBox::Ok);
+            return;
+        }
+
 
         //上書きできるか
         if (!ui->allow_overwrite_checkBox->isChecked()||(VideoInfo.Path==settings.Save_Path)) {
@@ -459,8 +476,8 @@ void encode_setting::write_txt(){
         out << "pass_mode:\"" << QString::fromStdString(settings.pass_mode) << "\"\n";
         out << "rc_mode:\"" << QString::fromStdString(settings.rc_mode) << "\"\n";
         out << "allow_overwrite:\"" << QVariant(allow_overwrite).toString() << "\"\n";
-        out << "target_bit_rate:\"" << QString::number(settings.target_bit_rate) << "\"\n";
-        out << "max_bit_rate:\"" << QString::number(settings.max_bit_rate) << "\"\n";
+        out << "target_bit_rate:\"" << QString::number(target_bit_rate*1000*1000) << "\"\n";
+        out << "max_bit_rate:\"" << QString::number(max_bit_rate*1000*1000) << "\"\n";
         out << "crf:\"" << QString::number(settings.crf) << "\"\n";
         file.close();
         qDebug() << "新しい設定ファイルを追加しました。";

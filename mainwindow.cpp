@@ -37,7 +37,6 @@ MainWindow::MainWindow(QWidget *parent)
     escShortcut->setContext(Qt::ApplicationShortcut);
     connect(escShortcut, &QShortcut::activated, this, [this] {
         if (isFullScreenMode) {
-            qDebug() << "ESC pressed, exiting fullscreen";
             toggleFullScreen();
         }
     });
@@ -113,15 +112,6 @@ void MainWindow::GLwidgetInitialized(){
     // 初期化完了後の処理
     connect(glWidget, &GLWidget::initialized, this, [=]() {
         qDebug() << "GLWidget 初期化完了";
-
-        if(g_prop.major < 7 || (g_prop.major == 7 && g_prop.minor <5)){
-            QMessageBox::warning(this,
-                             tr("非対応デバイス"),
-                             tr("非対応GPU"),
-                             QMessageBox::Ok);
-            return;
-        }
-
         start_fps_thread();
         start_info_thread();
         ui->actionOpenFile->setEnabled(true);
