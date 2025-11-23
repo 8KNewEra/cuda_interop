@@ -5,6 +5,11 @@ save_encode::save_encode(int h,int w) {
     height_=h;
     width_=w;
     frame_index=0;
+
+    if(CUDA_IMG_Proc==nullptr){
+        CUDA_IMG_Proc=new CUDA_ImageProcess();
+    }
+
     // qDebug()<<encode_settings.Codec;
     // qDebug()<<encode_settings.gop_size;
     // qDebug()<<encode_settings.b_frames;
@@ -79,6 +84,9 @@ save_encode::~save_encode() {
         avformat_free_context(fmt_ctx);
         fmt_ctx = nullptr;
     }
+
+    delete CUDA_IMG_Proc;
+    CUDA_IMG_Proc=nullptr;
 
     qDebug() << "save_encode: Destructor called";
 }
@@ -218,25 +226,13 @@ void save_encode::initialized_ffmpeg_output(const std::string& path){
     this->stream = stream;
 }
 
-bool save_encode::encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv)
+bool save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba)
 {
     //qDebug()<<No;
     No+=1;
 
-    //ffmpegへ転送
-    cudaMemcpy2D(
-        hw_frame->data[0], hw_frame->linesize[0],
-        d_y, pitch_y,
-        width_ * sizeof(uint8_t), height_,
-        cudaMemcpyDeviceToDevice
-        );
-
-    cudaMemcpy2D(
-        hw_frame->data[1], hw_frame->linesize[1],
-        d_uv, pitch_uv,
-        width_ * sizeof(uint8_t), height_ / 2,
-        cudaMemcpyDeviceToDevice
-        );
+    //RGBAをNV12に変換してffmpegへ転送
+    CUDA_IMG_Proc->Flip_RGBA_to_NV12(hw_frame->data[0], hw_frame->linesize[0], hw_frame->data[1], hw_frame->linesize[1],d_rgba, pitch_rgba,height_, width_);
 
     //フレームのPTSをセット
     hw_frame->pts = frame_index*pts_step;

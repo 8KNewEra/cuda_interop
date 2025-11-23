@@ -29,7 +29,7 @@ signals:
 public:
     explicit GLWidget(QWindow *parent = nullptr);
     ~GLWidget();
-    void uploadToGLTexture(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int a);
+    void uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int a);
     void encode_mode(int flag);
     void GLresize();
     void GLreset();
@@ -77,8 +77,6 @@ private:
     GLuint fbo = 0;
     GLuint vao = 0;
     GLuint vbo = 0;
-    GLuint input_pbo=0;
-    GLuint output_pbo=0;
     GLuint tempfbo = 0;
     QPainter painter;
 
@@ -97,8 +95,8 @@ private:
     shader Averaging_shader;
 
     //動画データ
-    uint8_t *d_y = nullptr, *d_uv = nullptr,*d_rgba=nullptr;
-    size_t pitch_y = 0, pitch_uv = 0,pitch_rgba=0;
+    uint8_t *d_rgba=nullptr;
+    size_t pitch_rgba=0;
 
     // 描画領域を計算
     float monitor_scaling=1;

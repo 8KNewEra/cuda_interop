@@ -9,6 +9,7 @@
 #include <QDebug>
 #include <QFile>
 #include "__global__.h"
+#include "cuda_imageprocess.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -29,7 +30,7 @@ public:
     ~decode_thread() override;
 
 signals:
-    void send_decode_image(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int slider);
+    void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,int slider);
     void send_video_info();
     void send_software_image(AVFrame *rgba_frame);
     void finished();
@@ -89,8 +90,9 @@ private:
     QElapsedTimer elapsedTimer;
     int interval_ms;
 
-    uint8_t *d_y = nullptr, *d_uv = nullptr;
-    size_t pitch_y = 0, pitch_uv = 0;
+    uint8_t *d_rgba;
+    size_t pitch_rgba = 0;
+    CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
 
     DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
 };

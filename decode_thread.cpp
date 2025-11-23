@@ -25,6 +25,10 @@ decode_thread::decode_thread(QString FilePath, QObject *parent)
     VideoInfo.Path = FilePath.toStdString();
     File_byteArray = FilePath.toUtf8();
     input_filename = File_byteArray.constData();
+
+    if(CUDA_IMG_Proc==nullptr){
+        CUDA_IMG_Proc=new CUDA_ImageProcess();
+    }
 }
 
 decode_thread::~decode_thread() {
@@ -100,8 +104,10 @@ decode_thread::~decode_thread() {
         }
     };
 
-    safe_cuda_free((void*&)d_y, "d_y");
-    safe_cuda_free((void*&)d_uv, "d_uv");
+    safe_cuda_free((void*&)d_rgba, "d_rgba");
+
+    delete CUDA_IMG_Proc;
+    CUDA_IMG_Proc=nullptr;
 
     qDebug() << "decode_thread: resources released cleanly";
 }
@@ -169,7 +175,7 @@ void decode_thread::processFrame() {
     if (!video_play_flag && slider_No == VideoInfo.current_frameNo){
         if(decode_state==STATE_DECODE_READY){
             decode_state=STATE_DECODING;
-            emit send_decode_image(nullptr,0,nullptr,0,VideoInfo.current_frameNo);
+            emit send_decode_image(nullptr,0,VideoInfo.current_frameNo);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
         return;
@@ -362,6 +368,8 @@ void decode_thread::get_last_frame_pts() {
             avcodec_send_packet(codec_ctx, nullptr);
             while (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
                 last_pts = hw_frame->best_effort_timestamp;
+                VideoInfo.width = hw_frame->width;
+                VideoInfo.height = hw_frame->height;
                 frame_received = true;
             }
             break;
@@ -371,6 +379,8 @@ void decode_thread::get_last_frame_pts() {
             if (avcodec_send_packet(codec_ctx, packet) == 0) {
                 while (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
                     last_pts = hw_frame->best_effort_timestamp;
+                    VideoInfo.width = hw_frame->width;
+                    VideoInfo.height = hw_frame->height;
                     frame_received = true;
                 }
             }
@@ -384,6 +394,9 @@ void decode_thread::get_last_frame_pts() {
         qDebug() << "Last PTS:" << last_pts << " (" << seconds << "sec)";
         VideoInfo.max_framesNo = fmt_ctx->streams[video_stream_index]->duration/VideoInfo.pts_per_frame-1;
         VideoInfo.current_frameNo = VideoInfo.max_framesNo;
+
+        //初回時にのみmalloc
+        cudaMallocPitch(&d_rgba, &pitch_rgba,VideoInfo.width*4, VideoInfo.height);
     } else {
         qDebug() << "No frame found at end.";
     }
@@ -443,31 +456,16 @@ void decode_thread::get_decode_image() {
 void decode_thread::ffmpeg_to_CUDA(){
     // QElapsedTimer timer;
     // timer.start();
-    VideoInfo.width = hw_frame->width;
-    VideoInfo.height = hw_frame->height;
 
-    //初回時にのみmalloc
-    if (!d_y || !d_uv) {
-        cudaMallocPitch(&d_y, &pitch_y,VideoInfo.width, VideoInfo.height);
-        cudaMallocPitch(&d_uv, &pitch_uv, VideoInfo.width, VideoInfo.height / 2);
-    }
-
-    cudaMemcpy2D(d_y, pitch_y,
-                 hw_frame->data[0], hw_frame->linesize[0],
-                 VideoInfo.width, VideoInfo.height,
-                 cudaMemcpyDeviceToDevice);
-
-    cudaMemcpy2D(d_uv, pitch_uv,
-                 hw_frame->data[1], hw_frame->linesize[1],
-                 VideoInfo.width, VideoInfo.height / 2,
-                 cudaMemcpyDeviceToDevice);
+    //カーネルNV12→RGBA
+    CUDA_IMG_Proc->NV12_to_RGBA(d_rgba, pitch_rgba,hw_frame->data[0], hw_frame->linesize[0], hw_frame->data[1], hw_frame->linesize[1], VideoInfo.height, VideoInfo.width);
 
     //フレーム番号更新
     AVRational time_base = fmt_ctx->streams[video_stream_index]->time_base;
     VideoInfo.current_frameNo = hw_frame->best_effort_timestamp/VideoInfo.pts_per_frame;
     slider_No = VideoInfo.current_frameNo;
 
-    emit send_decode_image(d_y,pitch_y,d_uv,pitch_uv,VideoInfo.current_frameNo);
+    emit send_decode_image(d_rgba,pitch_rgba,VideoInfo.current_frameNo);
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 }

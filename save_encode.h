@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 #include <QDebug>
 #include <QFile>
+#include "cuda_imageprocess.h"
 #include "__global__.h"
 
 extern "C" {
@@ -24,7 +25,7 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    bool encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv);
+    bool encode(uint8_t* d_rgba, size_t pitch_rgba);
 
 private:
     void initialized_ffmpeg_hardware_context();
@@ -52,6 +53,8 @@ private:
     int No2=0;
 
     const EncodeSettings& encode_settings = EncodeSettingsManager::getInstance().getSettings();
+
+    CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
 };
 
 #endif // SAVE_ENCODE_H

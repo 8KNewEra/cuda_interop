@@ -64,7 +64,7 @@ private:
     void start_decode_thread();
     void stop_decode_thread();
     void set_preview_speed(const QString &text);
-    void decode_view(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int slider);
+    void decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider);
     QThread *decode__thread;
     decode_thread *decodestream;
     bool run_decode_thread=false;
