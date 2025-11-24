@@ -86,17 +86,6 @@ decode_thread::~decode_thread() {
         qWarning() << "Exception during FFmpeg cleanup (ignored)";
     }
 
-    // 4) CUDA メモリの安全な解放
-    auto safe_cuda_free = [&](void*& ptr, const char* name) {
-        if (ptr) {
-            cudaError_t err = cudaFree(ptr);
-            if (err != cudaSuccess)
-                qWarning() << name << "cudaFree failed:"
-                           << cudaGetErrorString(err);
-            ptr = nullptr;
-        }
-    };
-
     qDebug() << "decode_thread: resources released cleanly";
 }
 

@@ -17,11 +17,11 @@ CONFIG += c++17
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
-    cuda_imageprocess.cpp \
     decode_thread.cpp \
     encode_setting.cpp \
     fps_thread.cpp \
     glwidget.cpp \
+    imageprocess.cpp \
     info_thread.cpp \
     main.cpp \
     mainwindow.cpp \
@@ -29,11 +29,11 @@ SOURCES += \
 
 HEADERS += \
     __global__.h \
-    cuda_imageprocess.h \
     decode_thread.h \
     encode_setting.h \
     fps_thread.h \
     glwidget.h \
+    imageprocess.h \
     info_thread.h \
     mainwindow.h \
     save_encode.h
@@ -53,31 +53,6 @@ CONFIG += embed_translations
 # INCLUDEPATH += $$OPENCV_DIR/include
 # LIBS += -L$$OPENCV_DIR/x64/vc17/lib \
 #         -lopencv_world4120  # ← ".lib" は不要！
-
-#CUDAリンク
-CUDA_DIR = "$$PWD/NVIDIAGPUComputingToolkit/CUDA/v13.0"
-
-INCLUDEPATH += $$CUDA_DIR/include
-LIBS += -L$$CUDA_DIR/lib/x64 \
-        -lcudart \
-        -lnppc \
-        -lnppial \
-        -lnppicc \
-        -lnppidei \
-        -lnppif \
-        -lnppig \
-        -lnppim \
-        -lnppist \
-        -lnppisu
-
-LIBS += -L"$$PWD/NVIDIA Corporation/NVSMI" -lnvml
-
-#CUDAの.objファイルを列挙してリンク
-CUDA_OBJ_OUT_DIR = $$PWD/cuda_kernels/obj_out/
-CUDA_OBJ_FILES = $$files($$CUDA_OBJ_OUT_DIR/*.obj)
-for(obj, CUDA_OBJ_FILES) {
-    LIBS += $$obj
-}
 
 #ffmepg
 ffmpeg_DIR = "$$PWD/ffmpeg"

@@ -46,7 +46,8 @@ encode_setting::encode_setting(QWidget *parent)
     //コーデック
     {
         QStringList codec_items;
-        if(g_prop.major > 8 || (g_prop.major == 8 && g_prop.minor >= 9)){
+        double y=9.8;
+        if(y >= 8.9){
             codec_items << "H.264" << "H.265" << "AV1";
         }else{
             codec_items << "H.264" << "H.265";
@@ -379,7 +380,9 @@ void encode_setting::read_txt(){
             if (line.startsWith("Save_Path:")){
                 settings.Save_Path = line.mid(line.indexOf(':') + 1).remove('"').toStdString();
             }else if (line.startsWith("Codec:")){
-                if(g_prop.major > 8 || (g_prop.major == 8 && g_prop.minor >= 9)){
+                //要修正
+                double y=9.2;
+                if( y >= 8.9){
                     settings.Codec = line.split(':')[1].remove('"').toStdString();
                     combo_index[0]=foundIndex("codec",line.split(':')[1].remove('"'));
                 }else{

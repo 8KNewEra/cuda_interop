@@ -2,7 +2,7 @@
 #define GLWIDGET_H
 
 #include "save_encode.h"
-#include "cuda_imageprocess.h"
+#include "imageprocess.h"
 #include "__global__.h"
 #include <QOpenGLFunctions_4_5_Core>
 #pragma once
@@ -11,8 +11,6 @@
 #include <QOpenGLShaderProgram>
 #include <QOpenGLFunctions>
 #include <QPainter>
-#include <cuda_runtime.h>
-#include <cuda_gl_interop.h>
 #include <QTimer>
 
 extern int g_gpu_usage;
@@ -60,13 +58,7 @@ private:
     void downloadToGLTexture_and_Encode();
     std::vector<int> make_nice_y_labels(int max_value);
     void getCudaCapabilityForOpenGLGPU();
-
-    //CUDA Interop
-    cudaGraphicsResource* cudaResource1;
-    cudaGraphicsResource* cudaResource2;
-    cudaGraphicsResource* cudaResource_hist=nullptr;
-    cudaGraphicsResource* cudaResource_hist_draw=nullptr;
-    CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
+    ImageProcess* IMG_Proc=nullptr;
 
     //OpenGL周り
     bool initialize_completed_flag=false;
@@ -77,8 +69,6 @@ private:
     GLuint fbo = 0;
     GLuint vao = 0;
     GLuint vbo = 0;
-    GLuint input_pbo=0;
-    GLuint output_pbo=0;
     GLuint tempfbo = 0;
     QPainter painter;
 
@@ -97,8 +87,9 @@ private:
     shader Averaging_shader;
 
     //動画データ
-    uint8_t *d_y = nullptr, *d_uv = nullptr,*d_rgba=nullptr;
-    size_t pitch_y = 0, pitch_uv = 0,pitch_rgba=0;
+    AVFrame* rgbaFrame;
+    AVFrame* nv12Frame;
+    SwsContext* sws_ctx;
 
     // 描画領域を計算
     float monitor_scaling=1;
@@ -122,8 +113,6 @@ private:
     double fps = 0.0;
 
     //ヒストグラム
-    cudaStream_t stream = nullptr;
-    cudaEvent_t e = nullptr;
     HistData* d_hist_data = nullptr;
     HistStats* d_hist_stats = nullptr;
     HistData h_hist_data;

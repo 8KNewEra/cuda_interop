@@ -3,7 +3,6 @@
 
 #include <QThread>
 #include <QObject>
-#include <cuda_runtime.h>
 #include <QDebug>
 #include <QFile>
 #include "__global__.h"
@@ -24,7 +23,7 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    bool encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv);
+    bool encode(AVFrame* rgbaFrame);
 
 private:
     void initialized_ffmpeg_hardware_context();

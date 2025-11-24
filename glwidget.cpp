@@ -4,12 +4,10 @@
 
 GLWidget::GLWidget(QWindow *parent)
     :  QOpenGLWindow(NoPartialUpdate, parent),
-    cudaResource1(nullptr),
-    cudaResource2(nullptr),
     inputTextureID(0)
 {
-    if(CUDA_IMG_Proc==nullptr){
-        CUDA_IMG_Proc=new CUDA_ImageProcess();
+    if(IMG_Proc==nullptr){
+        IMG_Proc=new ImageProcess();
     }
 
     qDebug() << "GLWidget: Contructor called";
@@ -17,25 +15,11 @@ GLWidget::GLWidget(QWindow *parent)
 
 
 GLWidget::~GLWidget() {
-    if (cudaResource1) {
-        cudaGraphicsUnregisterResource(cudaResource1);
-    }
-    if (cudaResource2) {
-        cudaGraphicsUnregisterResource(cudaResource2);
-    }
     if (inputTextureID) {
         glDeleteTextures(1, &inputTextureID);
     }
     if (fboTextureID) {
         glDeleteTextures(1, &fboTextureID);
-    }
-    if (input_pbo) {
-        glDeleteBuffers(1, &input_pbo);
-        input_pbo = 0;
-    }
-    if (output_pbo) {
-        glDeleteBuffers(1, &output_pbo);
-        output_pbo = 0;
     }
     if (fboTextureID) {
         glDeleteTextures(1, &fboTextureID);
@@ -45,53 +29,9 @@ GLWidget::~GLWidget() {
         glDeleteFramebuffers(1, &fbo);
         fbo = 0;
     }
-    if (stream) {
-        cudaStreamSynchronize(stream);
-        cudaStreamDestroy(stream);
-        stream = nullptr;
-    }
-    if (e) {
-        cudaEventDestroy(e);
-        e = nullptr;
-    }
 
-    if (cudaResource_hist) {
-        cudaGraphicsUnregisterResource(cudaResource_hist);
-        cudaResource_hist = nullptr;
-    }
-    if (cudaResource_hist_draw) {
-        cudaGraphicsUnregisterResource(cudaResource_hist_draw);
-        cudaResource_hist_draw = nullptr;
-    }
-    if (vbo_hist != 0) {
-        glDeleteBuffers(1, &vbo_hist);
-        vbo_hist = 0;
-    }
-
-    //CUDA Mallocされたやつ
-    if (d_y) {
-        cudaFree(d_y);
-        d_y = nullptr;
-    }
-    if (d_uv) {
-        cudaFree(d_uv);
-        d_uv = nullptr;
-    }
-    if (d_rgba) {
-        cudaFree(d_rgba);
-        d_rgba = nullptr;
-    }
-    if (d_hist_stats) {
-        cudaFree(d_hist_stats);
-        d_hist_stats = nullptr;
-    }
-    if (d_hist_data) {
-        cudaFree(d_hist_data);
-        d_hist_data = nullptr;
-    }
-
-    delete CUDA_IMG_Proc;
-    CUDA_IMG_Proc=nullptr;
+    delete IMG_Proc;
+    IMG_Proc=nullptr;
 
     qDebug() << "GLWidget: Destructor called";
 }
@@ -183,10 +123,6 @@ void GLWidget::initializeGL()
 
     //ComputeCapability取得
     getCudaCapabilityForOpenGLGPU();
-
-    //stream
-    cudaStreamCreate(&stream);
-    cudaEventCreate(&e);
 
     // === 初期化完了 ===
     fpsTimer.start();
@@ -420,7 +356,6 @@ void GLWidget::Monitor_Rendering(){
             painter.setPen(Qt::white);
             painter.setFont(QFont("Consolas", 16));
             painter.drawText(2, 20, "OpenGL Device:" + QString::fromLatin1((const char*)glGetString(GL_RENDERER))+"\n");
-            painter.drawText(2, 40, "CUDA Device:" + QString::fromStdString(g_prop.name)+"(Compute Capability:"+QString::number(g_prop.major)+"."+QString::number(g_prop.minor)+")\n");
             painter.drawText(2, 60, QString("FPS: %1").arg(fps, 0, 'f', 1));
             painter.drawText(2, 80, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
             painter.drawText(2, 100, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
@@ -510,53 +445,22 @@ void GLWidget::setShaderUniform(int width,int height){
 //CUDA→OpenGLの初期化、登録など
 void GLWidget::initCudaTexture(int width,int height) {
     //古いリソースを破棄
-    if (cudaResource1) {
-        cudaGraphicsUnregisterResource(cudaResource1);
-        cudaResource1 = nullptr;
-    }
-
-    if (input_pbo) {
-        glDeleteBuffers(1, &input_pbo);
-        input_pbo = 0;
-    }
-
     if (inputTextureID) {
         glDeleteTextures(1, &inputTextureID);
         inputTextureID = 0;
     }
 
     //新しい解像度で作り直し
-    glGenBuffers(1, &input_pbo);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, input_pbo);
-    glBufferData(GL_PIXEL_PACK_BUFFER, width * height * 4, NULL, GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-
     glGenTextures(1, &inputTextureID);
     glBindTexture(GL_TEXTURE_2D, inputTextureID);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    //CUDAリソース再登録
-    cudaError_t err = cudaGraphicsGLRegisterBuffer(&cudaResource1, input_pbo, cudaGraphicsRegisterFlagsWriteDiscard);
-    if (err != cudaSuccess) {
-        qDebug() << "Failed to register PBO: " << cudaGetErrorString(err);
-        return;
-    }
 }
 
 //OpenGL→CUDAの初期化、登録など
 void GLWidget::initTextureCuda(int width,int height) {
         //既存リソースの破棄
-        if (cudaResource2) {
-            cudaGraphicsUnregisterResource(cudaResource2);
-            cudaResource2 = nullptr;
-        }
-        if (output_pbo) {
-            glDeleteBuffers(1, &output_pbo);
-            output_pbo = 0;
-        }
-
         if (fboTextureID) {
             glDeleteTextures(1, &fboTextureID);
             fboTextureID = 0;
@@ -578,11 +482,6 @@ void GLWidget::initTextureCuda(int width,int height) {
         }
 
         //新しいサイズで再作成
-        glGenBuffers(1, &output_pbo);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, output_pbo);
-        glBufferData(GL_PIXEL_PACK_BUFFER, width * height * 4, NULL, GL_STREAM_READ);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-
         //fbo
         glGenFramebuffers(1, &fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -604,36 +503,44 @@ void GLWidget::initTextureCuda(int width,int height) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tempTextureID, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        //outputpbo登録
-        cudaError_t err = cudaGraphicsGLRegisterBuffer(&cudaResource2, output_pbo, cudaGraphicsRegisterFlagsReadOnly);
-        if (err != cudaSuccess) {
-            qDebug() << "cudaGraphicsGLRegisterBuffer (output_pbo) error:" << cudaGetErrorString(err);
-            cudaResource2 = nullptr;
-        }
 }
 
 //初回、解像度が変わった場合再Malloc
 void GLWidget::initCudaMalloc(int width, int height)
 {
-    //すでに確保済みなら一度解放
-    if (d_y) {
-        cudaFree(d_y);
-        d_y = nullptr;
-    }
-    if (d_uv) {
-        cudaFree(d_uv);
-        d_uv = nullptr;
-    }
-    if (d_rgba) {
-        cudaFree(d_rgba);
-        d_rgba = nullptr;
+    rgbaFrame = av_frame_alloc();
+    rgbaFrame->format = AV_PIX_FMT_RGBA;
+    rgbaFrame->width  = width;
+    rgbaFrame->height = height;
+
+    if (av_frame_get_buffer(rgbaFrame, 32) < 0) {
+        qDebug() << "av_frame_get_buffer failed";
+        return;
     }
 
-    //再確保
-    cudaMallocPitch(&d_y, &pitch_y, width, height);
-    cudaMallocPitch(&d_uv, &pitch_uv, width, height / 2);
-    cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
+    nv12Frame = av_frame_alloc();
+    nv12Frame->format = AV_PIX_FMT_NV12;
+    nv12Frame->width  = width;
+    nv12Frame->height = height;
+
+    if (av_frame_get_buffer(nv12Frame, 32) < 0) {
+        qDebug() << "av_frame_get_buffer failed (nv12Frame)";
+        return;
+    }
+
+    sws_ctx = sws_getContext(
+        width , height ,
+        AV_PIX_FMT_RGBA,             // 入力
+        width , height ,
+        AV_PIX_FMT_NV12,             // ★出力：RGBA
+        SWS_BILINEAR,
+        nullptr, nullptr, nullptr
+        );
+
+    if (!sws_ctx) {
+        qDebug() << "sws_getContext failed";
+        return;
+    }
 }
 
 //CUDAからOpenGLへ転送
@@ -688,61 +595,22 @@ void GLWidget::uploadToGLTexture(AVFrame* rgbaFrame,int a) {
 
 //OpenGLからCUDAへ転送+エンコード
 void GLWidget::downloadToGLTexture_and_Encode() {
-    if (!cudaResource2) {
-        qDebug() << "cudaResource2 is nullptr, can't map";
-        emit decode_please();
-        return;
-    }
-
-    //FBOからPBOへコピー
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, output_pbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glReadPixels(0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    //マッピング
-    cudaError_t err;
-    err = cudaGraphicsMapResources(1, &cudaResource2, 0);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
-        return;
-    }
+    // ① FBO から RGBA を CPU にダウンロード
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glReadPixels(0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE, rgbaFrame->data[0]);
 
-    //マップしたPBOのデバイスポインタを取得する
-    uint8_t* pbo_ptr = nullptr;
-    size_t pbo_size;
-    err = cudaGraphicsResourceGetMappedPointer((void**)&pbo_ptr, &pbo_size, cudaResource2);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsResourceGetMappedPointer error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(1, &cudaResource2, 0);
-        emit decode_please();
-        return;
-    }
-
-    // std::vector<uchar4> cpu_image(width_ * height_);
-
-    // cudaMemcpy(cpu_image.data(), pbo_ptr,
-    //            width_ * height_ * 4, cudaMemcpyDeviceToHost);
-
-    // cudaMemcpy(d_rgba, cpu_image.data(),
-    //            width_ * height_ * 4, cudaMemcpyHostToDevice);
-
-    //CUDAカーネルの処理
-    size_t pitch_pbo=width_*4;
-    CUDA_IMG_Proc->Flip_RGBA_to_NV12(d_y, pitch_y, d_uv, pitch_uv,pbo_ptr, pitch_pbo,height_, width_);
-
-    //PBOリソースのマップを解除し、制御をOpenGLに戻す
-    err = cudaGraphicsUnmapResources(1, &cudaResource2, 0);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
-        return;
-    }
+    // ② RGBA → NV12（CPUで色変換）
+    sws_scale(
+        sws_ctx,
+        rgbaFrame->data, rgbaFrame->linesize,
+        0, height_,
+        nv12Frame->data, nv12Frame->linesize
+        );
 
     if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
-        save_encoder->encode(d_y,pitch_y,d_uv,pitch_uv);
+        save_encoder->encode(nv12Frame);
         encode_FrameCount++;
     }else{
         delete save_encoder;
@@ -767,41 +635,10 @@ void GLWidget::encode_mode(int flag){
 
 //ヒストグラム周り
 void GLWidget::initCudaHist() {
-    // --- 1. 既存 CUDA Graphics Resource を解放 ---
-    if (cudaResource_hist) {
-        cudaGraphicsUnregisterResource(cudaResource_hist);
-        cudaResource_hist = nullptr;
-    }
-    if (cudaResource_hist_draw) {
-        cudaGraphicsUnregisterResource(cudaResource_hist_draw);
-        cudaResource_hist_draw = nullptr;
-    }
-
     // --- 2. 既存 VBO を削除 ---
     if (vbo_hist != 0) {
         glDeleteBuffers(1, &vbo_hist);
         vbo_hist = 0;
-    }
-
-    // --- 3. 既存 CUDA メモリ を解放 ---
-    if (d_hist_stats) {
-        cudaFree(d_hist_stats);
-        d_hist_stats = nullptr;
-    }
-    if (d_hist_data) {
-        cudaFree(d_hist_data);
-        d_hist_stats = nullptr;
-    }
-
-    // --- 4. 新規登録 fbo → cudaResource_hist ---
-    cudaError_t err = cudaGraphicsGLRegisterImage(
-        &cudaResource_hist,
-        fboTextureID,
-        GL_TEXTURE_2D,
-        cudaGraphicsRegisterFlagsNone
-        );
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsGLRegisterImage failed:" << cudaGetErrorString(err);
     }
 
     // --- 5. 新規 VBO 作成 ---
@@ -809,154 +646,33 @@ void GLWidget::initCudaHist() {
     glBindBuffer(GL_ARRAY_BUFFER, vbo_hist);
     glBufferData(GL_ARRAY_BUFFER, num_bins * 3 * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    // --- 6. VBO → CUDA Resource 登録 ---
-    err = cudaGraphicsGLRegisterBuffer(
-        &cudaResource_hist_draw,
-        vbo_hist,
-        cudaGraphicsRegisterFlagsWriteDiscard
-        );
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsGLRegisterBuffer failed:" << cudaGetErrorString(err);
-    }
-
-    // --- 7. CUDA 側のメモリを確保 ---
-    cudaMalloc(&d_hist_stats, sizeof(HistStats));
-    cudaMalloc(&d_hist_data, sizeof(HistData));
 }
 
 //OpenGLからCUDAへ転送+ヒストグラム解析
 void GLWidget::histgram_Analysys(){
-    if (!cudaResource_hist) {
-        qDebug() << "cudaResource_analysis is nullptr, can't map";
-        emit decode_please();
-        return;
-    }
-    if (!cudaResource2) {
-        qDebug() << "cudaResource_analysis is nullptr, can't map";
-        emit decode_please();
-        return;
-    }
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
-    //一括マップ
-    cudaGraphicsResource* resources[] = { cudaResource_hist, cudaResource_hist_draw };
-    cudaError_t err = cudaGraphicsMapResources(2, resources, 0);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
-        return;
-    }
+    // ① FBO から RGBA を CPU にダウンロード
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glReadPixels(0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE, rgbaFrame->data[0]);
 
-    //ヒストグラム計算
-    {
-        //サブリソースの cudaArray を取得
-        cudaArray_t cuArray;
-        err = cudaGraphicsSubResourceGetMappedArray(&cuArray, cudaResource_hist, 0, 0);
-        if (err != cudaSuccess) {
-            qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
-            cudaGraphicsUnmapResources(2, resources, 0);
-            return;
-        }
+    sws_scale(
+        sws_ctx,
+        rgbaFrame->data, rgbaFrame->linesize,
+        0, height_,
+        nv12Frame->data, nv12Frame->linesize
+        );
 
-        //テクスチャオブジェクトを作る（読み出し用）
-        cudaResourceDesc resDesc = {};
-        resDesc.resType = cudaResourceTypeArray;
-        resDesc.res.array.array = cuArray;
-
-        cudaTextureDesc texDesc = {};
-        texDesc.addressMode[0] = cudaAddressModeClamp;
-        texDesc.addressMode[1] = cudaAddressModeClamp;
-        texDesc.filterMode = cudaFilterModePoint; // 点サンプリング
-        texDesc.readMode = cudaReadModeElementType; // 生の要素（uchar4）を取りたい
-        texDesc.normalizedCoords = 0;
-
-        cudaTextureObject_t texObj = 0;
-        err = cudaCreateTextureObject(&texObj, &resDesc, &texDesc, nullptr);
-        if (err != cudaSuccess) {
-            qDebug() << "cudaCreateTextureObject error:" << cudaGetErrorString(err);
-            cudaGraphicsUnmapResources(2, resources, 0);
-            return;
-        }
-
-        //カーネル呼び出し（例: compute_histogram_from_texture）
-        cudaMemset(d_hist_data, 0, sizeof(HistData));
-        CUDA_IMG_Proc->calc_histgram(d_hist_data,texObj,width_,height_);
-
-        //テクスチャオブジェクト破棄
-        cudaDestroyTextureObject(texObj);
-    }
-
-    //ヒストグラム値解析
-    {
-        CUDA_IMG_Proc->histogram_status(d_hist_data,d_hist_stats);
-        // cudaEventRecord(e, 0);
-        // cudaStreamWaitEvent(stream, e, 0);
-        cudaMemcpyAsync(&h_hist_stats, d_hist_stats,sizeof(HistStats),cudaMemcpyDeviceToHost,stream);
-    }
-
-    //OpenGL VBO転送
-    {
-        float* d_vbo_ptr = nullptr;
-        size_t vbo_size = 0;
-        err = cudaGraphicsResourceGetMappedPointer((void**)&d_vbo_ptr, &vbo_size, cudaResource_hist_draw);
-        if (err != cudaSuccess) {
-            qDebug() << "cudaGraphicsResourceGetMappedPointer error:" << cudaGetErrorString(err);
-            cudaGraphicsUnmapResources(2, resources, 0);
-            return;
-        }
-        CUDA_IMG_Proc->histgram_normalize(d_vbo_ptr,num_bins,d_hist_data,d_hist_stats);
-    }
-
-    //一括アンマップ
-    err = cudaGraphicsUnmapResources(2, resources, 0);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(2, resources, 0);
-        return;
-    }
-
-    //Stream同期
-    //cudaStreamSynchronize(stream);
-
-    //ヒストグラム描画
-    {
-        // // 1) マップ
-        // cudaError_t err = cudaGraphicsMapResources(1, &cudaResource_hist_draw, 0);
-        // if (err != cudaSuccess) {
-        //     qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
-        //     return;
-        // }
-
-        // // 2) サブリソースの cudaArray を取得
-        // cudaArray_t cuArray;
-        // err = cudaGraphicsSubResourceGetMappedArray(&cuArray, cudaResource_hist_draw, 0, 0);
-        // if (err != cudaSuccess) {
-        //     qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
-        //     cudaGraphicsUnmapResources(1, &cudaResource_hist_draw, 0);
-        //     return;
-        // }
-
-        // // 3) SurfaceObject 作成
-        // cudaResourceDesc desc = {};
-        // desc.resType = cudaResourceTypeArray;
-        // desc.res.array.array = cuArray;
-
-        // cudaSurfaceObject_t surfOut;
-        // cudaCreateSurfaceObject(&surfOut, &desc);
-
-        // // 4) CUDA カーネル呼び出し
-        // CUDA_IMG_Proc->draw_histgram(surfOut, width_, height_, d_hist_r, d_hist_g, d_hist_b,d_max_r,d_max_g,d_max_b);
-
-        // // 5) surface object 破棄（重要）
-        // cudaDestroySurfaceObject(surfOut);
-
-        // // 6) アンマップ
-        // err = cudaGraphicsUnmapResources(1, &cudaResource_hist_draw, 0);
-        // if (err != cudaSuccess) {
-        //     qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        //     emit decode_please();
-        //     return;
-        // }
-    }
+    h_hist_stats.avg_r=1;
+    h_hist_stats.avg_g=1;
+    h_hist_stats.avg_b=1;
+    h_hist_stats.max_r=1;
+    h_hist_stats.max_g=1;
+    h_hist_stats.max_b=1;
+    h_hist_stats.max_y_axis=1;
+    h_hist_stats.avg_r=1;
+    h_hist_stats.avg_g=1;
+    h_hist_stats.avg_b=1;
 }
 
 // 人が見て気持ちいいY軸ラベルを生成
@@ -998,32 +714,4 @@ std::vector<int> GLWidget::make_nice_y_labels(int max_value)
 //CUDAとopenGLのデバイス設定
 void GLWidget::getCudaCapabilityForOpenGLGPU()
 {
-    // OpenGL が使用している CUDA デバイスを取得
-    unsigned int deviceCount = 0;
-    int deviceIDs[8] = {0};
-
-    cudaError_t err = cudaGLGetDevices(
-        &deviceCount,
-        deviceIDs,
-        8,
-        cudaGLDeviceListAll
-        );
-
-    if (err != cudaSuccess || deviceCount == 0) {
-        qDebug() << "cudaGLGetDevices failed:" << cudaGetErrorString(err);
-    }
-
-    g_cudaDeviceID = deviceIDs[0];  // OpenGLが使っているCUDAデバイス
-
-    // CUDA の使用デバイスを設定
-    //cudaSetDevice(glCudaDevice);
-
-    // 確認用にプロパティを取得
-    cudaGetDeviceProperties(&g_prop, g_cudaDeviceID);
-
-    qDebug() << "OpenGL GPU に CUDA を同期:";
-    qDebug() << "  CUDA Device ID =" << g_cudaDeviceID;
-    qDebug() << "  GPU Name =" << g_prop.name;
-    qDebug() << "  Compute Capability ="
-             << g_prop.major << "." << g_prop.minor;
 }

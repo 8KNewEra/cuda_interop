@@ -218,32 +218,25 @@ void save_encode::initialized_ffmpeg_output(const std::string& path){
     this->stream = stream;
 }
 
-bool save_encode::encode(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv)
+bool save_encode::encode(AVFrame* nv12Frame)
 {
     //qDebug()<<No;
     No+=1;
 
-    //ffmpegへ転送
-    cudaMemcpy2D(
-        hw_frame->data[0], hw_frame->linesize[0],
-        d_y, pitch_y,
-        width_ * sizeof(uint8_t), height_,
-        cudaMemcpyDeviceToDevice
-        );
-
-    cudaMemcpy2D(
-        hw_frame->data[1], hw_frame->linesize[1],
-        d_uv, pitch_uv,
-        width_ * sizeof(uint8_t), height_ / 2,
-        cudaMemcpyDeviceToDevice
-        );
+    // CPU → GPU 転送
+    int ret = av_hwframe_transfer_data(hw_frame, nv12Frame, 0);
+    if (ret < 0) {
+        qDebug() << "av_hwframe_transfer_data failed:";
+        av_frame_free(&nv12Frame);
+        return false;
+    }
 
     //フレームのPTSをセット
     hw_frame->pts = frame_index*pts_step;
     frame_index+=1;
 
     //エンコーダにフレーム送信
-    int ret = avcodec_send_frame(codec_ctx, hw_frame);
+    ret = avcodec_send_frame(codec_ctx, hw_frame);
     if (ret < 0) {
         throw std::runtime_error("Error sending frame to encoder");
     }
