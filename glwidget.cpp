@@ -6,7 +6,7 @@ GLWidget::GLWidget(QWindow *parent)
     :  QOpenGLWindow(NoPartialUpdate, parent),
     cudaResource1(nullptr),
     cudaResource2(nullptr),
-    inputTextureID(0)
+    inputTextureID(0),csv_file("hist_log.csv")
 {
     if(CUDA_IMG_Proc==nullptr){
         CUDA_IMG_Proc=new CUDA_ImageProcess();
@@ -76,6 +76,9 @@ GLWidget::~GLWidget() {
 
     delete CUDA_IMG_Proc;
     CUDA_IMG_Proc=nullptr;
+
+    //csvを閉じる
+    csv_file.close();
 
     qDebug() << "GLWidget: Destructor called";
 }
@@ -171,6 +174,21 @@ void GLWidget::initializeGL()
     //stream
     cudaStreamCreate(&stream);
     cudaEventCreate(&e);
+
+    //CSV
+    if (!csv_file.open(QIODevice::WriteOnly | QIODevice::Text))
+    {
+        qDebug() << "Failed to open CSV file!";
+        return;
+    }
+
+    csv_stream.setDevice(&csv_file);
+
+    // --- ヘッダー行 ---
+    csv_stream << "Index";
+    for (int i = 0; i < 256; i++)
+        csv_stream << "," << i;
+    csv_stream << "\n";
 
     // === 初期化完了 ===
     fpsTimer.start();
@@ -860,9 +878,10 @@ void GLWidget::histgram_Analysys(){
     //ヒストグラム値解析
     {
         CUDA_IMG_Proc->histogram_status(d_hist_data,d_hist_stats);
-        // cudaEventRecord(e, 0);
-        // cudaStreamWaitEvent(stream, e, 0);
-        cudaMemcpyAsync(&h_hist_stats, d_hist_stats,sizeof(HistStats),cudaMemcpyDeviceToHost,stream);
+        cudaEventRecord(e, 0);
+        cudaStreamWaitEvent(stream, e, 0);
+        cudaMemcpyAsync(&h_hist_data, d_hist_data,sizeof(HistData),cudaMemcpyDeviceToHost,stream);
+        cudaMemcpy(&h_hist_stats, d_hist_stats,sizeof(HistStats),cudaMemcpyDeviceToHost);
     }
 
     //OpenGL VBO転送
@@ -887,7 +906,9 @@ void GLWidget::histgram_Analysys(){
     }
 
     //Stream同期
-    //cudaStreamSynchronize(stream);
+    cudaStreamSynchronize(stream);
+
+    save_csv();
 
     //ヒストグラム描画
     {
@@ -929,6 +950,32 @@ void GLWidget::histgram_Analysys(){
         //     return;
         // }
     }
+}
+
+void GLWidget::save_csv(){
+    // for(int i=0;i<256;i++){
+    //     qDebug()<<h_hist_data.hist_b[i];
+    // }
+
+    // R
+    csv_stream << "Frame " << FrameNo << " R";
+    for (int i = 0; i < 256; i++)
+        csv_stream << "," << h_hist_data.hist_r[i];
+    csv_stream << "\n";
+
+    // G
+    csv_stream << "Frame " << FrameNo << " G";
+    for (int i = 0; i < 256; i++)
+        csv_stream << "," << h_hist_data.hist_g[i];
+    csv_stream << "\n";
+
+    // B
+    csv_stream << "Frame " << FrameNo << " B";
+    for (int i = 0; i < 256; i++)
+        csv_stream << "," << h_hist_data.hist_b[i];
+    csv_stream << "\n";
+
+    csv_stream.flush();   // ←即書き込み（重要）
 }
 
 // 人が見て気持ちいいY軸ラベルを生成

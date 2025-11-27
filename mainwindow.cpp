@@ -279,8 +279,6 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
             glWidget->FBO_Rendering();
         }
 
-
-
         //コンテキストを破棄
         glWidget->doneCurrent();
 

@@ -60,6 +60,7 @@ private:
     void downloadToGLTexture_and_Encode();
     std::vector<int> make_nice_y_labels(int max_value);
     void getCudaCapabilityForOpenGLGPU();
+    void save_csv();
 
     //CUDA Interop
     cudaGraphicsResource* cudaResource1;
@@ -128,6 +129,10 @@ private:
     HistStats h_hist_stats;
     int num_bins = 256;
     int line_y1,line_y2,line_y3,line_y4;
+
+    //csv
+    QFile csv_file;
+    QTextStream csv_stream;
 };
 
 
