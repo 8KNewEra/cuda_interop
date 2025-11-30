@@ -13,7 +13,7 @@ encode_setting::encode_setting(QWidget *parent)
 
     settingmap[0] = {"h264_nvenc", 1,"0",0,"p1","default","cbr","1pass",1};
     settingmap[1] = {"hevc_nvenc",2,"1",1,"p2","hq","vbr","2pass-quarter-res",15};
-    settingmap[2] = {"av1_nvenc",5,"",2,"p3","ll","crf","2pass-full-res",30};
+    settingmap[2] = {"av1_nvenc",5,"",2,"p3","ll","cq","2pass-full-res",30};
     settingmap[3] = {"",10,"",3,"p4","ull","","",60};
     settingmap[4] = {"",15,"",4,"p5","lossless","","",120};
     settingmap[5] = {"",20,"",5,"p6","","","",250};
@@ -149,18 +149,18 @@ encode_setting::encode_setting(QWidget *parent)
         }
     }, Qt::QueuedConnection);
 
-    //crf
-    ui->horizontalSlider_crf->setRange(1, 51);
-    QObject::connect(ui->horizontalSlider_crf, &QSlider::valueChanged, this, [&](int value){
-        settings.crf = value;
-        ui->label_crf_value->setText(QString::number(value));
+    //cq
+    ui->horizontalSlider_cq->setRange(1, 51);
+    QObject::connect(ui->horizontalSlider_cq, &QSlider::valueChanged, this, [&](int value){
+        settings.cq = value;
+        ui->label_cq_value->setText(QString::number(value));
     }, Qt::QueuedConnection);
 
 
     //可変ビットレート
     {
         QStringList rc_items;
-        rc_items << "CBR" << "VBR" << "CRF" ;
+        rc_items << "CBR" << "VBR" << "CQ" ;
         ui->comboBox_rc->addItems(rc_items);
         QObject::connect(ui->comboBox_rc, &QComboBox::currentIndexChanged,this, [&](int index) {
             switch (index) {
@@ -172,9 +172,9 @@ encode_setting::encode_setting(QWidget *parent)
                     ui->horizontalSlider_maxbitrate->setEnabled(false);
                     ui->label_maxbitrate->setEnabled(false);
                     ui->label_maxbitrate_value->setEnabled(false);
-                    ui->horizontalSlider_crf->setEnabled(false);
-                    ui->label_crf_value->setEnabled(false);
-                    ui->label_crf->setEnabled(false);
+                    ui->horizontalSlider_cq->setEnabled(false);
+                    ui->label_cq_value->setEnabled(false);
+                    ui->label_cq->setEnabled(false);
                     ui->horizontalSlider_targetbitrate->setRange(1,200);
                     break;
                 case 1:
@@ -185,9 +185,9 @@ encode_setting::encode_setting(QWidget *parent)
                     ui->horizontalSlider_maxbitrate->setEnabled(true);
                     ui->label_maxbitrate->setEnabled(true);
                     ui->label_maxbitrate_value->setEnabled(true);
-                    ui->horizontalSlider_crf->setEnabled(false);
-                    ui->label_crf_value->setEnabled(false);
-                    ui->label_crf->setEnabled(false);
+                    ui->horizontalSlider_cq->setEnabled(false);
+                    ui->label_cq_value->setEnabled(false);
+                    ui->label_cq->setEnabled(false);
                     ui->horizontalSlider_targetbitrate->setRange(1,max_bit_rate);
                     break;
                 case 2:
@@ -198,9 +198,9 @@ encode_setting::encode_setting(QWidget *parent)
                     ui->horizontalSlider_maxbitrate->setEnabled(false);
                     ui->label_maxbitrate->setEnabled(false);
                     ui->label_maxbitrate_value->setEnabled(false);
-                    ui->horizontalSlider_crf->setEnabled(true);
-                    ui->label_crf_value->setEnabled(true);
-                    ui->label_crf->setEnabled(true);
+                    ui->horizontalSlider_cq->setEnabled(true);
+                    ui->label_cq_value->setEnabled(true);
+                    ui->label_cq->setEnabled(true);
                     break;
             }
         }, Qt::QueuedConnection);
@@ -322,8 +322,8 @@ encode_setting::encode_setting(QWidget *parent)
         ui->horizontalSlider_maxbitrate->setValue(max_bit_rate);
         ui->label_maxbitrate_value->setText(QString::number(max_bit_rate) + " Mbps");
 
-        ui->horizontalSlider_crf->setValue(settings.crf);
-        ui->label_crf_value->setText(QString::number(settings.crf));
+        ui->horizontalSlider_cq->setValue(settings.cq);
+        ui->label_cq_value->setText(QString::number(settings.cq));
 
         ui->allow_overwrite_checkBox->setChecked(allow_overwrite);
     }
@@ -359,7 +359,7 @@ void encode_setting::init_txt(){
             out << "allow_overwrite:\"false\"\n";
             out << "target_bit_rate:100000000\n";
             out << "max_bit_rate:200000000\n";
-            out << "crf:23\n";
+            out << "cq:23\n";
             file.close();
             qDebug() << "新しい設定ファイルを作成しました。";
         }
@@ -423,8 +423,8 @@ void encode_setting::read_txt(){
             }else if (line.startsWith("max_bit_rate:")){
                 settings.max_bit_rate = line.split(':')[1].remove('"').toInt();
                 max_bit_rate = settings.max_bit_rate/1000000;
-            }else if (line.startsWith("crf:")){
-                settings.crf = line.split(':')[1].remove('"').toInt();
+            }else if (line.startsWith("cq:")){
+                settings.cq = line.split(':')[1].remove('"').toInt();
             }
         }
         file.close();
@@ -478,7 +478,7 @@ void encode_setting::write_txt(){
         out << "allow_overwrite:\"" << QVariant(allow_overwrite).toString() << "\"\n";
         out << "target_bit_rate:\"" << QString::number(target_bit_rate*1000*1000) << "\"\n";
         out << "max_bit_rate:\"" << QString::number(max_bit_rate*1000*1000) << "\"\n";
-        out << "crf:\"" << QString::number(settings.crf) << "\"\n";
+        out << "cq:\"" << QString::number(settings.cq) << "\"\n";
         file.close();
         qDebug() << "新しい設定ファイルを追加しました。";
     }

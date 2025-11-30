@@ -212,6 +212,9 @@
     <property name="text">
      <string>フレームレート</string>
     </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
    </widget>
    <widget class="QComboBox" name="comboBox_framerate">
     <property name="geometry">
@@ -264,7 +267,7 @@
    <widget class="QLabel" name="label_7">
     <property name="geometry">
      <rect>
-      <x>259</x>
+      <x>266</x>
       <y>67</y>
       <width>71</width>
       <height>20</height>
@@ -276,7 +279,10 @@
      </font>
     </property>
     <property name="text">
-     <string>エンコードパス</string>
+     <string>マルチパス</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QComboBox" name="comboBox_encodepass">
@@ -364,7 +370,7 @@
    <widget class="QLabel" name="label_9">
     <property name="geometry">
      <rect>
-      <x>252</x>
+      <x>250</x>
       <y>33</y>
       <width>91</width>
       <height>20</height>
@@ -376,7 +382,10 @@
      </font>
     </property>
     <property name="text">
-     <string>最適化プロファイル</string>
+     <string>チューニング</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QLabel" name="label_10">
@@ -523,6 +532,9 @@
     <property name="text">
      <string>Bフレーム挿入数</string>
     </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
    </widget>
    <widget class="QComboBox" name="comboBox_b_frame">
     <property name="geometry">
@@ -581,12 +593,12 @@
      <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
-   <widget class="QLabel" name="label_crf">
+   <widget class="QLabel" name="label_cq">
     <property name="geometry">
      <rect>
       <x>19</x>
       <y>194</y>
-      <width>81</width>
+      <width>101</width>
       <height>16</height>
      </rect>
     </property>
@@ -596,10 +608,10 @@
      </font>
     </property>
     <property name="text">
-     <string>品質(CRF)</string>
+     <string>品質(CQ)</string>
     </property>
    </widget>
-   <widget class="QLabel" name="label_crf_value">
+   <widget class="QLabel" name="label_cq_value">
     <property name="geometry">
      <rect>
       <x>404</x>
@@ -620,7 +632,7 @@
      <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
-   <widget class="QSlider" name="horizontalSlider_crf">
+   <widget class="QSlider" name="horizontalSlider_cq">
     <property name="geometry">
      <rect>
       <x>120</x>

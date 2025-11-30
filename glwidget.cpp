@@ -542,6 +542,14 @@ void GLWidget::initTextureCuda(int width,int height) {
             glDeleteFramebuffers(1, &tempfbo);
             tempfbo = 0;
         }
+        if (backupfbo) {
+            glDeleteFramebuffers(1, &backupfbo);
+            backupfbo = 0;
+        }
+        if (backupTextureID) {
+            glDeleteTextures(1, &backupTextureID);
+            backupTextureID = 0;
+        }
 
         //新しいサイズで再作成
         //fbo
@@ -564,6 +572,17 @@ void GLWidget::initTextureCuda(int width,int height) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tempTextureID, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        //tempfbo
+        glGenFramebuffers(1, &backupfbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, backupfbo);
+        glGenTextures(1, &backupTextureID);
+        glBindTexture(GL_TEXTURE_2D, backupTextureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, backupTextureID, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         //fbo登録
@@ -720,7 +739,7 @@ void GLWidget::downloadToGLTexture_and_Encode() {
         delete save_encoder;
         save_encoder=nullptr;
         encode_FrameCount=0;
-
+        copyFBO(backupfbo,fbo, width_, height_);
         emit encode_finished();
     }
 }
@@ -730,7 +749,9 @@ void GLWidget::encode_mode(int flag){
     if(flag==STATE_ENCODING){
         if(save_encoder==nullptr){
             save_encoder = new save_encode(height_,width_);
+            copyFBO(fbo, backupfbo, width_, height_);
         }
+
         encode_state=flag;
     }else{
         encode_state=flag;
@@ -998,4 +1019,20 @@ void GLWidget::getCudaCapabilityForOpenGLGPU()
     qDebug() << "  GPU Name =" << g_prop.name;
     qDebug() << "  Compute Capability ="
              << g_prop.major << "." << g_prop.minor;
+}
+
+void GLWidget::copyFBO(GLuint srcFbo, GLuint dstFbo, int width, int height)
+{
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, srcFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dstFbo);
+
+    glBlitFramebuffer(
+        0, 0, width, height,
+        0, 0, width, height,
+        GL_COLOR_BUFFER_BIT,
+        GL_NEAREST   // 画素コピーなら NEAREST が最速
+        );
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 }

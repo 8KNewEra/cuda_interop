@@ -20,7 +20,7 @@ struct EncodeSettings {
 
     int target_bit_rate{};
     int max_bit_rate{};
-    int crf{};
+    int cq{};
 
     int gop_size = 60;
     int b_frames{};

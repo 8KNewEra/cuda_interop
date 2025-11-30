@@ -134,10 +134,10 @@ void save_encode::initialized_ffmpeg_codec_context(){
     //ビットレート周りの設定
     AVDictionary* opts = nullptr;
 
-    // cbr, vbr, crf 切り替え
-    if (encode_settings.rc_mode == "crf") {
-        // --- CRF モード ---
-        av_dict_set(&opts, "crf", std::to_string(encode_settings.crf).c_str(), 0);
+    // cbr, vbr, cq 切り替え
+    if (encode_settings.rc_mode == "cq") {
+        // --- CQ モード ---
+        av_dict_set_int(&opts, "cq", encode_settings.cq, 0);
     } else if (encode_settings.rc_mode == "vbr") {
         // --- VBR モード ---
         codec_ctx->bit_rate = encode_settings.target_bit_rate;

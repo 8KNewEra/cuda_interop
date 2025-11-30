@@ -262,13 +262,23 @@ void MainWindow::Close_Video_File()
 //動画表示
 void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
     if(run_decode_thread){
+        //シグナルセット
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+        if(encode_state==STATE_ENCODING){
+            QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
+        }
 
+        //UIの制御
         if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
             ui->Live_horizontalSlider->setValue(slider);
         }
         slider_No=slider;
 
+        //デコードスレッドシグナル
+        if(encode_state!=STATE_ENCODE_READY)
+            emit decode_please();
+
+        //描画を開始
         //コンテキストを作成
         glWidget->makeCurrent();
 
@@ -279,13 +289,8 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
             glWidget->FBO_Rendering();
         }
 
-
-
         //コンテキストを破棄
         glWidget->doneCurrent();
-
-        if(encode_state!=STATE_ENCODE_READY)
-            emit decode_please();
     }
 }
 
@@ -427,7 +432,6 @@ void MainWindow::encode_set(){
 
     //停止/再生速度を最大に、エンコードは最速でやるため
     emit send_manual_pause();
-    emit send_decode_speed(1000);
 
     encodeSetting->slider(0,VideoInfo.max_framesNo);
     encodeSetting->show();
@@ -450,6 +454,7 @@ void MainWindow::start_encode(){
         connect(decodestream, &decode_thread::decode_end, this, [&]() {
             wasCanceled=true;
         }, Qt::SingleShotConnection);
+        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
 
         //エンコード開始
         encode_state=STATE_ENCODING;
@@ -495,6 +500,8 @@ void MainWindow::start_encode(){
             encodeSetting->encode_end(encode_time);
 
         }, Qt::SingleShotConnection);
+
+        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
     }
 }
 
@@ -504,7 +511,6 @@ void MainWindow::finished_encode(){
     slider_No=Now_Frame;
     emit decode_please();
     emit send_manual_slider(Now_Frame);
-    emit send_decode_speed(preview_speed);
     emit send_manual_resumeplayback();
     glWidget->encode_mode(encode_state);
 }
