@@ -99,6 +99,12 @@ private:
 
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
+    //オーディオ
+    void play_audio(QByteArray pcm);
+    QAudioSink* audioSink = nullptr;
+    QIODevice* audioOutput = nullptr;
+    int out_sample_rate = 48000;
+
 private:
     Ui::MainWindow *ui;
 };

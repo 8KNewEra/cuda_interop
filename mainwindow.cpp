@@ -81,6 +81,16 @@ MainWindow::MainWindow(QWidget *parent)
         }
         glWidget->filter_change_flag=true;
     }, Qt::QueuedConnection);
+
+    // ---------- QAudioSink ----------
+    QAudioFormat fmt;
+    fmt.setSampleRate(out_sample_rate);
+    fmt.setChannelCount(2);
+    fmt.setSampleFormat(QAudioFormat::Int16);
+
+    audioSink = new QAudioSink(fmt);
+    audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
+    audioOutput = audioSink->start();
 }
 
 MainWindow::~MainWindow()
@@ -294,6 +304,14 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
     }
 }
 
+void MainWindow::play_audio(QByteArray pcm){
+    // if (audioSink->bytesFree() > 0)
+    //     qDebug() << "AUDIO UNDERFLOW !!" << audioSink->bytesFree();
+
+    if (audioOutput&&encode_state==STATE_NOT_ENCODE)
+        audioOutput->write(pcm);
+}
+
 //fps表示
 void MainWindow::fps_view(){
 
@@ -330,8 +348,9 @@ void MainWindow::start_decode_thread() {
 
         decodestream->moveToThread(decode__thread);
         QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
-        QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
+        QObject::connect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio);
 
+        QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
         QObject::connect(decodestream, &decode_thread::send_video_info, this, &MainWindow::slider_set_range);
 
         QObject::connect(ui->play_pushButton, &QPushButton::clicked, decodestream, &decode_thread::resumePlayback, Qt::QueuedConnection);

@@ -10,6 +10,7 @@
 #include <QFile>
 #include "__global__.h"
 #include "cuda_imageprocess.h"
+#include "qaudiosink.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -18,6 +19,7 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 #include <libavutil/hwcontext.h>
+#include "libswresample/swresample.h"
 }
 
 extern int g_cudaDeviceID;
@@ -31,8 +33,8 @@ public:
 
 signals:
     void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,int slider);
+    void send_audio(QByteArray pcm);
     void send_video_info();
-    void send_software_image(AVFrame *rgba_frame);
     void finished();
     void decode_end();
     void decode_error(QString error);
@@ -95,6 +97,25 @@ private:
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
 
     DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
+
+
+    //音声
+    // ----- Audio -----
+    int audio_stream_index = -1;
+    AVCodecContext* audio_ctx = nullptr;
+    const AVCodec* audio_decoder = nullptr;
+
+    SwrContext* swr = nullptr;
+    uint8_t* audio_buffer = nullptr;
+    int audio_buffer_size = 0;
+
+    AVSampleFormat out_format = AV_SAMPLE_FMT_S16;
+    uint64_t out_ch_layout = AV_CH_LAYOUT_STEREO;
+    QByteArray pcm;
+
+    QAudioSink* audioSink = nullptr;
+    QIODevice* audioOutput = nullptr;
+    int out_sample_rate = 48000;
 };
 
 #endif // DECODE_THREAD_H
