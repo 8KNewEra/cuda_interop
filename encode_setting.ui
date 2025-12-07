@@ -279,13 +279,16 @@
      </font>
     </property>
     <property name="text">
-     <string>マルチパス</string>
+     <string>プロファイル</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
-   <widget class="QComboBox" name="comboBox_encodepass">
+   <widget class="QComboBox" name="comboBox_main">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>370</x>
@@ -298,6 +301,9 @@
      <font>
       <pointsize>9</pointsize>
      </font>
+    </property>
+    <property name="currentText">
+     <string/>
     </property>
    </widget>
   </widget>
@@ -643,6 +649,42 @@
     </property>
     <property name="orientation">
      <enum>Qt::Orientation::Horizontal</enum>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_12">
+    <property name="geometry">
+     <rect>
+      <x>257</x>
+      <y>96</y>
+      <width>71</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>マルチパス</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_encodepass">
+    <property name="geometry">
+     <rect>
+      <x>370</x>
+      <y>95</y>
+      <width>100</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>9</pointsize>
+     </font>
     </property>
    </widget>
   </widget>

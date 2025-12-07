@@ -79,6 +79,13 @@ encode_setting::encode_setting(QWidget *parent)
         }, Qt::QueuedConnection);
     }
 
+    //mainプロファイル
+    {
+        QStringList main_items;
+        main_items <<"main"<<"main 10";
+        ui->comboBox_main->addItems(main_items);
+    }
+
     //Bフレーム
     {
         QStringList B_frame_items;
@@ -209,7 +216,7 @@ encode_setting::encode_setting(QWidget *parent)
     //エンコードパス
     {
         QStringList pass_items;
-        pass_items << "1 pass" << "2 pass" << "2 pass 高精度" ;
+        pass_items << "1 pass" << "2 pass quarter" << "2 pass full" ;
         ui->comboBox_encodepass->addItems(pass_items);
         QObject::connect(ui->comboBox_encodepass, &QComboBox::currentIndexChanged,this, [&](int index) {
             settings.pass_mode = settingmap[index].pass_items.toStdString();

@@ -155,15 +155,23 @@ void save_encode::initialized_ffmpeg_codec_context(){
     av_dict_set(&opts, "tune", encode_settings.tune.c_str(), 0);
     av_dict_set_int(&opts, "g", encode_settings.gop_size, 0);
     av_dict_set_int(&opts, "bf", encode_settings.b_frames, 0);
-    av_dict_set_int(&opts, "split_encode_mode", 3, 0);
+
+    if(encode_settings.split_encode_mode=="0"){
+        av_dict_set_int(&opts, "split_encode_mode", 0, 0);
+    }else{
+        av_dict_set_int(&opts, "split_encode_mode", 3, 0);
+    }
+
 
     // 1pass / 2pass 切り替え
-    if (encode_settings.pass_mode == "2pass-quarter") {
-        av_dict_set(&opts, "multi_pass", "2pass-quarter-res", 0);
-    } else if (encode_settings.pass_mode == "2pass-full") {
-        av_dict_set(&opts, "multi_pass", "2pass-full-res", 0);
+    qDebug()<<encode_settings.pass_mode;
+    if (encode_settings.pass_mode == "2pass-quarter-res") {
+        av_dict_set_int(&opts, "multipass", 1, 0);
+    } else if (encode_settings.pass_mode == "2pass-full-res") {
+        av_dict_set_int(&opts, "multipass", 2, 0);
+        qDebug()<<"full";
     } else {
-        av_dict_set(&opts, "multi_pass", "1pass", 0);
+        av_dict_set_int(&opts, "multipass", 0, 0);
     }
 
     int ret = avcodec_open2(codec_ctx, codec, &opts);
