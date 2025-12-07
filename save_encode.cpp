@@ -155,7 +155,7 @@ void save_encode::initialized_ffmpeg_codec_context(){
     av_dict_set(&opts, "tune", encode_settings.tune.c_str(), 0);
     av_dict_set_int(&opts, "g", encode_settings.gop_size, 0);
     av_dict_set_int(&opts, "bf", encode_settings.b_frames, 0);
-    av_dict_set(&opts, "split_encode_mode", encode_settings.split_encode_mode.c_str(), 0);
+    av_dict_set_int(&opts, "split_encode_mode", 3, 0);
 
     // 1pass / 2pass 切り替え
     if (encode_settings.pass_mode == "2pass-quarter") {

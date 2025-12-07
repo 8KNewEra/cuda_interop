@@ -20,6 +20,7 @@ for %%f in (*.cu) do (
          -gencode arch=compute_86,code=sm_86 ^
          -gencode arch=compute_89,code=sm_89 ^
          -gencode arch=compute_90,code=sm_90 ^
+	 -gencode arch=compute_120,code=sm_120 ^
          -Xcompiler="/MD /utf-8" ^
          --use_fast_math
 )
