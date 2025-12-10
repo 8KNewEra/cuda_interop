@@ -20,6 +20,7 @@ extern "C" {
 class audio_thread : public QThread
 {
     Q_OBJECT
+
 public:
     explicit audio_thread(QObject *parent = nullptr);
     ~audio_thread();
@@ -32,6 +33,8 @@ protected:
 
 private:
     QString inputFile;
+    QMutex mutex;
+    bool isRunning = false;
 
     AVFormatContext *fmtCtx = nullptr;
     AVCodecContext  *codecCtx = nullptr;
@@ -42,9 +45,8 @@ private:
     QAudioSink  *audioSink = nullptr;
     QIODevice   *audioDevice = nullptr;
 
-    bool isRunning = false;
-
-    QMutex mutex;
+    uint8_t *buffer = nullptr;
+    int bufferSize = 0;
 };
 
 #endif // AUDIO_THREAD_H

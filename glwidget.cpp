@@ -404,7 +404,7 @@ void GLWidget::Monitor_Rendering(){
             painter.setPen(Qt::white);
             painter.setFont(QFont("Consolas", 16));
             painter.drawText(2, 20, "OpenGL Device:" + QString::fromLatin1((const char*)glGetString(GL_RENDERER))+"\n");
-            painter.drawText(2, 40, "CUDA Device:" + QString::fromStdString(g_prop.name)+"(Compute Capability:"+QString::number(g_prop.major)+"."+QString::number(g_prop.minor)+")\n");
+            painter.drawText(2, 40, "CUDA Device:" + QString::fromStdString(g_prop.name)+"(sm_"+QString::number(g_prop.major)+QString::number(g_prop.minor)+")\n");
             painter.drawText(2, 60, QString("FPS: %1").arg(fps, 0, 'f', 1));
             painter.drawText(2, 80, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
             painter.drawText(2, 100, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");

@@ -104,6 +104,7 @@ private:
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
     int out_sample_rate = 48000;
+    bool audio_mode=false;
 
 private:
     Ui::MainWindow *ui;

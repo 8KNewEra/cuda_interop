@@ -82,6 +82,16 @@ MainWindow::MainWindow(QWidget *parent)
         glWidget->filter_change_flag=true;
     }, Qt::QueuedConnection);
 
+    QObject::connect(ui->action_audio_low_laytency, &QAction::triggered,this, [&](bool flag) {
+        if(run_decode_thread){
+            if(flag){
+                decodestream->audio_mode=true;
+            }else{
+                decodestream->audio_mode=false;
+            }
+        }
+    }, Qt::QueuedConnection);
+
     // ---------- QAudioSink ----------
     QAudioFormat fmt;
     fmt.setSampleRate(out_sample_rate);
@@ -308,7 +318,7 @@ void MainWindow::play_audio(QByteArray pcm){
     // if (audioSink->bytesFree() > 0)
     //     qDebug() << "AUDIO UNDERFLOW !!" << audioSink->bytesFree();
 
-    if (audioOutput&&encode_state==STATE_NOT_ENCODE)
+    if (audioOutput)
         audioOutput->write(pcm);
 }
 
@@ -343,7 +353,7 @@ void MainWindow::slider_set_range(){
 //デコードスレッド開始
 void MainWindow::start_decode_thread() {
     if (!run_decode_thread) {
-        decodestream = new decode_thread(input_filename);
+        decodestream = new decode_thread(input_filename,audio_mode);
         decode__thread = new QThread;
 
         decodestream->moveToThread(decode__thread);
@@ -391,6 +401,12 @@ void MainWindow::start_decode_thread() {
             ui->comboBox_speed->setEnabled(true);
             ui->actionFileSave->setEnabled(true);
             ui->actionCloseFile->setEnabled(true);
+            ui->action_videoinfo->setEnabled(true);
+            ui->action_histgram->setEnabled(true);
+            ui->action_filter_sobel->setEnabled(true);
+            ui->action_filter_gausian->setEnabled(true);
+            ui->action_filter_averaging->setEnabled(true);
+            ui->action_audio_low_laytency->setEnabled(true);
 
         }, Qt::AutoConnection);
 
@@ -401,6 +417,7 @@ void MainWindow::start_decode_thread() {
 //デコードスレッド停止
 void MainWindow::stop_decode_thread(){
     if (run_decode_thread) {
+        audio_mode=decodestream->audio_mode;
         run_decode_thread=false;
         ui->play_pushButton->setEnabled(false);
         ui->pause_pushButton->setEnabled(false);
@@ -410,6 +427,12 @@ void MainWindow::stop_decode_thread(){
         ui->comboBox_speed->setEnabled(false);
         ui->actionFileSave->setEnabled(false);
         ui->actionCloseFile->setEnabled(false);
+        ui->action_videoinfo->setEnabled(false);
+        ui->action_histgram->setEnabled(false);
+        ui->action_filter_sobel->setEnabled(false);
+        ui->action_filter_gausian->setEnabled(false);
+        ui->action_filter_averaging->setEnabled(false);
+        ui->action_audio_low_laytency->setEnabled(false);
 
         decodestream->stopProcessing();
         decode__thread->quit();
@@ -444,6 +467,7 @@ void MainWindow::start_info_thread(){
 void MainWindow::encode_set(){
     //ウィンドウ起動フラグを立てる
     encode_state=STATE_ENCODE_READY;
+    decodestream->encode_flag=true;
     glWidget->encode_mode(encode_state);
 
     //現在のフレーム位置を記憶
@@ -527,6 +551,7 @@ void MainWindow::start_encode(){
 //エンコードウィンドウを閉じる
 void MainWindow::finished_encode(){
     encode_state=STATE_NOT_ENCODE;
+    decodestream->encode_flag=false;
     slider_No=Now_Frame;
     emit decode_please();
     emit send_manual_slider(Now_Frame);

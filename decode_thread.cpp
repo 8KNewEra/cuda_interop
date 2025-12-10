@@ -17,7 +17,7 @@ extern "C" {
 #include <libavutil/error.h>
 }
 
-decode_thread::decode_thread(QString FilePath, QObject *parent)
+decode_thread::decode_thread(QString FilePath,bool audio_m,QObject *parent)
     : QObject(parent), video_play_flag(true), timer(new QTimer(this))  {
     QFileInfo fileInfo(FilePath);
     VideoInfo.Name = fileInfo.completeBaseName().toStdString()+".mp4";
@@ -29,6 +29,8 @@ decode_thread::decode_thread(QString FilePath, QObject *parent)
     if(CUDA_IMG_Proc==nullptr){
         CUDA_IMG_Proc=new CUDA_ImageProcess();
     }
+
+    audio_mode=audio_m;
 }
 
 decode_thread::~decode_thread() {
@@ -321,30 +323,31 @@ void decode_thread::initialized_ffmpeg() {
         }
         qDebug() << "Audio decoder opened";
 
-        // ----------- 出力フォーマット -----------
-        const int out_sample_rate = audio_ctx->sample_rate;
-        const AVSampleFormat out_format = AV_SAMPLE_FMT_S16;
-
-        // ---------- SwrContext ----------
-        // 出力レイアウト（ステレオ）
-        AVChannelLayout out_ch_layout{};
-        out_ch_layout.order       = AV_CHANNEL_ORDER_NATIVE;
-        out_ch_layout.nb_channels = 2;
-        out_ch_layout.u.mask      = AV_CH_LAYOUT_STEREO;
-
-        // 入力レイアウト
-        AVChannelLayout in_ch_layout{};
+        // 入力情報を member に保存
+        in_sample_rate = audio_ctx->sample_rate;
+        in_format      = audio_ctx->sample_fmt;
         av_channel_layout_copy(&in_ch_layout, &audio_ctx->ch_layout);
 
-        // SwrContext 作成
-        ret = swr_alloc_set_opts2(
+        // 出力情報（固定）
+        out_sample_rate = audio_ctx->sample_rate;  // 入力と同じでOK
+        out_format      = AV_SAMPLE_FMT_S16;
+
+        // 出力レイアウト（ステレオ）→ メンバ変数に設定
+        av_channel_layout_default(&out_ch_layout, 2);
+
+        // SwrContext 作成 (メンバ変数 swr を利用)
+        if (swr) {
+            swr_free(&swr);
+        }
+
+        int ret = swr_alloc_set_opts2(
             &swr,
             &out_ch_layout,
-            AV_SAMPLE_FMT_S16,
-            audio_ctx->sample_rate,
+            out_format,
+            out_sample_rate,
             &in_ch_layout,
-            audio_ctx->sample_fmt,
-            audio_ctx->sample_rate,
+            in_format,
+            in_sample_rate,
             0,
             nullptr
             );
@@ -537,41 +540,57 @@ void decode_thread::get_decode_image() {
                 AVFrame* af = av_frame_alloc();
                 while (avcodec_receive_frame(audio_ctx, af) >= 0) {
 
-                    // if (audio_buffer_size < out_nb_samples * 4 * 2) {
-                    //     audio_buffer_size = out_nb_samples * 4 * 2;
-                    //     audio_buffer = (uint8_t*)realloc(audio_buffer, audio_buffer_size);
-                    // }
+                    int out_channels = out_ch_layout.nb_channels;
+                    int bps         = av_get_bytes_per_sample(out_format);
 
-                    // int samples = swr_convert(
-                    //     swr,
-                    //     &audio_buffer,
-                    //     out_nb_samples,
-                    //     (const uint8_t**)af->extended_data,
-                    //     af->nb_samples
-                    //     );
-
-                    // int bytes = samples * 2 * av_get_bytes_per_sample(out_format);
-
-                    int out_samples = swr_get_out_samples(swr, af->nb_samples);
+                    int max_out_samples = av_rescale_rnd(
+                        swr_get_delay(swr, in_sample_rate) + af->nb_samples,
+                        out_sample_rate,
+                        in_sample_rate,
+                        AV_ROUND_UP
+                        );
 
                     QByteArray pcm;
-                    pcm.resize(out_samples * 2 * av_get_bytes_per_sample(out_format));
+                    pcm.resize(max_out_samples * out_channels * bps);
 
-                    uint8_t* out_planes[AV_NUM_DATA_POINTERS] = {0};
+                    uint8_t* out_planes[1];
                     out_planes[0] = (uint8_t*)pcm.data();
+
+                    int out_samples = swr_convert(
+                        swr,
+                        out_planes,
+                        max_out_samples,
+                        (const uint8_t**)af->extended_data,
+                        af->nb_samples
+                        );
+
+                    if (audio_buffer_size < out_samples * 4 * 2) {
+                        audio_buffer_size = out_samples * 4 * 2;
+                        audio_buffer = (uint8_t*)realloc(audio_buffer, audio_buffer_size);
+                    }
 
                     int samples = swr_convert(
                         swr,
-                        out_planes,            // ★ポインタ配列
+                        &audio_buffer,
                         out_samples,
                         (const uint8_t**)af->extended_data,
                         af->nb_samples
                         );
 
-                    pcm.resize(samples * 2 * av_get_bytes_per_sample(out_format));
+                    int bytes = samples * 2 * av_get_bytes_per_sample(out_format);
 
-                    emit send_audio(pcm);
-
+                    if(!encode_flag){
+                        if (audio_mode) {
+                            if (audioOutput && bytes > 0){
+                                audioOutput->write((char*)audio_buffer, bytes);
+                            }
+                        }else{
+                            if (out_samples > 0) {
+                                pcm.resize(out_samples * out_channels * bps);
+                                emit send_audio(pcm);
+                            }
+                        }
+                    }
                 }
                 av_frame_free(&af);
             }

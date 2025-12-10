@@ -28,8 +28,10 @@ class decode_thread : public QObject {
     Q_OBJECT
 
 public:
-    explicit decode_thread(QString FilePath,QObject *parent = nullptr);
+    explicit decode_thread(QString FilePath,bool audio_m,QObject *parent = nullptr);
     ~decode_thread() override;
+    bool encode_flag=false;
+    bool audio_mode=false;
 
 signals:
     void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,int slider);
@@ -109,13 +111,18 @@ private:
     uint8_t* audio_buffer = nullptr;
     int audio_buffer_size = 0;
 
-    AVSampleFormat out_format = AV_SAMPLE_FMT_S16;
-    uint64_t out_ch_layout = AV_CH_LAYOUT_STEREO;
-    QByteArray pcm;
+    AVChannelLayout in_ch_layout = {};
+    AVChannelLayout out_ch_layout = {};
 
+    int in_sample_rate  = 0;
+    int out_sample_rate = 0;
+
+    AVSampleFormat in_format  = AV_SAMPLE_FMT_NONE;
+    AVSampleFormat out_format = AV_SAMPLE_FMT_S16;  // S16 にリサンプルする
+
+    QByteArray pcm;
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
-    int out_sample_rate = 48000;
 };
 
 #endif // DECODE_THREAD_H
