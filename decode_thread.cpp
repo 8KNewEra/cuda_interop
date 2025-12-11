@@ -289,9 +289,6 @@ void decode_thread::initialized_ffmpeg() {
     //最終フレームptsを取得
     get_last_frame_pts();
 
-    //スライダー設定
-    emit send_video_info();
-
     //再生
     video_play_flag = true;
     video_reverse_flag = false;
@@ -309,6 +306,7 @@ void decode_thread::initialized_ffmpeg() {
 
     if (audio_stream_index == -1) {
         qDebug() << "Audio stream not found";
+        VideoInfo.audio=false;
     } else {
         // --------- Audio Decoder ----------
         audio_decoder = avcodec_find_decoder(fmt_ctx->streams[audio_stream_index]->codecpar->codec_id);
@@ -367,7 +365,11 @@ void decode_thread::initialized_ffmpeg() {
         audioOutput = audioSink->start();
 
         qDebug() << "Audio ready";
+        VideoInfo.audio=true;
     }
+
+    //スライダー設定
+    emit send_video_info();
 
     interval_ms = static_cast<double>(1000.0 / 33);
     connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
@@ -551,6 +553,7 @@ void decode_thread::get_decode_image() {
                         );
 
                     QByteArray pcm;
+                    VideoInfo.audio_channels=out_channels;
                     pcm.resize(max_out_samples * out_channels * bps);
 
                     uint8_t* out_planes[1];

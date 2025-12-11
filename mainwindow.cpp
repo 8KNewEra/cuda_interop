@@ -344,6 +344,9 @@ void MainWindow::set_preview_speed(const QString &text){
 
 //動画の範囲に合わせてスライダーの範囲を変更
 void MainWindow::slider_set_range(){
+    if(VideoInfo.audio)
+        ui->action_audio_low_laytency->setEnabled(true);
+
     qDebug() << "Framerate:" << VideoInfo.fps;
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
     ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
@@ -406,7 +409,6 @@ void MainWindow::start_decode_thread() {
             ui->action_filter_sobel->setEnabled(true);
             ui->action_filter_gausian->setEnabled(true);
             ui->action_filter_averaging->setEnabled(true);
-            ui->action_audio_low_laytency->setEnabled(true);
 
         }, Qt::AutoConnection);
 

@@ -80,6 +80,8 @@ struct DecodeInfo {
     double fps = 30;
     int width=0;
     int height=0;
+    bool audio = false;
+    int audio_channels=1;
 };
 
 // ★書き込みを許可したいクラスをここで「前方宣言」

@@ -413,6 +413,8 @@ void GLWidget::Monitor_Rendering(){
             painter.drawText(2, 160, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
             painter.drawText(2, 180, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
             painter.drawText(2, 200, "Current Frame:" + QString::number(VideoInfo.current_frameNo)+"\n");
+            if(VideoInfo.audio)
+                painter.drawText(2, 220, "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
         }
     }
 
