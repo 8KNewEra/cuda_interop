@@ -11,6 +11,8 @@ encode_setting::encode_setting(QWidget *parent)
     //設定ファイルが無ければ作成
     init_txt();
 
+    ui->allow_overwrite_checkBox->hide();
+
     settingmap[0] = {"h264_nvenc", 1,"0",0,"p1","default","cbr","1pass",1};
     settingmap[1] = {"hevc_nvenc",2,"1",1,"p2","hq","vbr","2pass-quarter-res",15};
     settingmap[2] = {"av1_nvenc",5,"",2,"p3","ll","cq","2pass-full-res",30};
@@ -89,11 +91,18 @@ encode_setting::encode_setting(QWidget *parent)
     //Bフレーム
     {
         QStringList B_frame_items;
-        B_frame_items << "0" << "1"<<"2"<<"3"<<"4"<<"5"<<"6"<<"7";
-        ui->comboBox_b_frame->addItems(B_frame_items);
-        QObject::connect(ui->comboBox_b_frame, &QComboBox::currentIndexChanged, this, [&](int index) {
-            settings.b_frames = settingmap[index].B_frame_items;
-        }, Qt::QueuedConnection);
+        if(g_prop.major > 7 || (g_prop.major == 7 && g_prop.minor >= 5)){
+            B_frame_items << "0" << "1"<<"2"<<"3"<<"4"<<"5"<<"6"<<"7";
+            ui->comboBox_b_frame->addItems(B_frame_items);
+            QObject::connect(ui->comboBox_b_frame, &QComboBox::currentIndexChanged, this, [&](int index) {
+                settings.b_frames = settingmap[index].B_frame_items;
+            }, Qt::QueuedConnection);
+        }else{
+            B_frame_items << "0" ;
+            ui->comboBox_b_frame->addItems(B_frame_items);
+            ui->comboBox_b_frame->setEnabled(false);
+            settings.b_frames=0;
+        }
     }
 
     //GOPサイズ
@@ -363,7 +372,7 @@ void encode_setting::init_txt(){
             out << "split_encode_mode:\"0\"\n";
             out << "pass_mode:\"1pass\"\n";
             out << "rc_mode:\"cbr\"\n";
-            out << "allow_overwrite:\"false\"\n";
+            out << "allow_overwrite:\"true\"\n";
             out << "target_bit_rate:100000000\n";
             out << "max_bit_rate:200000000\n";
             out << "cq:23\n";

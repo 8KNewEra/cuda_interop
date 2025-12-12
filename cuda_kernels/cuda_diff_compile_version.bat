@@ -1,6 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+rem ========================
+rem *** NVCC PATH 設定 ***
+rem ========================
+set "NVCC=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\nvcc.exe"
+
 set "OUT_DIR=obj_out"
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 set "TIME_FILE=%OUT_DIR%\last_build.txt"
@@ -15,19 +20,22 @@ if not exist "%TIME_FILE%" (
 set /p LAST_BUILD=<"%TIME_FILE%"
 echo Last Build Ticks: !LAST_BUILD!
 
-rem ---- PowerShell で更新されたファイルリストを取得 ----
+rem ---- PowerShellで更新された .cu のみビルド ----
 for /f "delims=" %%F in ('powershell -NoProfile -Command ^
     "Get-ChildItem *.cu | Where-Object { $_.LastWriteTimeUtc.Ticks -gt [long]$env:LAST_BUILD } | ForEach-Object { $_.Name }"') do (
+    
     echo   [BUILD] %%F
-    nvcc -c "%%F" -o "%OUT_DIR%\%%~nF.obj" ^
-	-gencode arch=compute_61,code=sm_61 ^
+
+    "%NVCC%" -c "%%F" -o "%OUT_DIR%\%%~nF.obj" ^
+        -gencode arch=compute_61,code=sm_61 ^
         -gencode arch=compute_75,code=sm_75 ^
         -gencode arch=compute_86,code=sm_86 ^
         -gencode arch=compute_89,code=sm_89 ^
         -gencode arch=compute_90,code=sm_90 ^
-	-gencode arch=compute_120,code=sm_120 ^
+        -gencode arch=compute_120,code=sm_120 ^
         -Xcompiler="/MD /utf-8" ^
         --use_fast_math
+
     set "UPDATED=1"
 )
 
@@ -41,4 +49,3 @@ if defined UPDATED (
 )
 
 pause
-

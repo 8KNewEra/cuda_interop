@@ -140,6 +140,7 @@ void MainWindow::GLwidgetInitialized(){
         //エンコード設定用
         encodeSetting = new encode_setting();
         encodeSetting->setWindowModality(Qt::ApplicationModal);
+        encodeSetting->setFixedSize(515, 464);
         encodeSetting->hide();
         QObject::connect(encodeSetting, &encode_setting::signal_encode_start,this, &MainWindow::start_encode,Qt::QueuedConnection);
         QObject::connect(encodeSetting, &encode_setting::signal_encode_finished,this, &MainWindow::finished_encode,Qt::QueuedConnection);
