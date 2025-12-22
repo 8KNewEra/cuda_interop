@@ -20,6 +20,9 @@ public:
     bool draw_histgram(cudaSurfaceObject_t surfOut,int width,int height,uint32_t* d_hist_r,uint32_t* d_hist_g,uint32_t* d_hist_b,unsigned int* max_r,unsigned int* max_g,unsigned int* max_b);
     bool histgram_normalize(float* vbo,int num_bins,HistData* Histdata,HistStats* input_stats);
     bool histogram_status(HistData* Histdata,HistStats* input_stats);
+    bool image_combine_x2(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,int width, int height);
+    bool image_combine_x4(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,uint8_t* img3, size_t pitch3,uint8_t* img4, size_t pitch4,int width, int height, int blend);
+    bool image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t* In, size_t pitchIn,int width, int height);
 };
 
 

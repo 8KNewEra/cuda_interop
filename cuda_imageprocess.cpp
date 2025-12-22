@@ -9,6 +9,9 @@ extern "C"{
     __global__ void calc_histogram_normal_kernel(HistData* Histdata,cudaTextureObject_t texObj, int width, int height);
     __global__ void histgram_normalize_kernel(float* vbo,int num_bins,HistData* Histdata,HistStats* input_stats);
     __global__ void histgram_status_kernel(HistData* Histdata,HistStats* out_stats);
+    __global__ void image_combine_x2_kernel(uint8_t* out, size_t pitchOut,const uint8_t* img1, size_t pitch1,const uint8_t* img2, size_t pitch2,int width, int height);
+    __global__ void image_combine_x4_kernel(uint8_t* out, size_t pitchOut,const uint8_t* img1, size_t pitch1,const uint8_t* img2, size_t pitch2,const uint8_t* img3, size_t pitch3,const uint8_t* img4, size_t pitch4,int width, int height, int blend);
+    __global__ void image_split_x4_kernel(uint8_t* Out0, size_t pitch0,uint8_t* Out1, size_t pitch1,uint8_t* Out2, size_t pitch2,uint8_t* Out3, size_t pitch3,const uint8_t* In, size_t pitchIn,int width, int height);
     //__global__ void draw_histogram_kernel(cudaSurfaceObject_t surface,int width,int height,const unsigned int* hist_r,const unsigned int* hist_g,const unsigned int* hist_b);
 }
 
@@ -233,4 +236,94 @@ bool CUDA_ImageProcess::draw_histgram(cudaSurfaceObject_t surfOut,int width,int 
     return true;
 }
 
+bool CUDA_ImageProcess::image_combine_x2(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,int width, int height){
+    void* args[] = {&out, &pitchOut,
+                    &img1,&pitch1,
+                    &img2,&pitch2,
+                    &width, &height};
 
+    dim3 block(16, 16);
+    dim3 grid((width * 2 + block.x - 1) / block.x,
+              (height + block.y - 1) / block.y);
+
+    cudaError_t err =cudaLaunchKernel((const void*)image_combine_x2_kernel,
+                                       grid, block, args, 0, nullptr);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+bool CUDA_ImageProcess::image_combine_x4(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,uint8_t* img3, size_t pitch3,uint8_t* img4, size_t pitch4,int width, int height, int blend){
+    void* args[] = {&out, &pitchOut,
+                    &img1,&pitch1,
+                    &img2,&pitch2,
+                    &img3,&pitch3,
+                    &img4,&pitch4,
+                    &width, &height,
+                    &blend};
+
+    dim3 block(16, 16);
+    dim3 grid((width * 2 + block.x - 1) / block.x,
+              (height * 2 + block.y - 1) / block.y);
+
+    cudaError_t err =cudaLaunchKernel((const void*)image_combine_x4_kernel,
+                                       grid, block, args, 0, nullptr);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+bool CUDA_ImageProcess::image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t* In, size_t pitchIn,int width, int height){
+    width = width*1/2;
+    height = height*1/2;
+
+    void* args[] = {&Out[2], &pitch[2],
+                    &Out[3], &pitch[3],
+                    &Out[0], &pitch[0],
+                    &Out[1], &pitch[1],
+                    &In, &pitchIn,
+                    &width, &height
+                    };
+
+    dim3 block(16, 16);
+    dim3 grid(
+        (width  + block.x - 1) / block.x,
+        (height + block.y - 1) / block.y
+        );
+
+    cudaError_t err =cudaLaunchKernel((const void*)image_split_x4_kernel,
+                                       grid, block, args, 0, nullptr);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}

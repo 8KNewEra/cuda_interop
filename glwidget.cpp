@@ -65,6 +65,12 @@ GLWidget::~GLWidget() {
         cudaFree(d_rgba);
         d_rgba = nullptr;
     }
+    for (int i = 0; i < 4; i++) {
+        if (d_splitrgba_x4[i]) {
+            cudaFree(d_splitrgba_x4[i]);
+            d_splitrgba_x4[i] = nullptr;
+        }
+    }
     if (d_hist_stats) {
         cudaFree(d_hist_stats);
         d_hist_stats = nullptr;
@@ -409,7 +415,7 @@ void GLWidget::Monitor_Rendering(){
             painter.drawText(2, 80, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
             painter.drawText(2, 100, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
             painter.drawText(2, 120, "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
-            painter.drawText(2, 140, "Resolution:" + QString::number(VideoInfo.width)+"×"+QString::number(VideoInfo.height)+"\n");
+            painter.drawText(2, 140, "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
             painter.drawText(2, 160, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
             painter.drawText(2, 180, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
             painter.drawText(2, 200, "Current Frame:" + QString::number(VideoInfo.current_frameNo)+"\n");
@@ -604,8 +610,19 @@ void GLWidget::initCudaMalloc(int width, int height)
         d_rgba = nullptr;
     }
 
+    for (int i = 0; i < 4; i++) {
+        if (d_splitrgba_x4[i]) {
+            cudaFree(d_splitrgba_x4[i]);
+            d_splitrgba_x4[i] = nullptr;
+        }
+    }
+
     //再確保
     cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
+
+    for (int i = 0; i < 4; i++) {
+        cudaMallocPitch(&d_splitrgba_x4[i], &pitch_splitrgba_x4[i], width*1/2 * 4, height*1/2);
+    }
 }
 
 //CUDAからOpenGLへ転送
@@ -734,8 +751,13 @@ void GLWidget::downloadToGLTexture_and_Encode() {
         return;
     }
 
+    CUDA_IMG_Proc->image_split_x4(
+        d_splitrgba_x4, pitch_splitrgba_x4,
+        d_rgba, pitch_rgba,
+        width_, height_);
+
     if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
-        save_encoder->encode(d_rgba,pitch_rgba);
+        save_encoder->encode(d_splitrgba_x4,pitch_splitrgba_x4);
         encode_FrameCount++;
     }else{
         delete save_encoder;
@@ -750,7 +772,7 @@ void GLWidget::downloadToGLTexture_and_Encode() {
 void GLWidget::encode_mode(int flag){
     if(flag==STATE_ENCODING){
         if(save_encoder==nullptr){
-            save_encoder = new save_encode(height_,width_);
+            save_encoder = new save_encode(height_*1/2,width_*1/2);
             copyFBO(fbo, backupfbo, width_, height_);
         }
 
