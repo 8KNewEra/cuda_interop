@@ -1,6 +1,7 @@
 #ifndef __GLOBAL___H
 #define __GLOBAL___H
 
+#include "qobject.h"
 #include <string>
 #include <cuda_runtime.h>
 #define STATE_NOT_ENCODE 0
@@ -80,6 +81,7 @@ struct DecodeInfo {
     double fps = 30;
     int width=0;
     int height=0;
+    QString decode_mode="";
     bool audio = false;
     int audio_channels=1;
 };

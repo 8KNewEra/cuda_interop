@@ -24,6 +24,16 @@ extern "C" {
 
 extern int g_cudaDeviceID;
 
+struct VideoDecorder {
+    AVCodecContext* codec_ctx = nullptr;
+    AVStream* stream = nullptr;
+    int stream_index=0;
+    const AVCodec* decoder;
+    AVHWDeviceContext* hw_ctx = nullptr;
+    AVFrame* hw_frame;
+    AVPacket* packet;
+};
+
 class decode_thread : public QObject {
     Q_OBJECT
 
@@ -42,7 +52,9 @@ signals:
     void decode_error(QString error);
 
 public slots:
-    void get_decode_image();
+    void get_multistream_decode_image();
+    void get_singlestream_gpudecode_image();
+    void get_decode_audio(AVPacket* pkt);
     void sliderPlayback(int value);
     void resumePlayback();
     void pausePlayback();
@@ -64,7 +76,7 @@ private:
     QString ffmpegErrStr(int errnum);
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
-    void ffmpeg_to_CUDA();
+    void ffmpeg_to_CUDA(int i);
     void get_last_frame_pts();
     void ffmpeg_software_process();
 
@@ -76,18 +88,15 @@ private:
     // FFmpeg関連
     const char* input_filename;
     QByteArray File_byteArray;
-    AVPacket* packet;
-    AVFrame* hw_frame;
+
+    std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;
-    AVCodecContext* codec_ctx = nullptr;
-    AVHWDeviceContext* hw_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
-    const AVCodec* decoder;
-    int video_stream_index;
 
     DecodeState decode_state = STATE_DECODE_READY;
 
     int slider_No;
+    int current_FrameNo=0;
     QMutex mutex;
 
     QTimer *timer;
@@ -123,6 +132,8 @@ private:
     QByteArray pcm;
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
+
+    int a=0;
 };
 
 #endif // DECODE_THREAD_H

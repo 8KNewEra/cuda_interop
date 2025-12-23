@@ -53,11 +53,13 @@ decode_thread::~decode_thread() {
 
     // 3) FFmpeg関係の安全な解放
     auto safe_free_codec = [&]() {
-        if (codec_ctx) {
-            if (codec_ctx->codec && codec_ctx->internal)
-                avcodec_flush_buffers(codec_ctx);
-            avcodec_free_context(&codec_ctx);
-            codec_ctx = nullptr;
+        for (int i = 0; i < vd.size()-1; i++) {
+            if (vd[i].codec_ctx) {
+                if (vd[i].codec_ctx->codec && vd[i].codec_ctx->internal)
+                    avcodec_flush_buffers(vd[i].codec_ctx);
+                avcodec_free_context(&vd[i].codec_ctx);
+                vd[i].codec_ctx = nullptr;
+            }
         }
     };
 
@@ -69,13 +71,15 @@ decode_thread::~decode_thread() {
     };
 
     auto safe_free_frames = [&]() {
-        if (hw_frame) {
-            av_frame_free(&hw_frame);
-            hw_frame = nullptr;
-        }
-        if (packet) {
-            av_packet_free(&packet);
-            packet = nullptr;
+        for (int i = 0; i < vd.size()-1; i++) {
+            if (vd[i].hw_frame) {
+                av_frame_free(&vd[i].hw_frame);
+                vd[i].hw_frame = nullptr;
+            }
+            if (vd[i].packet) {
+                av_packet_free(&vd[i].packet);
+                vd[i].packet = nullptr;
+            }
         }
     };
 
@@ -174,10 +178,10 @@ void decode_thread::processFrame() {
     QMutexLocker locker(&mutex);
 
     //停止ボタン押下でシークしていない場合は停止
-    if (!video_play_flag && slider_No == VideoInfo.current_frameNo){
+    if (!video_play_flag && slider_No == current_FrameNo){
         if(decode_state==STATE_DECODE_READY){
             decode_state=STATE_DECODING;
-            emit send_decode_image(nullptr,0,VideoInfo.current_frameNo);
+            emit send_decode_image(nullptr,0,current_FrameNo);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
         return;
@@ -185,7 +189,14 @@ void decode_thread::processFrame() {
 
     if(decode_state==STATE_DECODE_READY){
         decode_state=STATE_DECODING;
-        get_decode_image();
+
+        //複数ストリームとシングルストリームで別ルートを用意
+        if(vd.size()==1){
+            get_singlestream_gpudecode_image();
+        }else{
+            get_multistream_decode_image();
+        }
+
         decode_state=STATE_WAIT_DECODE_FLAG;
     }
 
@@ -197,8 +208,6 @@ void decode_thread::processFrame() {
 
 // FFmpeg 初期化
 void decode_thread::initialized_ffmpeg() {
-    packet = av_packet_alloc();
-    hw_frame = av_frame_alloc();
     int ret;
 
     // CUDA デバイスコンテキスト作成
@@ -229,60 +238,82 @@ void decode_thread::initialized_ffmpeg() {
         return;
     }
 
-    video_stream_index = -1;
+    std::vector<int> video_stream_indices;
     for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
         if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            video_stream_index = i;
-            break;
+            video_stream_indices.push_back(i);
         }
     }
 
-    if (video_stream_index == -1) {
-        QString error= "Could not find video stream";
-        qDebug()<<error;
-        emit decode_error(error);
+    if (video_stream_indices.empty()) {
+        emit decode_error("No video streams found");
         return;
+    }
+
+
+    for (int i = 0; i < video_stream_indices.size(); i++) {
+        int stream_index = video_stream_indices[i];
+
+        vd.emplace_back();
+        auto& dec = vd.back();
+
+        dec.stream_index = stream_index;
+        dec.packet   = av_packet_alloc();
+        dec.hw_frame = av_frame_alloc();
+
+        const char* codec_name =
+            avcodec_get_name(fmt_ctx->streams[stream_index]->codecpar->codec_id);
+
+        const char* decoder_name = selectDecoder(codec_name);
+        if (!decoder_name) {
+            emit decode_error("Unsupported codec");
+            return;
+        }
+
+        dec.decoder = avcodec_find_decoder_by_name(decoder_name);
+        if (!dec.decoder) {
+            emit decode_error("Decoder not found");
+            return;
+        }
+
+        AVDictionary* opts = nullptr;
+        av_dict_set(&opts, "extra_hw_frames", "0", 0);
+
+        dec.codec_ctx = avcodec_alloc_context3(dec.decoder);
+        dec.codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+
+        ret = avcodec_parameters_to_context(
+            dec.codec_ctx,
+            fmt_ctx->streams[stream_index]->codecpar
+            );
+        if (ret < 0) {
+            emit decode_error("Failed to copy codec parameters");
+            return;
+        }
+
+        ret = avcodec_open2(dec.codec_ctx, dec.decoder, &opts);
+        av_dict_free(&opts);
+
+        if (ret < 0) {
+            emit decode_error("Codec open error");
+            return;
+        }
+    }
+
+    //デコードモード
+    if(vd.size()==1){
+        VideoInfo.decode_mode = "Decode Mode:Non split(tile:1)\n";
+    }else if(vd.size()==2){
+        VideoInfo.decode_mode = "Decode Mode:split_x2(tile:2×1)\n";
+    }else if(vd.size()==4){
+        VideoInfo.decode_mode = "Decode Mode:split_x4(tile:2×2)\n";
     }
 
     //フレームレートを取得
-    VideoInfo.fps = getFrameRate(fmt_ctx, video_stream_index);
-
-    //デコーダ設定
-    const char* codec_name = avcodec_get_name(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
-    const char* decoder_name = selectDecoder(codec_name);
-
-    if (!decoder_name) {
-        QString error= "Unsupported codec:"+QString::fromStdString(codec_name);
-        qDebug()<<error;
-        emit decode_error(error);
-        return;
-    }
-
-    decoder = avcodec_find_decoder_by_name(decoder_name);
-    if (!decoder) {
-        QString error= "Decoder not found:" + QString::fromStdString(decoder_name);
-        qDebug()<<error;
-        emit decode_error(error);
-        return;
-    }
-
-    AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "split_decode_mode", "1", 0);
-
-    codec_ctx = avcodec_alloc_context3(decoder);
-    codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
-    avcodec_parameters_to_context(codec_ctx, fmt_ctx->streams[video_stream_index]->codecpar);
-
-    ret = avcodec_open2(codec_ctx, decoder, &opts);
-    if (ret < 0) {
-        QString error= "Codec open error (" + QString::fromStdString(decoder_name) + "):" + ffmpegErrStr(ret);
-        qDebug()<<error;
-        emit decode_error(error);
-        return;
-    }
+    VideoInfo.fps = getFrameRate(fmt_ctx, vd[0].stream_index);
 
     //1フレームのPTSを計算
-    double time_base_d = av_q2d(fmt_ctx->streams[video_stream_index]->time_base);
+    double time_base_d = av_q2d(fmt_ctx->streams[vd[0].stream_index]->time_base);
     VideoInfo.pts_per_frame = 1.0 / (VideoInfo.fps * time_base_d);
     qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
 
@@ -418,58 +449,58 @@ double decode_thread::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_in
 }
 
 void decode_thread::get_last_frame_pts() {
-    avcodec_flush_buffers(codec_ctx);
+    avcodec_flush_buffers(vd[0].codec_ctx);
 
-    int64_t duration_pts = fmt_ctx->streams[video_stream_index]->duration;
+    int64_t duration_pts = fmt_ctx->streams[vd[0].stream_index]->duration;
     if (duration_pts <= 0) {
         // durationが不明な場合はファイル末尾にシーク
         duration_pts = INT64_MAX;
     }
 
     // 後方シーク（できるだけ終端に近づく）
-    if (av_seek_frame(fmt_ctx, video_stream_index, duration_pts, AVSEEK_FLAG_BACKWARD) < 0) {
+    if (av_seek_frame(fmt_ctx, vd[0].stream_index, duration_pts, AVSEEK_FLAG_BACKWARD) < 0) {
         qDebug() << "seek failed";
         return;
     }
 
-    avcodec_flush_buffers(codec_ctx);
+    avcodec_flush_buffers(vd[0].codec_ctx);
 
     int64_t last_pts = AV_NOPTS_VALUE;
     bool frame_received = false;
 
     while (true) {
-        int ret = av_read_frame(fmt_ctx, packet);
+        int ret = av_read_frame(fmt_ctx, vd[0].packet);
         if (ret < 0) {
             // EOFに到達：デコーダに残りを流す
-            avcodec_send_packet(codec_ctx, nullptr);
-            while (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
-                last_pts = hw_frame->best_effort_timestamp;
-                VideoInfo.width = hw_frame->width;
-                VideoInfo.height = hw_frame->height;
+            avcodec_send_packet(vd[0].codec_ctx, nullptr);
+            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
+                last_pts = vd[0].hw_frame->best_effort_timestamp;
+                VideoInfo.width = vd[0].hw_frame->width;
+                VideoInfo.height = vd[0].hw_frame->height;
                 frame_received = true;
             }
             break;
         }
 
-        if (packet->stream_index == video_stream_index) {
-            if (avcodec_send_packet(codec_ctx, packet) == 0) {
-                while (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
-                    last_pts = hw_frame->best_effort_timestamp;
-                    VideoInfo.width = hw_frame->width;
-                    VideoInfo.height = hw_frame->height;
+        if (vd[0].packet->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, vd[0].packet) == 0) {
+                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
+                    last_pts = vd[0].hw_frame->best_effort_timestamp;
+                    VideoInfo.width = vd[0].hw_frame->width;
+                    VideoInfo.height = vd[0].hw_frame->height;
                     frame_received = true;
                 }
             }
         }
-        av_packet_unref(packet);
+        av_packet_unref(vd[0].packet);
     }
 
     if (frame_received) {
-        AVRational tb = fmt_ctx->streams[video_stream_index]->time_base;
+        AVRational tb = fmt_ctx->streams[vd[0].stream_index]->time_base;
         double seconds = last_pts * av_q2d(tb);
         qDebug() << "Last PTS:" << last_pts << " (" << seconds << "sec)";
-        VideoInfo.max_framesNo = fmt_ctx->streams[video_stream_index]->duration/VideoInfo.pts_per_frame-1;
-        VideoInfo.current_frameNo = VideoInfo.max_framesNo;
+        VideoInfo.max_framesNo = (fmt_ctx->streams[vd[0].stream_index]->duration/VideoInfo.pts_per_frame-1);
+        current_FrameNo = VideoInfo.max_framesNo;
 
         //初回時にのみmalloc
         cudaMallocPitch(&d_rgba, &pitch_rgba,VideoInfo.width*4, VideoInfo.height);
@@ -478,8 +509,104 @@ void decode_thread::get_last_frame_pts() {
     }
 }
 
-// フレーム取得
-void decode_thread::get_decode_image() {
+// 複数ストリームフレーム取得
+void decode_thread::get_multistream_decode_image() {
+    std::vector<bool> got_frame(vd.size(), false);
+    int got_count = 0;
+    AVPacket* pkt = av_packet_alloc();
+
+    //----------- シーク処理 -----------
+    if (slider_No != current_FrameNo || video_reverse_flag) {
+        if (video_reverse_flag) {
+            slider_No--;
+            if (slider_No < 0)
+                slider_No = VideoInfo.max_framesNo;
+        }
+
+        // ビデオ/オーディオの両方 flush
+        if (audio_ctx)
+            avcodec_flush_buffers(audio_ctx);
+
+        for (auto& dec : vd) {
+            avcodec_flush_buffers(dec.codec_ctx);
+        }
+
+        av_seek_frame(fmt_ctx, 0,
+                      slider_No * VideoInfo.pts_per_frame,
+                      AVSEEK_FLAG_BACKWARD);
+
+        current_FrameNo = slider_No;
+
+        a+=1;
+    }
+
+    while (got_count < vd.size()) {
+        int ret = av_read_frame(fmt_ctx, pkt);
+        // ---------- EOF ----------
+        if (ret < 0) {
+            for (int i = 0; i < vd.size(); i++) {
+                // 映像側フラッシュ
+                avcodec_send_packet(vd[i].codec_ctx, nullptr);
+
+                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
+                    ffmpeg_to_CUDA(i);
+                    av_packet_unref(pkt);
+                    got_frame[i] = true;
+                    got_count++;
+                }
+            }
+
+            // 終端→先頭に戻ってループ
+            uint64_t seek_frame;
+            if (VideoInfo.current_frameNo >= VideoInfo.max_framesNo) {
+                emit decode_end();
+                seek_frame = 0;
+
+                if (audio_ctx)
+                    avcodec_flush_buffers(audio_ctx);
+
+                //複数ストリームは0でシーク
+                for (auto& dec : vd) { avcodec_flush_buffers(dec.codec_ctx); }
+                av_seek_frame(fmt_ctx, 0,
+                              seek_frame * VideoInfo.pts_per_frame,
+                              AVSEEK_FLAG_ANY);
+                continue;
+            }
+        }
+
+        // ----------- AUDIO PACKET -----------
+        if (pkt->stream_index == audio_stream_index) {
+            get_decode_audio(pkt);
+            continue;  // → 映像パケットを探しに行く
+        }
+
+        // ----------- VIDEO PACKET -----------
+        for (int i = 0; i < vd.size(); i++) {
+            if (pkt->stream_index == vd[i].stream_index&& !got_frame[i]) {
+                if (avcodec_send_packet(vd[i].codec_ctx, pkt) < 0) {
+                    av_packet_unref(pkt);
+                    continue;
+                }
+
+                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
+                    ffmpeg_to_CUDA(i);
+                    av_packet_unref(pkt);
+                    got_frame[i] = true;
+                    got_count++;
+                    break;  // 映像が取れたら終了
+                }
+            }
+        }
+        av_packet_unref(pkt);
+    }
+    // 念のため
+    av_packet_unref(pkt);
+}
+
+//シングルストリーム
+void decode_thread::get_singlestream_gpudecode_image(){
+    AVPacket* pkt = av_packet_alloc();
+
     // ----------- シーク処理 -----------
     if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
 
@@ -490,11 +617,11 @@ void decode_thread::get_decode_image() {
         }
 
         // ビデオ/オーディオの両方 flush
-        avcodec_flush_buffers(codec_ctx);
+        avcodec_flush_buffers(vd[0].codec_ctx);
         if (audio_ctx)
             avcodec_flush_buffers(audio_ctx);
 
-        av_seek_frame(fmt_ctx, video_stream_index,
+        av_seek_frame(fmt_ctx, vd[0].stream_index,
                       slider_No * VideoInfo.pts_per_frame,
                       AVSEEK_FLAG_BACKWARD);
 
@@ -503,16 +630,16 @@ void decode_thread::get_decode_image() {
 
     // ----------- パケット読み込みループ -----------
     while (true) {
-        int ret = av_read_frame(fmt_ctx, packet);
+        int ret = av_read_frame(fmt_ctx, pkt);
 
         // ---------- EOF ----------
         if (ret < 0) {
 
             // 映像側フラッシュ
-            avcodec_send_packet(codec_ctx, nullptr);
+            avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
-            if (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
-                ffmpeg_to_CUDA();
+            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
+                ffmpeg_to_CUDA(0);
                 break;
             }
 
@@ -525,118 +652,128 @@ void decode_thread::get_decode_image() {
                 seek_frame = 0;
             }
 
-            avcodec_flush_buffers(codec_ctx);
+            avcodec_flush_buffers(vd[0].codec_ctx);
             if (audio_ctx)
                 avcodec_flush_buffers(audio_ctx);
 
-            av_seek_frame(fmt_ctx, video_stream_index,
+            av_seek_frame(fmt_ctx, vd[0].stream_index,
                           seek_frame * VideoInfo.pts_per_frame,
                           AVSEEK_FLAG_ANY);
             continue;
         }
 
         // ----------- AUDIO PACKET -----------
-        if (packet->stream_index == audio_stream_index) {
-
-            if (avcodec_send_packet(audio_ctx, packet) >= 0) {
-                AVFrame* af = av_frame_alloc();
-                while (avcodec_receive_frame(audio_ctx, af) >= 0) {
-
-                    int out_channels = out_ch_layout.nb_channels;
-                    int bps         = av_get_bytes_per_sample(out_format);
-
-                    int max_out_samples = av_rescale_rnd(
-                        swr_get_delay(swr, in_sample_rate) + af->nb_samples,
-                        out_sample_rate,
-                        in_sample_rate,
-                        AV_ROUND_UP
-                        );
-
-                    QByteArray pcm;
-                    VideoInfo.audio_channels=out_channels;
-                    pcm.resize(max_out_samples * out_channels * bps);
-
-                    uint8_t* out_planes[1];
-                    out_planes[0] = (uint8_t*)pcm.data();
-
-                    int out_samples = swr_convert(
-                        swr,
-                        out_planes,
-                        max_out_samples,
-                        (const uint8_t**)af->extended_data,
-                        af->nb_samples
-                        );
-
-                    if (audio_buffer_size < out_samples * 4 * 2) {
-                        audio_buffer_size = out_samples * 4 * 2;
-                        audio_buffer = (uint8_t*)realloc(audio_buffer, audio_buffer_size);
-                    }
-
-                    int samples = swr_convert(
-                        swr,
-                        &audio_buffer,
-                        out_samples,
-                        (const uint8_t**)af->extended_data,
-                        af->nb_samples
-                        );
-
-                    int bytes = samples * 2 * av_get_bytes_per_sample(out_format);
-
-                    if(!encode_flag){
-                        if (audio_mode) {
-                            if (audioOutput && bytes > 0){
-                                audioOutput->write((char*)audio_buffer, bytes);
-                            }
-                        }else{
-                            if (out_samples > 0) {
-                                pcm.resize(out_samples * out_channels * bps);
-                                emit send_audio(pcm);
-                            }
-                        }
-                    }
-                }
-                av_frame_free(&af);
-            }
-            av_packet_unref(packet);
+        if (pkt->stream_index == audio_stream_index) {
+            get_decode_audio(pkt);
             continue;  // → 映像パケットを探しに行く
         }
 
         // ----------- VIDEO PACKET -----------
-        if (packet->stream_index == video_stream_index) {
-            if (avcodec_send_packet(codec_ctx, packet) < 0) {
-                av_packet_unref(packet);
+        if (pkt->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, pkt) < 0) {
+                av_packet_unref(pkt);
                 continue;
             }
 
-            if (avcodec_receive_frame(codec_ctx, hw_frame) == 0) {
-                ffmpeg_to_CUDA();
-                av_packet_unref(packet);
+            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
+                ffmpeg_to_CUDA(0);
+                av_packet_unref(pkt);
                 break;  // 映像が取れたら終了
             }
         }
 
-        av_packet_unref(packet);
+        av_packet_unref(pkt);
     }
-
     // 念のため
-    av_packet_unref(packet);
+    av_packet_unref(pkt);
 }
 
+void decode_thread::get_decode_audio(AVPacket* pkt){
+    if (avcodec_send_packet(audio_ctx, pkt) >= 0) {
+        AVFrame* af = av_frame_alloc();
+        while (avcodec_receive_frame(audio_ctx, af) >= 0) {
+
+            int out_channels = out_ch_layout.nb_channels;
+            int bps         = av_get_bytes_per_sample(out_format);
+
+            int max_out_samples = av_rescale_rnd(
+                swr_get_delay(swr, in_sample_rate) + af->nb_samples,
+                out_sample_rate,
+                in_sample_rate,
+                AV_ROUND_UP
+                );
+
+            QByteArray pcm;
+            VideoInfo.audio_channels=out_channels;
+            pcm.resize(max_out_samples * out_channels * bps);
+
+            uint8_t* out_planes[1];
+            out_planes[0] = (uint8_t*)pcm.data();
+
+            int out_samples = swr_convert(
+                swr,
+                out_planes,
+                max_out_samples,
+                (const uint8_t**)af->extended_data,
+                af->nb_samples
+                );
+
+            if (audio_buffer_size < out_samples * 4 * 2) {
+                audio_buffer_size = out_samples * 4 * 2;
+                audio_buffer = (uint8_t*)realloc(audio_buffer, audio_buffer_size);
+            }
+
+            int samples = swr_convert(
+                swr,
+                &audio_buffer,
+                out_samples,
+                (const uint8_t**)af->extended_data,
+                af->nb_samples
+                );
+
+            int bytes = samples * 2 * av_get_bytes_per_sample(out_format);
+
+            if(!encode_flag){
+                if (audio_mode) {
+                    if (audioOutput && bytes > 0){
+                        audioOutput->write((char*)audio_buffer, bytes);
+                    }
+                }else{
+                    if (out_samples > 0) {
+                        pcm.resize(out_samples * out_channels * bps);
+                        emit send_audio(pcm);
+                    }
+                }
+            }
+        }
+        av_frame_free(&af);
+    }
+    av_packet_unref(pkt);
+}
 
 //CUDAに渡して画像処理
-void decode_thread::ffmpeg_to_CUDA(){
+void decode_thread::ffmpeg_to_CUDA(int i){
     // QElapsedTimer timer;
     // timer.start();
+    // a+=1;
+    // qDebug()<<"thread_idx:"<<thread_idx<<":"<<a;
 
-    //カーネルNV12→RGBA
-    CUDA_IMG_Proc->NV12_to_RGBA(d_rgba, pitch_rgba,hw_frame->data[0], hw_frame->linesize[0], hw_frame->data[1], hw_frame->linesize[1], VideoInfo.height, VideoInfo.width);
 
     //フレーム番号更新
-    AVRational time_base = fmt_ctx->streams[video_stream_index]->time_base;
-    VideoInfo.current_frameNo = hw_frame->best_effort_timestamp/VideoInfo.pts_per_frame;
-    slider_No = VideoInfo.current_frameNo;
+    AVRational time_base = fmt_ctx->streams[vd[i].stream_index]->time_base;
+    current_FrameNo = vd[i].hw_frame->best_effort_timestamp/VideoInfo.pts_per_frame;
+    slider_No = current_FrameNo;
 
-    emit send_decode_image(d_rgba,pitch_rgba,VideoInfo.current_frameNo);
+    VideoInfo.current_frameNo=current_FrameNo;
+
+    //qDebug()<<vd.size();
+    if(i==0){
+        //カーネルNV12→RGBA
+        CUDA_IMG_Proc->NV12_to_RGBA(d_rgba, pitch_rgba,vd[i].hw_frame->data[0], vd[i].hw_frame->linesize[0], vd[i].hw_frame->data[1], vd[i].hw_frame->linesize[1], VideoInfo.height, VideoInfo.width);
+        qDebug()<<current_FrameNo;
+        emit send_decode_image(d_rgba,pitch_rgba,current_FrameNo);
+    }
+
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 }

@@ -415,12 +415,13 @@ void GLWidget::Monitor_Rendering(){
             painter.drawText(2, 80, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
             painter.drawText(2, 100, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
             painter.drawText(2, 120, "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
-            painter.drawText(2, 140, "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
-            painter.drawText(2, 160, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
-            painter.drawText(2, 180, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
-            painter.drawText(2, 200, "Current Frame:" + QString::number(VideoInfo.current_frameNo)+"\n");
+            painter.drawText(2, 140, VideoInfo.decode_mode);
+            painter.drawText(2, 160, "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
+            painter.drawText(2, 180, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
+            painter.drawText(2, 200, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
+            painter.drawText(2, 220, "Current Frame:" + QString::number(VideoInfo.current_frameNo)+"\n");
             if(VideoInfo.audio)
-                painter.drawText(2, 220, "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
+                painter.drawText(2, 240, "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
         }
     }
 
@@ -755,6 +756,8 @@ void GLWidget::downloadToGLTexture_and_Encode() {
         d_splitrgba_x4, pitch_splitrgba_x4,
         d_rgba, pitch_rgba,
         width_, height_);
+
+    // qDebug()<<encode_FrameCount<<":"<<MaxFrame;
 
     if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
         save_encoder->encode(d_splitrgba_x4,pitch_splitrgba_x4);
