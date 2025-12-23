@@ -204,7 +204,7 @@ void decode_thread::processFrame() {
 
         //複数ストリームとシングルストリームで別ルートを用意
         if(vd.size()==1){
-            get_singlestream_gpudecode_image();
+            get_singlestream_gpudecode_image(0);
         }else{
             get_multistream_decode_image();
         }
@@ -642,7 +642,7 @@ void decode_thread::get_multistream_decode_image() {
 }
 
 //シングルストリーム
-void decode_thread::get_singlestream_gpudecode_image(){
+void decode_thread::get_singlestream_gpudecode_image(int i){
     AVPacket* pkt = av_packet_alloc();
 
     // ----------- シーク処理 -----------
@@ -655,11 +655,11 @@ void decode_thread::get_singlestream_gpudecode_image(){
         }
 
         // ビデオ/オーディオの両方 flush
-        avcodec_flush_buffers(vd[0].codec_ctx);
+        avcodec_flush_buffers(vd[i].codec_ctx);
         if (audio_ctx)
             avcodec_flush_buffers(audio_ctx);
 
-        av_seek_frame(fmt_ctx, vd[0].stream_index,
+        av_seek_frame(fmt_ctx, vd[i].stream_index,
                       slider_No * VideoInfo.pts_per_frame,
                       AVSEEK_FLAG_BACKWARD);
 
@@ -674,10 +674,10 @@ void decode_thread::get_singlestream_gpudecode_image(){
         if (ret < 0) {
 
             // 映像側フラッシュ
-            avcodec_send_packet(vd[0].codec_ctx, nullptr);
+            avcodec_send_packet(vd[i].codec_ctx, nullptr);
 
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
-                ffmpeg_to_CUDA(0);
+            if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
+                ffmpeg_to_CUDA(i);
                 break;
             }
 
@@ -690,11 +690,11 @@ void decode_thread::get_singlestream_gpudecode_image(){
                 seek_frame = 0;
             }
 
-            avcodec_flush_buffers(vd[0].codec_ctx);
+            avcodec_flush_buffers(vd[i].codec_ctx);
             if (audio_ctx)
                 avcodec_flush_buffers(audio_ctx);
 
-            av_seek_frame(fmt_ctx, vd[0].stream_index,
+            av_seek_frame(fmt_ctx, vd[i].stream_index,
                           seek_frame * VideoInfo.pts_per_frame,
                           AVSEEK_FLAG_ANY);
             continue;
@@ -707,14 +707,14 @@ void decode_thread::get_singlestream_gpudecode_image(){
         }
 
         // ----------- VIDEO PACKET -----------
-        if (pkt->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, pkt) < 0) {
+        if (pkt->stream_index == vd[i].stream_index) {
+            if (avcodec_send_packet(vd[i].codec_ctx, pkt) < 0) {
                 av_packet_unref(pkt);
                 continue;
             }
 
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
-                ffmpeg_to_CUDA(0);
+            if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
+                ffmpeg_to_CUDA(i);
                 av_packet_unref(pkt);
                 break;  // 映像が取れたら終了
             }
@@ -808,6 +808,10 @@ void decode_thread::ffmpeg_to_CUDA(int i){
     if(vd.size()==1){
         //カーネルNV12→RGBA
         CUDA_IMG_Proc->NV12_to_RGBA(d_rgba[i], pitch_rgba[i],vd[i].hw_frame->data[0], vd[i].hw_frame->linesize[0], vd[i].hw_frame->data[1], vd[i].hw_frame->linesize[1], VideoInfo.height, VideoInfo.width,stream[i]);
+        //フレーム番号更新
+        current_FrameNo = frame_no[0] / VideoInfo.pts_per_frame;
+        VideoInfo.current_frameNo = current_FrameNo;
+        slider_No = current_FrameNo;
         emit send_decode_image(d_rgba[i],pitch_rgba[i],current_FrameNo);
     }else if(vd.size()==2){
         //カーネルNV12→RGBA

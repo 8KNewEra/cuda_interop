@@ -53,7 +53,7 @@ signals:
 
 public slots:
     void get_multistream_decode_image();
-    void get_singlestream_gpudecode_image();
+    void get_singlestream_gpudecode_image(int i);
     void get_decode_audio(AVPacket* pkt);
     void sliderPlayback(int value);
     void resumePlayback();
