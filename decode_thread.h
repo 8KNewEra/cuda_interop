@@ -77,8 +77,10 @@ private:
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     void ffmpeg_to_CUDA(int i);
+    void CUDA_merge();
     void get_last_frame_pts();
     void ffmpeg_software_process();
+    bool all_same_pts();
 
 
     bool video_play_flag;
@@ -88,26 +90,32 @@ private:
     // FFmpeg関連
     const char* input_filename;
     QByteArray File_byteArray;
-
     std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
-
     DecodeState decode_state = STATE_DECODE_READY;
 
     int slider_No;
     int current_FrameNo=0;
+    std::vector<int64_t> frame_no;   // vd.size()
     QMutex mutex;
+    QMutex merge_mutex;
+
 
     QTimer *timer;
     QElapsedTimer elapsedTimer;
     int interval_ms;
 
-    uint8_t *d_rgba;
-    size_t pitch_rgba = 0;
-    CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
-
     DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
+
+    //CUDA
+    CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
+    std::vector<cudaStream_t> stream;
+    std::vector<uint8_t*> d_rgba;
+    std::vector<size_t> pitch_rgba;
+    uint8_t* d_merged=nullptr;
+    size_t pitch_merged=0;
+    std::vector<bool> rgba_finish;
 
 
     //音声

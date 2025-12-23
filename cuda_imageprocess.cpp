@@ -24,7 +24,7 @@ CUDA_ImageProcess::~CUDA_ImageProcess(){
 }
 
 //NV12→RGBA
-bool CUDA_ImageProcess::NV12_to_RGBA(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width)
+bool CUDA_ImageProcess::NV12_to_RGBA(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream)
 {
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_y, &pitch_y,
@@ -35,7 +35,7 @@ bool CUDA_ImageProcess::NV12_to_RGBA(uint8_t* d_rgba, size_t pitch_rgba,uint8_t*
     dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
 
     cudaError_t err = cudaLaunchKernel((const void*)nv12_to_rgba_kernel,
-                                       grid, block, args, 0, nullptr);
+                                       grid, block, args, 0, stream);
 
     if (err != cudaSuccess) {
         qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
