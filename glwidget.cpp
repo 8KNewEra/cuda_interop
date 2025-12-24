@@ -639,14 +639,14 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int a) {
     };
 
     //解像度の変更に対応
-    if (VideoInfo.width != width_ || VideoInfo.height != height_) {
-        initCudaMalloc(VideoInfo.width,VideoInfo.height);
-        initCudaTexture(VideoInfo.width,VideoInfo.height);
-        initTextureCuda(VideoInfo.width,VideoInfo.height);
-        setShaderUniform(VideoInfo.width,VideoInfo.height);
+    if (VideoInfo.width*VideoInfo.width_scale != width_ || VideoInfo.height*VideoInfo.height_scale != height_) {
+        initCudaMalloc(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
+        initCudaTexture(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
+        initTextureCuda(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
+        setShaderUniform(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         initCudaHist();
-        width_=VideoInfo.width;
-        height_=VideoInfo.height;
+        width_=VideoInfo.width*VideoInfo.width_scale;
+        height_=VideoInfo.height*VideoInfo.height_scale;
         GLresize();
         emit decode_please();
         return;

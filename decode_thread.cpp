@@ -110,15 +110,21 @@ decode_thread::~decode_thread() {
         }
     };
 
-    for (int i = 0; i < stream.size(); ++i) {
-        if(stream[i]){
-            cudaStreamDestroy(stream[i]);
-        }
+    // for (int i = 0; i < stream.size(); ++i) {
+    //     if(stream[i]){
+    //         cudaStreamDestroy(stream[i]);
+    //         stream[i]=nullptr;
+    //     }
 
-        if(d_rgba[i]){
-            safe_cuda_free((void*&)d_rgba[i], "d_rgba");
-        }
-    }
+    //     if (event[i]) {
+    //         cudaEventDestroy(event[i]);
+    //         event[i] = nullptr;
+    //     }
+
+    //     if(d_rgba[i]){
+    //         safe_cuda_free((void*&)d_rgba[i], "d_rgba");
+    //     }
+    // }
 
     if(d_merged){
         safe_cuda_free((void*&)d_merged, "d_merged");
@@ -406,41 +412,68 @@ void decode_thread::initialized_ffmpeg() {
     emit send_video_info();
 
     //CUDAストリーム生成
-    for (int i = 0; i < vd.size(); ++i) {
-        cudaStream_t s;
-        cudaStreamCreate(&s);
-        stream.push_back(s);     // push_back はムーブで高速
+    int N = vd.size();
 
-        //初回時にのみmalloc
-        uint8_t* rgba;
-        size_t p_rgba;
-        qDebug()<<VideoInfo.height<<":"<<VideoInfo.width;
-        cudaMallocPitch(&rgba, &p_rgba,VideoInfo.width*4, VideoInfo.height);
-        d_rgba.push_back(rgba);
-        pitch_rgba.push_back(p_rgba);
+    d_rgba.resize(N);
+    pitch_rgba.resize(N);
+    events.resize(N);
+    stream.resize(N);
 
-        //修了検知
-        bool flag=false;
-        rgba_finish.push_back(flag);
+    write_idx.resize(N, 0);
+    ready_idx.resize(N, -1);
+    frame_no.resize(N, -1);
+    rgba_finish.resize(N, false);
 
-        int No=0;
-        frame_no.push_back(No);
+    for (int i = 0; i < N; i++) {
+        cudaStreamCreateWithFlags(
+            &stream[i],
+            cudaStreamNonBlocking
+            );
+
+        d_rgba[i].resize(BUF);
+        pitch_rgba[i].resize(BUF);
+        events[i].resize(BUF);
+
+        for (int b = 0; b < BUF; b++) {
+            cudaError_t err = cudaMallocPitch(
+                &d_rgba[i][b],
+                &pitch_rgba[i][b],
+                VideoInfo.width * 4,
+                VideoInfo.height
+                );
+
+            if (err != cudaSuccess) {
+                qDebug() << "cudaMallocPitch failed"
+                         << i << b
+                         << cudaGetErrorString(err);
+            }
+
+            // ✅ event 作成
+            cudaEventCreateWithFlags(
+                &events[i][b],
+                cudaEventDisableTiming
+                );
+        }
     }
+
+
+    qDebug()<<"AAAAA"<<VideoInfo.width<<":"<<VideoInfo.height;
 
     //デコードモード
     if(vd.size()==1){
         VideoInfo.decode_mode = "Decode Mode:Non split(tile:1)\n";
+        VideoInfo.width_scale=1;
+        VideoInfo.height_scale=1;
     }else if(vd.size()==2){
         VideoInfo.decode_mode = "Decode Mode:split_x2(tile:2×1)\n";
-        VideoInfo.height=VideoInfo.height*1;
-        VideoInfo.width=VideoInfo.width*2;
-        cudaMallocPitch(&d_merged, &pitch_merged,VideoInfo.width*4, VideoInfo.height);
+        VideoInfo.width_scale=2;
+        VideoInfo.height_scale=1;
+        cudaMallocPitch(&d_merged, &pitch_merged,VideoInfo.width*VideoInfo.width_scale*4, VideoInfo.height*VideoInfo.height_scale);
     }else if(vd.size()==4){
         VideoInfo.decode_mode = "Decode Mode:split_x4(tile:2×2)\n";
-        VideoInfo.height=VideoInfo.height*2;
-        VideoInfo.width=VideoInfo.width*2;
-        qDebug()<<VideoInfo.height<<":"<<VideoInfo.width;
-        cudaMallocPitch(&d_merged, &pitch_merged,VideoInfo.width*4, VideoInfo.height);
+        VideoInfo.width_scale=2;
+        VideoInfo.height_scale=2;
+        cudaMallocPitch(&d_merged, &pitch_merged,VideoInfo.width*VideoInfo.width_scale*4, VideoInfo.height*VideoInfo.height_scale);
     }
 
     interval_ms = static_cast<double>(1000.0 / 33);
@@ -790,99 +823,104 @@ void decode_thread::get_decode_audio(AVPacket* pkt){
 }
 
 //CUDAに渡して画像処理
-void decode_thread::ffmpeg_to_CUDA(int i){
-    // QElapsedTimer timer;
-    // timer.start();
-    // a+=1;
-
+void decode_thread::ffmpeg_to_CUDA(int i)
+{
     int64_t pts = vd[i].hw_frame->best_effort_timestamp;
+
+    int b = write_idx[i];   // 今回使うバッファ
+
+    // NV12 → RGBA
+    CUDA_IMG_Proc->NV12_to_RGBA(
+        d_rgba[i][b],
+        pitch_rgba[i][b],
+        vd[i].hw_frame->data[0],
+        vd[i].hw_frame->linesize[0],
+        vd[i].hw_frame->data[1],
+        vd[i].hw_frame->linesize[1],
+        VideoInfo.height,
+        VideoInfo.width,
+        stream[i]
+        );
+
+    cudaEventRecord(events[i][b], stream[i]);
 
     {
         QMutexLocker lock(&merge_mutex);
+        frame_no[i]    = pts;
+        ready_idx[i]   = b;
         rgba_finish[i] = true;
-        frame_no[i]   = pts;
     }
 
+    write_idx[i] = (b + 1) % BUF;
 
+    if (all_same_pts()) {
+        for (int s = 0; s < vd.size(); s++) {
+            cudaEventSynchronize(events[s][ready_idx[s]]);
+        }
 
-    if(vd.size()==1){
-        //カーネルNV12→RGBA
-        CUDA_IMG_Proc->NV12_to_RGBA(d_rgba[i], pitch_rgba[i],vd[i].hw_frame->data[0], vd[i].hw_frame->linesize[0], vd[i].hw_frame->data[1], vd[i].hw_frame->linesize[1], VideoInfo.height, VideoInfo.width,stream[i]);
-        //フレーム番号更新
         current_FrameNo = frame_no[0] / VideoInfo.pts_per_frame;
         VideoInfo.current_frameNo = current_FrameNo;
         slider_No = current_FrameNo;
-        emit send_decode_image(d_rgba[i],pitch_rgba[i],current_FrameNo);
-    }else if(vd.size()==2){
-        //カーネルNV12→RGBA
-        CUDA_IMG_Proc->NV12_to_RGBA(d_rgba[i], pitch_rgba[i],vd[i].hw_frame->data[0], vd[i].hw_frame->linesize[0], vd[i].hw_frame->data[1], vd[i].hw_frame->linesize[1], VideoInfo.height, VideoInfo.width/2,stream[i]);
-        if (all_same_pts()) {
-            for (int i = 0; i < vd.size(); i++)
-                cudaStreamSynchronize(stream[i]);
 
-            //フレーム番号更新
-            current_FrameNo = frame_no[0] / VideoInfo.pts_per_frame;
-            VideoInfo.current_frameNo = current_FrameNo;
-            slider_No = current_FrameNo;
-            CUDA_merge();
-        }
-    }else if(vd.size()==4){
-        //カーネルNV12→RGBA
-        CUDA_IMG_Proc->NV12_to_RGBA(d_rgba[i], pitch_rgba[i],vd[i].hw_frame->data[0], vd[i].hw_frame->linesize[0], vd[i].hw_frame->data[1], vd[i].hw_frame->linesize[1], VideoInfo.height/2, VideoInfo.width/2,stream[i]);
-
-        if (all_same_pts()) {
-            for (int i = 0; i < vd.size(); i++)
-                cudaStreamSynchronize(stream[i]);
-
-             //フレーム番号更新
-            current_FrameNo = frame_no[0] / VideoInfo.pts_per_frame;
-            VideoInfo.current_frameNo = current_FrameNo;
-            slider_No = current_FrameNo;
-            CUDA_merge();
-        }
+        CUDA_merge();
     }
-
-    // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
-    // qDebug()<<seconds;
 }
 
-void decode_thread::CUDA_merge(){
-    if(vd.size()==2){
-        if(d_rgba[0]&&d_rgba[1]){
-            CUDA_IMG_Proc->image_combine_x2(d_merged, pitch_merged,d_rgba[0], pitch_rgba[0],d_rgba[1], pitch_rgba[1],VideoInfo.width/2, VideoInfo.height);
-        }
-    }else if(vd.size()==4){
-        if(d_rgba[0]&&d_rgba[1]&&d_rgba[2]&&d_rgba[3]){
-            CUDA_IMG_Proc->image_combine_x4(d_merged, pitch_merged,d_rgba[0], pitch_rgba[0],d_rgba[1], pitch_rgba[1],d_rgba[2], pitch_rgba[2],d_rgba[3], pitch_rgba[3],VideoInfo.width/2, VideoInfo.height/2, 0);
-        }
+
+void decode_thread::CUDA_merge()
+{
+    if (vd.size() == 2) {
+        CUDA_IMG_Proc->image_combine_x2(
+            d_merged, pitch_merged,
+            d_rgba[0][ready_idx[0]], pitch_rgba[0][ready_idx[0]],
+            d_rgba[1][ready_idx[1]], pitch_rgba[1][ready_idx[1]],
+            VideoInfo.width,
+            VideoInfo.height
+            );
+
+        emit send_decode_image(d_merged, pitch_merged, current_FrameNo);
+    }
+    else if (vd.size() == 4) {
+        CUDA_IMG_Proc->image_combine_x4(
+            d_merged, pitch_merged,
+            d_rgba[0][ready_idx[0]], pitch_rgba[0][ready_idx[0]],
+            d_rgba[1][ready_idx[1]], pitch_rgba[1][ready_idx[1]],
+            d_rgba[2][ready_idx[2]], pitch_rgba[2][ready_idx[2]],
+            d_rgba[3][ready_idx[3]], pitch_rgba[3][ready_idx[3]],
+            VideoInfo.width,
+            VideoInfo.height,
+            1
+            );
+
+        emit send_decode_image(d_merged, pitch_merged, current_FrameNo);
+    }else{
+        emit send_decode_image(d_rgba[0][ready_idx[0]],  pitch_rgba[0][ready_idx[0]], current_FrameNo);
     }
 
-    for(int i=0;i<vd.size();i++){
+    for (int i = 0; i < vd.size(); i++) {
         rgba_finish[i] = false;
         frame_no[i]    = -1;
+        ready_idx[i]   = -1;
     }
-
-    emit send_decode_image(d_merged,pitch_merged,current_FrameNo);
 }
+
+
 
 bool decode_thread::all_same_pts()
 {
-    const int64_t PTS_TOLERANCE = VideoInfo.pts_per_frame / 2;
-
-    if (!rgba_finish[0])
+    if (!rgba_finish[0] || ready_idx[0] < 0)
         return false;
 
     int64_t pts0 = frame_no[0];
 
     for (int i = 1; i < vd.size(); i++) {
-        if (!rgba_finish[i])
-            return false;
-
-        if (llabs(frame_no[i] - pts0) > PTS_TOLERANCE)
-            return false;
+        if (!rgba_finish[i])      return false;
+        if (ready_idx[i] < 0)     return false;
+        if (frame_no[i] != pts0)  return false;
     }
     return true;
 }
+
 
 
 

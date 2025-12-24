@@ -97,7 +97,6 @@ private:
 
     int slider_No;
     int current_FrameNo=0;
-    std::vector<int64_t> frame_no;   // vd.size()
     QMutex mutex;
     QMutex merge_mutex;
 
@@ -110,12 +109,18 @@ private:
 
     //CUDA
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
+    static constexpr int BUF = 16;
+    std::vector<std::vector<uint8_t*>> d_rgba;      // [stream][buf]
+    std::vector<std::vector<size_t>> pitch_rgba;
     std::vector<cudaStream_t> stream;
-    std::vector<uint8_t*> d_rgba;
-    std::vector<size_t> pitch_rgba;
+    std::vector<std::vector<cudaEvent_t>> events;   // [stream][buf]
+    std::vector<int> write_idx;   // 書き込み側 index (0/1)
+    std::vector<int> ready_idx;   // merge に使う buf index
+    std::vector<int64_t> frame_no;
+    std::vector<bool>    rgba_finish;
+
     uint8_t* d_merged=nullptr;
     size_t pitch_merged=0;
-    std::vector<bool> rgba_finish;
 
 
     //音声

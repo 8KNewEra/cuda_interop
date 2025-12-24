@@ -81,6 +81,8 @@ struct DecodeInfo {
     double fps = 30;
     int width=0;
     int height=0;
+    int width_scale=0;
+    int height_scale=0;
     QString decode_mode="";
     bool audio = false;
     int audio_channels=1;
