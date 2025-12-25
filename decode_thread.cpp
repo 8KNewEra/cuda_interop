@@ -655,22 +655,19 @@ void decode_thread::get_multistream_decode_image() {
         for (int i = 0; i < vd.size(); i++) {
             if (pkt->stream_index == vd[i].stream_index&& !got_frame[i]) {
                 if (avcodec_send_packet(vd[i].codec_ctx, pkt) < 0) {
-                    av_packet_unref(pkt);
                     continue;
                 }
 
                 if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
-                    ffmpeg_to_CUDA(i);
-                    av_packet_unref(pkt);
                     got_frame[i] = true;
                     got_count++;
                     break;  // 映像が取れたら終了
                 }
             }
         }
-        av_packet_unref(pkt);
     }
     // 念のため
+    CUDA_RGBA_to_merge();
     av_packet_unref(pkt);
 }
 
@@ -822,6 +819,38 @@ void decode_thread::get_decode_audio(AVPacket* pkt){
     av_packet_unref(pkt);
 }
 
+void decode_thread::CUDA_RGBA_to_merge(){
+    if (vd.size() == 2) {
+
+    }
+    else if (vd.size() == 4) {
+        CUDA_IMG_Proc->nv12x4_to_rgba_merge(
+            vd[0].hw_frame->data[0],vd[0].hw_frame->linesize[0], vd[0].hw_frame->data[1],vd[0].hw_frame->linesize[1],
+            vd[1].hw_frame->data[0],vd[1].hw_frame->linesize[0], vd[1].hw_frame->data[1],vd[1].hw_frame->linesize[1],
+            vd[2].hw_frame->data[0],vd[2].hw_frame->linesize[0], vd[2].hw_frame->data[1],vd[2].hw_frame->linesize[1],
+            vd[3].hw_frame->data[0],vd[3].hw_frame->linesize[0], vd[3].hw_frame->data[1],vd[3].hw_frame->linesize[1],
+            d_merged, pitch_merged,VideoInfo.width*2,VideoInfo.height*2,VideoInfo.width,VideoInfo.height);
+
+        qDebug()<<vd[0].hw_frame->linesize[0]<<":"<<vd[0].hw_frame->linesize[1];
+
+        cudaEventRecord(events[0][0], nullptr);
+        cudaEventSynchronize(events[0][0]);
+
+        current_FrameNo = vd[0].hw_frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        VideoInfo.current_frameNo = current_FrameNo;
+        slider_No = current_FrameNo;
+
+        emit send_decode_image(d_merged, pitch_merged, current_FrameNo);
+    }else{
+        emit send_decode_image(d_rgba[0][ready_idx[0]],  pitch_rgba[0][ready_idx[0]], current_FrameNo);
+    }
+}
+
+
+
+
+
+
 //CUDAに渡して画像処理
 void decode_thread::ffmpeg_to_CUDA(int i)
 {
@@ -853,6 +882,10 @@ void decode_thread::ffmpeg_to_CUDA(int i)
 
     write_idx[i] = (b + 1) % BUF;
 
+    if(i==0){
+        qDebug()<<write_idx[0];
+    }
+
     if (all_same_pts()) {
         for (int s = 0; s < vd.size(); s++) {
             cudaEventSynchronize(events[s][ready_idx[s]]);
@@ -861,6 +894,8 @@ void decode_thread::ffmpeg_to_CUDA(int i)
         current_FrameNo = frame_no[0] / VideoInfo.pts_per_frame;
         VideoInfo.current_frameNo = current_FrameNo;
         slider_No = current_FrameNo;
+
+        // qDebug()<<vd[0].hw_frame->best_effort_timestamp<<":"<<vd[1].hw_frame->best_effort_timestamp<<":"<<vd[2].hw_frame->best_effort_timestamp<<":"<<vd[3].hw_frame->best_effort_timestamp;
 
         CUDA_merge();
     }

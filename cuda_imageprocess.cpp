@@ -12,6 +12,12 @@ extern "C"{
     __global__ void image_combine_x2_kernel(uint8_t* out, size_t pitchOut,const uint8_t* img1, size_t pitch1,const uint8_t* img2, size_t pitch2,int width, int height);
     __global__ void image_combine_x4_kernel(uint8_t* out, size_t pitchOut,const uint8_t* img1, size_t pitch1,const uint8_t* img2, size_t pitch2,const uint8_t* img3, size_t pitch3,const uint8_t* img4, size_t pitch4,int width, int height, int blend);
     __global__ void image_split_x4_kernel(uint8_t* Out0, size_t pitch0,uint8_t* Out1, size_t pitch1,uint8_t* Out2, size_t pitch2,uint8_t* Out3, size_t pitch3,const uint8_t* In, size_t pitchIn,int width, int height);
+    __global__ void nv12x4_to_rgba_merge_kernel(
+        const uint8_t* y0,  size_t pitchY0,const uint8_t* uv0, size_t pitchUV0,
+        const uint8_t* y1,  size_t pitchY1,const uint8_t* uv1, size_t pitchUV1,
+        const uint8_t* y2,  size_t pitchY2,const uint8_t* uv2, size_t pitchUV2,
+        const uint8_t* y3,  size_t pitchY3,const uint8_t* uv3, size_t pitchUV3,
+        uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH);
     //__global__ void draw_histogram_kernel(cudaSurfaceObject_t surface,int width,int height,const unsigned int* hist_r,const unsigned int* hist_g,const unsigned int* hist_b);
 }
 
@@ -312,6 +318,42 @@ bool CUDA_ImageProcess::image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t*
         );
 
     cudaError_t err =cudaLaunchKernel((const void*)image_split_x4_kernel,
+                                       grid, block, args, 0, nullptr);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+bool CUDA_ImageProcess::nv12x4_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
+                                             uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
+                                             uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
+                                             uint8_t* y3,  size_t pitchY3,uint8_t* uv3, size_t pitchUV3,
+                                             uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH){
+
+    void* args[] = {&y0, &pitchY0,&uv0,&pitchUV0,
+                    &y1, &pitchY1,&uv1,&pitchUV1,
+                    &y2, &pitchY2,&uv2,&pitchUV2,
+                    &y3, &pitchY3,&uv3,&pitchUV3,
+                    &out, &pitchOut,&outW, &outH,&srcW,&srcH
+    };
+
+    dim3 block(16, 16);
+    dim3 grid(
+        (outW  + block.x - 1) / block.x,
+        (outH + block.y - 1) / block.y
+        );
+
+    cudaError_t err =cudaLaunchKernel((const void*)nv12x4_to_rgba_merge_kernel,
                                        grid, block, args, 0, nullptr);
 
     if (err != cudaSuccess) {

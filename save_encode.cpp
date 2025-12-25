@@ -236,6 +236,8 @@ bool save_encode::encode(uint8_t* d_rgba[4], size_t pitch0[4])
         //フレームのPTSをセット
         ve[i].hw_frame->pts = frame_index*pts_step;
 
+        qDebug()<<"encode:"<<ve[i].hw_frame->pts;
+
 
         //エンコーダにフレーム送信
         int ret = avcodec_send_frame(ve[i].codec_ctx, ve[i].hw_frame);

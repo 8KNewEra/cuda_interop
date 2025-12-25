@@ -79,7 +79,7 @@ private:
     void ffmpeg_to_CUDA(int i);
     void CUDA_merge();
     void get_last_frame_pts();
-    void ffmpeg_software_process();
+    void CUDA_RGBA_to_merge();
     bool all_same_pts();
 
 
