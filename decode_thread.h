@@ -91,6 +91,7 @@ private:
     const char* input_filename;
     QByteArray File_byteArray;
     std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成
+    std::vector<AVPacket*> pkt{} ;
     AVFormatContext* fmt_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
     DecodeState decode_state = STATE_DECODE_READY;

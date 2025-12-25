@@ -422,6 +422,7 @@ void decode_thread::initialized_ffmpeg() {
     write_idx.resize(N, 0);
     ready_idx.resize(N, -1);
     frame_no.resize(N, -1);
+    pkt.resize(N, nullptr);
     rgba_finish.resize(N, false);
 
     for (int i = 0; i < N; i++) {
@@ -584,7 +585,6 @@ void decode_thread::get_last_frame_pts() {
 void decode_thread::get_multistream_decode_image() {
     std::vector<bool> got_frame(vd.size(), false);
     int got_count = 0;
-    AVPacket* pkt = av_packet_alloc();
 
     //----------- シーク処理 -----------
     if (slider_No != current_FrameNo || video_reverse_flag) {
@@ -612,7 +612,8 @@ void decode_thread::get_multistream_decode_image() {
     }
 
     while (got_count < vd.size()) {
-        int ret = av_read_frame(fmt_ctx, pkt);
+        pkt[got_count]=av_packet_alloc();
+        int ret = av_read_frame(fmt_ctx, pkt[got_count]);
         // ---------- EOF ----------
         if (ret < 0) {
             for (int i = 0; i < vd.size(); i++) {
@@ -621,7 +622,7 @@ void decode_thread::get_multistream_decode_image() {
 
                 if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
                     ffmpeg_to_CUDA(i);
-                    av_packet_unref(pkt);
+                    av_packet_unref(pkt[got_count]);
                     got_frame[i] = true;
                     got_count++;
                 }
@@ -646,29 +647,36 @@ void decode_thread::get_multistream_decode_image() {
         }
 
         // ----------- AUDIO PACKET -----------
-        if (pkt->stream_index == audio_stream_index) {
-            get_decode_audio(pkt);
+        if (pkt[got_count]->stream_index == audio_stream_index) {
+            get_decode_audio(pkt[got_count]);
             continue;  // → 映像パケットを探しに行く
         }
 
         // ----------- VIDEO PACKET -----------
         for (int i = 0; i < vd.size(); i++) {
-            if (pkt->stream_index == vd[i].stream_index&& !got_frame[i]) {
-                if (avcodec_send_packet(vd[i].codec_ctx, pkt) < 0) {
+            if (pkt[got_count]->stream_index == vd[i].stream_index&& !got_frame[i]) {
+                if (avcodec_send_packet(vd[i].codec_ctx, pkt[got_count]) < 0) {
                     continue;
                 }
 
                 if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
+                    qDebug()<<i;
                     got_frame[i] = true;
                     got_count++;
                     break;  // 映像が取れたら終了
                 }
             }
         }
+        qDebug()<<"aaaaaaaaaaaaaa";
+
     }
     // 念のため
     CUDA_RGBA_to_merge();
-    av_packet_unref(pkt);
+
+    for(int i=0;i<vd.size();i++){
+        av_packet_unref(pkt[i]);
+    }
+
 }
 
 //シングルストリーム
@@ -831,7 +839,7 @@ void decode_thread::CUDA_RGBA_to_merge(){
             vd[3].hw_frame->data[0],vd[3].hw_frame->linesize[0], vd[3].hw_frame->data[1],vd[3].hw_frame->linesize[1],
             d_merged, pitch_merged,VideoInfo.width*2,VideoInfo.height*2,VideoInfo.width,VideoInfo.height);
 
-        qDebug()<<vd[0].hw_frame->linesize[0]<<":"<<vd[0].hw_frame->linesize[1];
+        //qDebug()<<vd[0].hw_frame->linesize[0]<<":"<<vd[0].hw_frame->linesize[1];
 
         cudaEventRecord(events[0][0], nullptr);
         cudaEventSynchronize(events[0][0]);
