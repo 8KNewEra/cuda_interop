@@ -752,15 +752,10 @@ void GLWidget::downloadToGLTexture_and_Encode() {
         return;
     }
 
-    CUDA_IMG_Proc->image_split_x4(
-        d_splitrgba_x4, pitch_splitrgba_x4,
-        d_rgba, pitch_rgba,
-        width_, height_);
-
     // qDebug()<<encode_FrameCount<<":"<<MaxFrame;
 
     if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
-        save_encoder->encode(d_splitrgba_x4,pitch_splitrgba_x4);
+        save_encoder->encode(d_rgba,pitch_rgba);
         encode_FrameCount++;
     }else{
         delete save_encoder;
@@ -775,7 +770,7 @@ void GLWidget::downloadToGLTexture_and_Encode() {
 void GLWidget::encode_mode(int flag){
     if(flag==STATE_ENCODING){
         if(save_encoder==nullptr){
-            save_encoder = new save_encode(height_*1/2,width_*1/2);
+            save_encoder = new save_encode(height_,width_);
             copyFBO(fbo, backupfbo, width_, height_);
         }
 

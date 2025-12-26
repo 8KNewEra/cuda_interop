@@ -33,11 +33,13 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    bool encode(uint8_t* d_rgba[4], size_t pitch0[4]);
+    bool encode(uint8_t* d_rgba, size_t pitch_rgba);
 
 private:
     void initialized_ffmpeg_hardware_context(int i);
-    void initialized_ffmpeg_codec_context(int i);
+    void initialized_ffmpeg_codec_context(int i,int max_split);
+    bool encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba);
+    bool normal_encode(uint8_t* d_rgba, size_t pitch_rgba);
     int height_,width_;
 
     // --- FFmpeg 関連 ---
@@ -58,6 +60,8 @@ private:
     const EncodeSettings& encode_settings = EncodeSettingsManager::getInstance().getSettings();
 
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
+    cudaStream_t stream = nullptr;
+    cudaEvent_t event = nullptr;
 };
 
 #endif // SAVE_ENCODE_H

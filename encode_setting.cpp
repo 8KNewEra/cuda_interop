@@ -13,17 +13,17 @@ encode_setting::encode_setting(QWidget *parent)
 
     ui->allow_overwrite_checkBox->hide();
 
-    settingmap[0] = {"h264_nvenc", 1,"0",0,"p1","default","cbr","1pass",1};
-    settingmap[1] = {"hevc_nvenc",2,"1",1,"p2","hq","vbr","2pass-quarter-res",15};
-    settingmap[2] = {"av1_nvenc",5,"",2,"p3","ll","cq","2pass-full-res",30};
-    settingmap[3] = {"",10,"",3,"p4","ull","","",60};
-    settingmap[4] = {"",15,"",4,"p5","lossless","","",120};
-    settingmap[5] = {"",20,"",5,"p6","","","",250};
-    settingmap[6] = {"",30,"",6,"p7","","","",30};
-    settingmap[7] = {"",60,"",7,"p8","","","",0};
-    settingmap[8] = {"",120,"",8,"","","","",0};
-    settingmap[9] = {"",240,"",9,"","","","",0};
-    settingmap[10] = {"",300,"",10,"","","","",0};
+    settingmap[0] = {"h264_nvenc", 1,"0",0,"p1","default","cbr","1pass",1,1};
+    settingmap[1] = {"hevc_nvenc",2,"1",1,"p2","hq","vbr","2pass-quarter-res",15,4};
+    settingmap[2] = {"av1_nvenc",5,"",2,"p3","ll","cq","2pass-full-res",30,0};
+    settingmap[3] = {"",10,"",3,"p4","ull","","",60,0};
+    settingmap[4] = {"",15,"",4,"p5","lossless","","",120,0};
+    settingmap[5] = {"",20,"",5,"p6","","","",250,0};
+    settingmap[6] = {"",30,"",6,"p7","","","",30,0};
+    settingmap[7] = {"",60,"",7,"p8","","","",0,0};
+    settingmap[8] = {"",120,"",8,"","","","",0,0};
+    settingmap[9] = {"",240,"",9,"","","","",0,0};
+    settingmap[10] = {"",300,"",10,"","","","",0,0};
 
     //ファイルパス
     {
@@ -81,11 +81,23 @@ encode_setting::encode_setting(QWidget *parent)
         }, Qt::QueuedConnection);
     }
 
-    //mainプロファイル
+    //タイルエンコードプロファイル
     {
-        QStringList main_items;
-        main_items <<"main"<<"main 10";
-        ui->comboBox_main->addItems(main_items);
+        QStringList tile_items;
+        tile_items <<"タイル数:1"<<"タイル数:4";
+        ui->comboBox_tile->addItems(tile_items);
+        QObject::connect(ui->comboBox_tile, &QComboBox::currentIndexChanged, this, [&](int index) {
+            settings.encode_tile = settingmap[index].encode_tile;
+
+            if((settings.encode_tile==1&&VideoInfo.width*VideoInfo.width_scale>4096)||(settings.encode_tile==1&&VideoInfo.height*VideoInfo.height_scale>4096)){
+                qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
+                if(ui->comboBox_codec->currentIndex()==0){
+                    ui->comboBox_codec->setCurrentIndex(1);
+                }
+            }else if((settings.encode_tile==4&&VideoInfo.width*VideoInfo.width_scale<=8192)||(settings.encode_tile==4&&VideoInfo.height*VideoInfo.height_scale<=8192)){
+                qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,false);
+            }
+        }, Qt::QueuedConnection);
     }
 
     //Bフレーム
@@ -332,6 +344,9 @@ encode_setting::encode_setting(QWidget *parent)
         ui->comboBox_gop->setCurrentIndex(combo_index[8]);
         emitIndexChanged(ui->comboBox_gop);
 
+        ui->comboBox_tile->setCurrentIndex(combo_index[9]);
+        emitIndexChanged(ui->comboBox_tile);
+
         ui->horizontalSlider_targetbitrate->setValue(target_bit_rate);
         ui->label_targetbitrare_value->setText(QString::number(target_bit_rate) + " Mbps");
 
@@ -369,6 +384,7 @@ void encode_setting::init_txt(){
             out << "tune:\"default\"\n";
             out << "b_frames:\"0\"\n";
             out << "gop_size:\"15\"\n";
+            out << "encode_tile:1\n";
             out << "split_encode_mode:\"0\"\n";
             out << "pass_mode:\"1pass\"\n";
             out << "rc_mode:\"cbr\"\n";
@@ -431,6 +447,9 @@ void encode_setting::read_txt(){
             }else if (line.startsWith("gop_size:")){
                 settings.gop_size = line.split(':')[1].toInt();
                 combo_index[8]=foundIndex("gop_size",line.split(':')[1].remove('"'));
+            }else if (line.startsWith("encode_tile:")){
+                settings.encode_tile = line.split(':')[1].toInt();
+                combo_index[9]=foundIndex("encode_tile",line.split(':')[1].remove('"'));
             }else if (line.startsWith("allow_overwrite:")){
                 allow_overwrite = line.split(':')[1].remove('"').trimmed().compare("true", Qt::CaseInsensitive) == 0;
             }else if (line.startsWith("target_bit_rate:")){
@@ -470,6 +489,8 @@ int encode_setting::foundIndex(QString key,const QString& item){
             return it.key();
         }else if(key=="gop_size"&&it.value().gop_items == item.toInt()){
             return it.key();
+        }else if(key=="encode_tile"&&it.value().encode_tile == item.toInt()){
+            return it.key();
         }
     }
     return -1;
@@ -488,6 +509,7 @@ void encode_setting::write_txt(){
         out << "tune:\"" << QString::fromStdString(settings.tune) << "\"\n";
         out << "b_frames:\"" << QString::number(settings.b_frames) << "\"\n";
         out << "gop_size:\"" << QString::number(settings.gop_size) << "\"\n";
+        out << "encode_tile:\"" << QString::number(settings.encode_tile) << "\"\n";
         out << "split_encode_mode:\"" << QString::fromStdString(settings.split_encode_mode) << "\"\n";
         out << "pass_mode:\"" << QString::fromStdString(settings.pass_mode) << "\"\n";
         out << "rc_mode:\"" << QString::fromStdString(settings.rc_mode) << "\"\n";
@@ -572,15 +594,22 @@ void encode_setting::slider(int min,int max){
     ui->encode_progressBar->setRange(min, max);
     ui->encode_progressBar->setValue(min);
 
-    if(VideoInfo.width>4096||VideoInfo.height>4096){
+    //H264チェック
+    //タイル数チェック
+    if(VideoInfo.width*VideoInfo.width_scale>8192||VideoInfo.height*VideoInfo.height_scale>8192){
+        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(0,true);
+        if(ui->comboBox_tile->currentIndex()==0){
+            ui->comboBox_tile->setCurrentIndex(1);
+        }
+
         qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
         if(ui->comboBox_codec->currentIndex()==0){
             ui->comboBox_codec->setCurrentIndex(1);
         }
     }else{
+        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(0,false);
         qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,false);
     }
-
 }
 
 //進捗バーを動かす

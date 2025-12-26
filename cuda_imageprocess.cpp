@@ -18,6 +18,13 @@ extern "C"{
         const uint8_t* y2,  size_t pitchY2,const uint8_t* uv2, size_t pitchUV2,
         const uint8_t* y3,  size_t pitchY3,const uint8_t* uv3, size_t pitchUV3,
         uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH);
+    __global__ void rgba_to_nv12x4_flip_split_kernel(
+        const uint8_t* In, size_t pitchIn,
+        uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
+        uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
+        uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
+        uint8_t* y3,  size_t pitchY3,uint8_t* uv3, size_t pitchUV3,
+        int srcW, int srcH,int outW, int outH);
     //__global__ void draw_histogram_kernel(cudaSurfaceObject_t surface,int width,int height,const unsigned int* hist_r,const unsigned int* hist_g,const unsigned int* hist_b);
 }
 
@@ -299,7 +306,7 @@ bool CUDA_ImageProcess::image_combine_x4(uint8_t* out, size_t pitchOut,uint8_t* 
     return true;
 }
 
-bool CUDA_ImageProcess::image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t* In, size_t pitchIn,int width, int height){
+bool CUDA_ImageProcess::image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t* In, size_t pitchIn,int width, int height,cudaStream_t stream){
     width = width*1/2;
     height = height*1/2;
 
@@ -318,7 +325,7 @@ bool CUDA_ImageProcess::image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t*
         );
 
     cudaError_t err =cudaLaunchKernel((const void*)image_split_x4_kernel,
-                                       grid, block, args, 0, nullptr);
+                                       grid, block, args, 0, stream);
 
     if (err != cudaSuccess) {
         qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
@@ -334,6 +341,8 @@ bool CUDA_ImageProcess::image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t*
     return true;
 }
 
+
+//4分割デコード
 bool CUDA_ImageProcess::nv12x4_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
                                              uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
                                              uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
@@ -355,6 +364,45 @@ bool CUDA_ImageProcess::nv12x4_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_
 
     cudaError_t err =cudaLaunchKernel((const void*)nv12x4_to_rgba_merge_kernel,
                                        grid, block, args, 0, nullptr);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+//4分割エンコード
+bool CUDA_ImageProcess::rgba_to_nv12x4_flip_split(uint8_t* In, size_t pitchIn,
+                                                  uint8_t* y0,  size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                                  uint8_t* y1,  size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                                  uint8_t* y2,  size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+                                                  uint8_t* y3,  size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+                                                  int srcW, int srcH, int outW, int outH, cudaStream_t stream){
+
+    void* args[] = {&In, &pitchIn,
+        &y0, &pitchY0,&uv0,&pitchUV0,
+        &y1, &pitchY1,&uv1,&pitchUV1,
+        &y2, &pitchY2,&uv2,&pitchUV2,
+        &y3, &pitchY3,&uv3,&pitchUV3,
+        &srcW, &srcH,&outW,&outH
+    };
+
+    dim3 block(16, 16);
+    dim3 grid(
+        (srcW  + block.x - 1) / block.x,
+        (srcH + block.y - 1) / block.y
+        );
+
+    cudaError_t err =cudaLaunchKernel((const void*)rgba_to_nv12x4_flip_split_kernel,
+                                       grid, block, args, 0, stream);
 
     if (err != cudaSuccess) {
         qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);

@@ -279,15 +279,15 @@
      </font>
     </property>
     <property name="text">
-     <string>プロファイル</string>
+     <string>エンコードタイル数</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
-   <widget class="QComboBox" name="comboBox_main">
+   <widget class="QComboBox" name="comboBox_tile">
     <property name="enabled">
-     <bool>false</bool>
+     <bool>true</bool>
     </property>
     <property name="geometry">
      <rect>

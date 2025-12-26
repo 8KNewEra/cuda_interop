@@ -90,15 +90,6 @@ decode_thread::~decode_thread() {
         }
     };
 
-    try {
-        safe_free_codec();
-        safe_free_format();
-        safe_free_frames();
-        safe_free_hwctx();
-    } catch (...) {
-        qWarning() << "Exception during FFmpeg cleanup (ignored)";
-    }
-
     // 4) CUDA メモリの安全な解放
     auto safe_cuda_free = [&](void*& ptr, const char* name) {
         if (ptr) {
@@ -110,21 +101,33 @@ decode_thread::~decode_thread() {
         }
     };
 
-    // for (int i = 0; i < stream.size(); ++i) {
-    //     if(stream[i]){
-    //         cudaStreamDestroy(stream[i]);
-    //         stream[i]=nullptr;
-    //     }
+    for (int i = 0; i <vd.size(); i++) {
+        if(stream[i]){
+            cudaStreamDestroy(stream[i]);
+            stream[i]=nullptr;
+        }
 
-    //     if (event[i]) {
-    //         cudaEventDestroy(event[i]);
-    //         event[i] = nullptr;
-    //     }
 
-    //     if(d_rgba[i]){
-    //         safe_cuda_free((void*&)d_rgba[i], "d_rgba");
-    //     }
-    // }
+        for (int b = 0; b < BUF; b++) {
+            if(d_rgba[i][b]){
+                safe_cuda_free((void*&)d_rgba[i][b], "d_rgba");
+            }
+
+            if (events[i][b]) {
+                cudaEventDestroy(events[i][b]);
+                events[i][b] = nullptr;
+            }
+        }
+    }
+
+    try {
+        safe_free_codec();
+        safe_free_format();
+        safe_free_frames();
+        safe_free_hwctx();
+    } catch (...) {
+        qWarning() << "Exception during FFmpeg cleanup (ignored)";
+    }
 
     if(d_merged){
         safe_cuda_free((void*&)d_merged, "d_merged");
@@ -621,8 +624,6 @@ void decode_thread::get_multistream_decode_image() {
                 avcodec_send_packet(vd[i].codec_ctx, nullptr);
 
                 if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
-                    ffmpeg_to_CUDA(i);
-                    av_packet_unref(pkt[got_count]);
                     got_frame[i] = true;
                     got_count++;
                 }

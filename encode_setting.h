@@ -58,6 +58,7 @@ private:
         QString rc_items;
         QString pass_items;
         int gop_items;
+        int encode_tile;
     };
 
     QMap<int, SettingEntry> settingmap;

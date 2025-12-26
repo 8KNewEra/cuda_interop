@@ -2,8 +2,6 @@
 #include "qdebug.h"
 
 save_encode::save_encode(int h,int w) {
-    height_ = h;
-    width_  = w;
     frame_index = 0;
     int ret = 0;
 
@@ -17,12 +15,20 @@ save_encode::save_encode(int h,int w) {
     if (ret < 0 || !fmt_ctx) throw std::runtime_error("Failed to allocate format context");
 
     // ② Encoder / Stream を複数作る
-    int max_size = 4;
+    int max_size = encode_settings.encode_tile;
+    if(max_size==1){
+        height_ = h;
+        width_  = w;
+    }else if(max_size==4){
+        height_ = h*1/2;
+        width_  = w*1/2;
+    }
+
     for (int i = 0; i < max_size; i++) {
         ve.emplace_back();
 
         initialized_ffmpeg_hardware_context(i);
-        initialized_ffmpeg_codec_context(i);
+        initialized_ffmpeg_codec_context(i,max_size);
 
         // ★ stream 作成だけ
         ve[i].stream = avformat_new_stream(fmt_ctx, nullptr);
@@ -45,6 +51,18 @@ save_encode::save_encode(int h,int w) {
     // ④ ヘッダ書き込みは全 stream 作成後
     ret = avformat_write_header(fmt_ctx, nullptr);
     if (ret < 0) throw std::runtime_error("Failed to write header");
+
+    //Stream作成
+    cudaStreamCreateWithFlags(
+        &stream,
+        cudaStreamNonBlocking
+        );
+
+    //event作成
+    cudaEventCreateWithFlags(
+        &event,
+        cudaEventDisableTiming
+        );
 }
 
 save_encode::~save_encode() {
@@ -105,13 +123,25 @@ save_encode::~save_encode() {
         fmt_ctx = nullptr;
     }
 
+    //Stream削除
+    if(stream){
+        cudaStreamDestroy(stream);
+        stream=nullptr;
+    }
+
+    //event削除
+    if (event) {
+        cudaEventDestroy(event);
+        event = nullptr;
+    }
+
     delete CUDA_IMG_Proc;
     CUDA_IMG_Proc=nullptr;
 
     qDebug() << "save_encode: Destructor called";
 }
 
-void save_encode::initialized_ffmpeg_codec_context(int i){
+void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     //エンコーダの取得とコンテキスト作成
     const AVCodec* codec = avcodec_find_encoder_by_name(encode_settings.Codec.c_str());
     if (!codec) throw std::runtime_error("hevc_nvenc codec not found");
@@ -176,6 +206,14 @@ void save_encode::initialized_ffmpeg_codec_context(int i){
     av_dict_set_int(&opts, "g", encode_settings.gop_size, 0);
     av_dict_set_int(&opts, "bf", encode_settings.b_frames, 0);
 
+    //分割エンコード使用時
+    if(max_split>1){
+        av_dict_set(&opts, "rc-lookahead", "0", 0); // lookahead 無効
+        av_dict_set(&opts, "delay", "0", 0);
+        av_dict_set(&opts, "zerolatency", "1", 0);
+        av_dict_set(&opts, "async_depth", "1", 0);
+    }
+
     if(encode_settings.split_encode_mode=="0"){
         av_dict_set_int(&opts, "split_encode_mode", 0, 0);
     }else{
@@ -224,15 +262,32 @@ void save_encode::initialized_ffmpeg_hardware_context(int i) {
     if (ret < 0) throw std::runtime_error("Failed to alloc hw_frame");
 }
 
-bool save_encode::encode(uint8_t* d_rgba[4], size_t pitch0[4])
+bool save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
+    if(encode_settings.encode_tile==1){
+        normal_encode(d_rgba,pitch_rgba);
+    }else if(encode_settings.encode_tile==4){
+        encode_split_x4(d_rgba,pitch_rgba);
+    }
+}
+
+bool save_encode::encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba)
 {
     //qDebug()<<No;
     No+=1;
 
-    for(int i=0;i<ve.size();i++){
-        //RGBAをNV12に変換してffmpegへ転送
-        CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[i].hw_frame->data[0], ve[i].hw_frame->linesize[0], ve[i].hw_frame->data[1], ve[i].hw_frame->linesize[1],d_rgba[i], pitch0[i],height_, width_);
+    //RGBAをNV12に変換してffmpegへ転送
+    CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
+        d_rgba,pitch_rgba,
+        ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
+        ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
+        ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
+        ve[3].hw_frame->data[0],ve[3].hw_frame->linesize[0], ve[3].hw_frame->data[1],ve[3].hw_frame->linesize[1],
+        width_*2,height_*2,width_,height_,stream);
 
+    cudaEventRecord(event, stream);
+    cudaEventSynchronize(event);
+
+    for(int i=0;i<ve.size();i++){
         //フレームのPTSをセット
         ve[i].hw_frame->pts = frame_index*pts_step;
 
@@ -268,6 +323,50 @@ bool save_encode::encode(uint8_t* d_rgba[4], size_t pitch0[4])
     }
 
     frame_index+=1;
+    //qDebug()<<frame_index;
+
+    return true;
+}
+
+bool save_encode::normal_encode(uint8_t* d_rgba, size_t pitch_rgba)
+{
+    //qDebug()<<No;
+    No+=1;
+
+    //RGBAをNV12に変換してffmpegへ転送
+    CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,height_, width_);
+
+    //フレームのPTSをセット
+    ve[0].hw_frame->pts = frame_index*pts_step;
+    frame_index+=1;
+
+    //エンコーダにフレーム送信
+    int ret = avcodec_send_frame(ve[0].codec_ctx, ve[0].hw_frame);
+    if (ret < 0) {
+        throw std::runtime_error("Error sending frame to encoder");
+    }
+
+    AVPacket* pkt = av_packet_alloc();
+    while (true) {
+        ret = avcodec_receive_packet(ve[0].codec_ctx, pkt);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            break;
+        } else if (ret < 0) {
+            throw std::runtime_error("Error receiving packet from encoder");
+        }
+
+        av_packet_rescale_ts(pkt, ve[0].codec_ctx->time_base, ve[0].stream->time_base);
+        pkt->stream_index = ve[0].stream->index;
+
+        ret = av_interleaved_write_frame(fmt_ctx, pkt);
+        if (ret < 0) {
+            throw std::runtime_error("Error writing packet to output");
+        }
+
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+
     //qDebug()<<frame_index;
 
     return true;
