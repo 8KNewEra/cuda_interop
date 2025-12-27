@@ -33,7 +33,7 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    bool encode(uint8_t* d_rgba, size_t pitch_rgba);
+    void encode(uint8_t* d_rgba, size_t pitch_rgba);
 
 private:
     void initialized_ffmpeg_hardware_context(int i);

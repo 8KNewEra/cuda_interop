@@ -262,7 +262,7 @@ void save_encode::initialized_ffmpeg_hardware_context(int i) {
     if (ret < 0) throw std::runtime_error("Failed to alloc hw_frame");
 }
 
-bool save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
+void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
     if(encode_settings.encode_tile==1){
         normal_encode(d_rgba,pitch_rgba);
     }else if(encode_settings.encode_tile==4){
@@ -287,40 +287,30 @@ bool save_encode::encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba)
     cudaEventRecord(event, stream);
     cudaEventSynchronize(event);
 
-    for(int i=0;i<ve.size();i++){
-        //フレームのPTSをセット
-        ve[i].hw_frame->pts = frame_index*pts_step;
-
-        qDebug()<<"encode:"<<ve[i].hw_frame->pts;
-
-
-        //エンコーダにフレーム送信
-        int ret = avcodec_send_frame(ve[i].codec_ctx, ve[i].hw_frame);
-        if (ret < 0) {
-            throw std::runtime_error("Error sending frame to encoder");
-        }
-
-        AVPacket* pkt = av_packet_alloc();
-        while (true) {
-            ret = avcodec_receive_packet(ve[i].codec_ctx, pkt);
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                break;
-            } else if (ret < 0) {
-                throw std::runtime_error("Error receiving packet from encoder");
-            }
-
-            av_packet_rescale_ts(pkt, ve[i].codec_ctx->time_base, ve[i].stream->time_base);
-            pkt->stream_index = ve[i].stream->index;
-
-            ret = av_interleaved_write_frame(fmt_ctx, pkt);
-            if (ret < 0) {
-                throw std::runtime_error("Error writing packet to output");
-            }
-
-            av_packet_unref(pkt);
-        }
-        av_packet_free(&pkt);
+    // 1. 全 encoder に frame を送る
+    for (int i = 0; i < ve.size(); i++) {
+        ve[i].hw_frame->pts = frame_index * pts_step;
+        avcodec_send_frame(ve[i].codec_ctx, ve[i].hw_frame);
     }
+
+    // 2. 全 encoder から packet を回収
+    bool got;
+    do {
+        got = false;
+        for (int i = 0; i < ve.size(); i++) {
+            AVPacket* pkt = av_packet_alloc();
+            int ret = avcodec_receive_packet(ve[i].codec_ctx, pkt);
+            if (ret == 0) {
+                av_packet_rescale_ts(pkt,
+                                     ve[i].codec_ctx->time_base,
+                                     ve[i].stream->time_base);
+                pkt->stream_index = ve[i].stream->index;
+                av_interleaved_write_frame(fmt_ctx, pkt);
+                got = true;
+            }
+            av_packet_free(&pkt);
+        }
+    } while (got);
 
     frame_index+=1;
     //qDebug()<<frame_index;
@@ -336,37 +326,28 @@ bool save_encode::normal_encode(uint8_t* d_rgba, size_t pitch_rgba)
     //RGBAをNV12に変換してffmpegへ転送
     CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,height_, width_);
 
-    //フレームのPTSをセット
-    ve[0].hw_frame->pts = frame_index*pts_step;
+    // 1. 全 encoder に frame を送る
+    ve[0].hw_frame->pts = frame_index * pts_step;
+    avcodec_send_frame(ve[0].codec_ctx, ve[0].hw_frame);
+
+    // 2. 全 encoder から packet を回収
+    bool got;
+    do {
+        got = false;
+        AVPacket* pkt = av_packet_alloc();
+        int ret = avcodec_receive_packet(ve[0].codec_ctx, pkt);
+        if (ret == 0) {
+            av_packet_rescale_ts(pkt,
+                                 ve[0].codec_ctx->time_base,
+                                 ve[0].stream->time_base);
+            pkt->stream_index = ve[0].stream->index;
+            av_interleaved_write_frame(fmt_ctx, pkt);
+            got = true;
+            av_packet_free(&pkt);
+        }
+    } while (got);
+
     frame_index+=1;
-
-    //エンコーダにフレーム送信
-    int ret = avcodec_send_frame(ve[0].codec_ctx, ve[0].hw_frame);
-    if (ret < 0) {
-        throw std::runtime_error("Error sending frame to encoder");
-    }
-
-    AVPacket* pkt = av_packet_alloc();
-    while (true) {
-        ret = avcodec_receive_packet(ve[0].codec_ctx, pkt);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-            break;
-        } else if (ret < 0) {
-            throw std::runtime_error("Error receiving packet from encoder");
-        }
-
-        av_packet_rescale_ts(pkt, ve[0].codec_ctx->time_base, ve[0].stream->time_base);
-        pkt->stream_index = ve[0].stream->index;
-
-        ret = av_interleaved_write_frame(fmt_ctx, pkt);
-        if (ret < 0) {
-            throw std::runtime_error("Error writing packet to output");
-        }
-
-        av_packet_unref(pkt);
-    }
-    av_packet_free(&pkt);
-
     //qDebug()<<frame_index;
 
     return true;

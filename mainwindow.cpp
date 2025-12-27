@@ -295,10 +295,6 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
         }
         slider_No=slider;
 
-        //デコードスレッドシグナル
-        if(encode_state!=STATE_ENCODE_READY)
-            emit decode_please();
-
         //描画を開始
         //コンテキストを作成
         glWidget->makeCurrent();
@@ -312,6 +308,11 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
 
         //コンテキストを破棄
         glWidget->doneCurrent();
+
+        //デコードスレッドシグナル
+        if(encode_state!=STATE_ENCODE_READY)
+            emit decode_please();
+
     }
 }
 
