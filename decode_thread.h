@@ -97,7 +97,6 @@ private:
     DecodeState decode_state = STATE_DECODE_READY;
 
     int slider_No;
-    int current_FrameNo=0;
     QMutex mutex;
     QMutex merge_mutex;
 
