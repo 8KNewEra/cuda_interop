@@ -324,7 +324,10 @@ bool save_encode::normal_encode(uint8_t* d_rgba, size_t pitch_rgba)
     No+=1;
 
     //RGBAをNV12に変換してffmpegへ転送
-    CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,height_, width_);
+    CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,height_, width_,stream);
+
+    cudaEventRecord(event, stream);
+    cudaEventSynchronize(event);
 
     // 1. 全 encoder に frame を送る
     ve[0].hw_frame->pts = frame_index * pts_step;
