@@ -38,27 +38,24 @@ public:
 private:
     void initialized_ffmpeg_hardware_context(int i);
     void initialized_ffmpeg_codec_context(int i,int max_split);
-    bool encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba);
-    bool normal_encode(uint8_t* d_rgba, size_t pitch_rgba);
+    void encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba);
+    void normal_encode(uint8_t* d_rgba, size_t pitch_rgba);
     int height_,width_;
 
     // --- FFmpeg 関連 ---
     std::vector<VideoEncoder> ve;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;          // 出力ファイルのフォーマットコンテキスト
-    AVPacket* pkt = nullptr;                     // エンコード後のパケット
     AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
     AVRational tb;
     AVRational fr;
     int fps;  // 可変FPSでもOK
     int pts_step;  // 1フレームあたりの刻み
-
     int64_t frame_index = 0;                         // PTS 管理用
 
-    int No=0;
-    int No2=0;
-
+    //エンコード設定
     const EncodeSettings& encode_settings = EncodeSettingsManager::getInstance().getSettings();
 
+    //CUDA周り
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
     cudaStream_t stream = nullptr;
     cudaEvent_t event = nullptr;

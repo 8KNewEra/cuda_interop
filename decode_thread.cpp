@@ -53,7 +53,7 @@ decode_thread::~decode_thread() {
 
     // 3) FFmpeg関係の安全な解放
     auto safe_free_codec = [&]() {
-        for (int i = 0; i < vd.size()-1; i++) {
+        for (int i = 0; i < vd.size(); i++) {
             if (vd[i].codec_ctx) {
                 if (vd[i].codec_ctx->codec && vd[i].codec_ctx->internal)
                     avcodec_flush_buffers(vd[i].codec_ctx);
@@ -71,14 +71,10 @@ decode_thread::~decode_thread() {
     };
 
     auto safe_free_frames = [&]() {
-        for (int i = 0; i < vd.size()-1; i++) {
+        for (int i = 0; i < vd.size(); i++) {
             if (vd[i].hw_frame) {
                 av_frame_free(&vd[i].hw_frame);
                 vd[i].hw_frame = nullptr;
-            }
-            if (vd[i].packet) {
-                av_packet_free(&vd[i].packet);
-                vd[i].packet = nullptr;
             }
         }
     };
@@ -273,7 +269,6 @@ void decode_thread::initialized_ffmpeg() {
         auto& dec = vd.back();
 
         dec.stream_index = stream_index;
-        dec.packet   = av_packet_alloc();
         dec.hw_frame = av_frame_alloc();
 
         const char* codec_name =
@@ -496,6 +491,7 @@ double decode_thread::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_in
 
 //最終フレームpts取得
 void decode_thread::get_last_frame_pts() {
+    AVPacket* pkt = av_packet_alloc();
     avcodec_flush_buffers(vd[0].codec_ctx);
 
     int64_t duration_pts = fmt_ctx->streams[vd[0].stream_index]->duration;
@@ -516,7 +512,7 @@ void decode_thread::get_last_frame_pts() {
     bool frame_received = false;
 
     while (true) {
-        int ret = av_read_frame(fmt_ctx, vd[0].packet);
+        int ret = av_read_frame(fmt_ctx, pkt);
         if (ret < 0) {
             // EOFに到達：デコーダに残りを流す
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
@@ -529,8 +525,8 @@ void decode_thread::get_last_frame_pts() {
             break;
         }
 
-        if (vd[0].packet->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, vd[0].packet) == 0) {
+        if (pkt->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, pkt) == 0) {
                 while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
                     last_pts = vd[0].hw_frame->best_effort_timestamp;
                     VideoInfo.width = vd[0].hw_frame->width;
@@ -539,7 +535,7 @@ void decode_thread::get_last_frame_pts() {
                 }
             }
         }
-        av_packet_unref(vd[0].packet);
+        av_packet_unref(pkt);
     }
 
     if (frame_received) {

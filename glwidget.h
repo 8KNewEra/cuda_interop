@@ -100,8 +100,6 @@ private:
     //動画データ
     uint8_t *d_rgba=nullptr;
     size_t pitch_rgba=0;
-    uint8_t *d_splitrgba_x4[4];
-    size_t pitch_splitrgba_x4[4];
 
     // 描画領域を計算
     float monitor_scaling=1;
@@ -113,7 +111,6 @@ private:
     int encode_state=STATE_NOT_ENCODE;
     save_encode* save_encoder=nullptr;
     int encode_FrameCount=0;
-    int split_No=1;
 
     //動画情報
     int width_, height_;

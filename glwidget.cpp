@@ -65,12 +65,6 @@ GLWidget::~GLWidget() {
         cudaFree(d_rgba);
         d_rgba = nullptr;
     }
-    for (int i = 0; i < 4; i++) {
-        if (d_splitrgba_x4[i]) {
-            cudaFree(d_splitrgba_x4[i]);
-            d_splitrgba_x4[i] = nullptr;
-        }
-    }
     if (d_hist_stats) {
         cudaFree(d_hist_stats);
         d_hist_stats = nullptr;
@@ -611,19 +605,8 @@ void GLWidget::initCudaMalloc(int width, int height)
         d_rgba = nullptr;
     }
 
-    for (int i = 0; i < 4; i++) {
-        if (d_splitrgba_x4[i]) {
-            cudaFree(d_splitrgba_x4[i]);
-            d_splitrgba_x4[i] = nullptr;
-        }
-    }
-
     //再確保
     cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
-
-    for (int i = 0; i < 4; i++) {
-        cudaMallocPitch(&d_splitrgba_x4[i], &pitch_splitrgba_x4[i], width*1/2 * 4, height*1/2);
-    }
 }
 
 //CUDAからOpenGLへ転送

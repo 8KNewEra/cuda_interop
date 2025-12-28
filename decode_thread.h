@@ -29,9 +29,7 @@ struct VideoDecorder {
     AVStream* stream = nullptr;
     int stream_index=0;
     const AVCodec* decoder;
-    AVHWDeviceContext* hw_ctx = nullptr;
     AVFrame* hw_frame;
-    AVPacket* packet;
 };
 
 class decode_thread : public QObject {

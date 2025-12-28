@@ -263,18 +263,15 @@ void save_encode::initialized_ffmpeg_hardware_context(int i) {
 }
 
 void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
-    if(encode_settings.encode_tile==1){
+    if(ve.size()==1){
         normal_encode(d_rgba,pitch_rgba);
-    }else if(encode_settings.encode_tile==4){
+    }else if(ve.size()==4){
         encode_split_x4(d_rgba,pitch_rgba);
     }
 }
 
-bool save_encode::encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba)
+void save_encode::encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba)
 {
-    //qDebug()<<No;
-    No+=1;
-
     //RGBAをNV12に変換してffmpegへ転送
     CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
         d_rgba,pitch_rgba,
@@ -284,6 +281,7 @@ bool save_encode::encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba)
         ve[3].hw_frame->data[0],ve[3].hw_frame->linesize[0], ve[3].hw_frame->data[1],ve[3].hw_frame->linesize[1],
         width_*2,height_*2,width_,height_,stream);
 
+    //CUDAカーネル同期
     cudaEventRecord(event, stream);
     cudaEventSynchronize(event);
 
@@ -313,19 +311,14 @@ bool save_encode::encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba)
     } while (got);
 
     frame_index+=1;
-    //qDebug()<<frame_index;
-
-    return true;
 }
 
-bool save_encode::normal_encode(uint8_t* d_rgba, size_t pitch_rgba)
+void save_encode::normal_encode(uint8_t* d_rgba, size_t pitch_rgba)
 {
-    //qDebug()<<No;
-    No+=1;
-
     //RGBAをNV12に変換してffmpegへ転送
     CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,height_, width_,stream);
 
+    //CUDAカーネル同期
     cudaEventRecord(event, stream);
     cudaEventSynchronize(event);
 
@@ -351,7 +344,4 @@ bool save_encode::normal_encode(uint8_t* d_rgba, size_t pitch_rgba)
     } while (got);
 
     frame_index+=1;
-    //qDebug()<<frame_index;
-
-    return true;
 }
