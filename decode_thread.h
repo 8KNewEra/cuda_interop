@@ -53,7 +53,7 @@ signals:
 
 public slots:
     void get_multistream_decode_image();
-    void get_singlestream_gpudecode_image(int i);
+    void get_singlestream_gpudecode_image();
     void get_decode_audio(AVPacket* pkt);
     void sliderPlayback(int value);
     void resumePlayback();
@@ -76,11 +76,8 @@ private:
     QString ffmpegErrStr(int errnum);
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
-    void ffmpeg_to_CUDA(int i);
-    void CUDA_merge();
     void get_last_frame_pts();
     void CUDA_RGBA_to_merge();
-    bool all_same_pts();
 
 
     bool video_play_flag;
@@ -91,37 +88,25 @@ private:
     const char* input_filename;
     QByteArray File_byteArray;
     std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成
-    std::vector<AVPacket*> pkt{} ;
     AVFormatContext* fmt_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
     DecodeState decode_state = STATE_DECODE_READY;
-
+    DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
     int slider_No;
     QMutex mutex;
-    QMutex merge_mutex;
 
-
+    //タイマー関連
     QTimer *timer;
     QElapsedTimer elapsedTimer;
     int interval_ms;
 
-    DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
 
     //CUDA
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
-    static constexpr int BUF = 16;
-    std::vector<std::vector<uint8_t*>> d_rgba;      // [stream][buf]
-    std::vector<std::vector<size_t>> pitch_rgba;
-    std::vector<cudaStream_t> stream;
-    std::vector<std::vector<cudaEvent_t>> events;   // [stream][buf]
-    std::vector<int> write_idx;   // 書き込み側 index (0/1)
-    std::vector<int> ready_idx;   // merge に使う buf index
-    std::vector<int64_t> frame_no;
-    std::vector<bool>    rgba_finish;
-
-    uint8_t* d_merged=nullptr;
-    size_t pitch_merged=0;
-
+    uint8_t* d_rgba;
+    size_t pitch_rgba;
+    cudaStream_t stream;
+    cudaEvent_t events;
 
     //音声
     // ----- Audio -----
