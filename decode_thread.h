@@ -77,7 +77,6 @@ private:
     void get_last_frame_pts();
     void CUDA_RGBA_to_merge();
 
-
     bool video_play_flag;
     bool video_reverse_flag;
     bool thread_stop_flag =false;

@@ -2,9 +2,10 @@
 
 //CUDAカーネル関数
 extern "C"{
-    __global__ void nv12_to_rgba_kernel(uint8_t* rgba, int rgba_pitch,const uint8_t* y_plane, int y_pitch,const uint8_t* uv_plane, int uv_pitch,int width, int height);
+    __global__ void nv12_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
+    __global__ void nv12_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
     __global__ void gradetion_kernel(uint8_t* output_rgba, int output_rgba_step,const uint8_t* input_rgba, int input_rgba_step,int width, int height);
-    __global__ void flip_rgba_to_nv12_kernel(uint8_t* y_plane, int y_step,uint8_t* uv_plane, int uv_step,const uint8_t* rgba, int rgba_step,int width, int height);
+    __global__ void flip_rgba_to_nv12_kernel(uint8_t* y_plane, size_t y_step,uint8_t* uv_plane,size_t uv_step,const uint8_t* rgba, size_t rgba_step,int width, int height);
     __global__ void calc_histogram_shared_kernel(HistData* Histdata,cudaTextureObject_t texObj, int width, int height);
     __global__ void calc_histogram_normal_kernel(HistData* Histdata,cudaTextureObject_t texObj, int width, int height);
     __global__ void histgram_normalize_kernel(float* vbo,int num_bins,HistData* Histdata,HistStats* input_stats);
@@ -37,7 +38,7 @@ CUDA_ImageProcess::~CUDA_ImageProcess(){
 }
 
 //NV12→RGBA
-bool CUDA_ImageProcess::NV12_to_RGBA(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream)
+bool CUDA_ImageProcess::NV12_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream)
 {
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_y, &pitch_y,
@@ -47,7 +48,34 @@ bool CUDA_ImageProcess::NV12_to_RGBA(uint8_t* d_rgba, size_t pitch_rgba,uint8_t*
     dim3 block(32,32);
     dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
 
-    cudaError_t err = cudaLaunchKernel((const void*)nv12_to_rgba_kernel,
+    cudaError_t err = cudaLaunchKernel((const void*)nv12_to_rgba_8bit_kernel,
+                                       grid, block, args, 0, stream);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+bool CUDA_ImageProcess::NV12_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream)
+{
+    void* args[] = {&d_rgba, &pitch_rgba,
+                    &d_y, &pitch_y,
+                    &d_uv, &pitch_uv,
+                    &width, &height };
+
+    dim3 block(32,32);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)nv12_to_rgba_10bit_kernel,
                                        grid, block, args, 0, stream);
 
     if (err != cudaSuccess) {

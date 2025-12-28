@@ -80,6 +80,7 @@ struct DecodeInfo {
     int pts_per_frame=0;
     int current_frameNo=0;
     double fps = 30;
+    int bitdepth=8;
     int width=0;
     int height=0;
     int width_scale=0;

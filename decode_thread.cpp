@@ -261,6 +261,18 @@ void decode_thread::initialized_ffmpeg() {
         return;
     }
 
+    AVCodecParameters* par = fmt_ctx->streams[0]->codecpar;
+    if (par->codec_id == AV_CODEC_ID_HEVC||par->codec_id == AV_CODEC_ID_H264) {
+        if (par->format == AV_PIX_FMT_YUV420P10 ||
+            par->format == AV_PIX_FMT_P010) {
+            VideoInfo.bitdepth = 10;
+        }else{
+            VideoInfo.bitdepth = 8;
+        }
+    }
+
+    qDebug()<<VideoInfo.bitdepth;
+
     //デコーダ作成
     for (int i = 0; i < video_stream_indices.size(); i++) {
         int stream_index = video_stream_indices[i];
@@ -801,7 +813,7 @@ void decode_thread::CUDA_RGBA_to_merge(){
             d_rgba, pitch_rgba,VideoInfo.width*2,VideoInfo.height*2,VideoInfo.width,VideoInfo.height);
 
         //CUDAカーネル同期
-        cudaEventRecord(events, nullptr);
+        cudaEventRecord(events, stream);
         cudaEventSynchronize(events);
 
         //フレーム番号取得
@@ -811,20 +823,34 @@ void decode_thread::CUDA_RGBA_to_merge(){
         emit send_decode_image(d_rgba, pitch_rgba,VideoInfo.current_frameNo);
     }else{
         // NV12 → RGBA
-        CUDA_IMG_Proc->NV12_to_RGBA(
-            d_rgba,
-            pitch_rgba,
-            vd[0].hw_frame->data[0],
-            vd[0].hw_frame->linesize[0],
-            vd[0].hw_frame->data[1],
-            vd[0].hw_frame->linesize[1],
-            VideoInfo.height,
-            VideoInfo.width,
-            stream
-            );
+        if(VideoInfo.bitdepth == 8){
+            CUDA_IMG_Proc->NV12_to_RGBA_8bit(
+                d_rgba,
+                pitch_rgba,
+                vd[0].hw_frame->data[0],
+                vd[0].hw_frame->linesize[0],
+                vd[0].hw_frame->data[1],
+                vd[0].hw_frame->linesize[1],
+                VideoInfo.height,
+                VideoInfo.width,
+                stream
+                );
+        }else if(VideoInfo.bitdepth == 10){
+            CUDA_IMG_Proc->NV12_to_RGBA_10bit(
+                d_rgba,
+                pitch_rgba,
+                vd[0].hw_frame->data[0],
+                vd[0].hw_frame->linesize[0],
+                vd[0].hw_frame->data[1],
+                vd[0].hw_frame->linesize[1],
+                VideoInfo.height,
+                VideoInfo.width,
+                stream
+                );
+        }
 
         //CUDAカーネル同期
-        cudaEventRecord(events, nullptr);
+        cudaEventRecord(events, stream);
         cudaEventSynchronize(events);
 
         //フレーム番号取得

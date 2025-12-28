@@ -1,8 +1,8 @@
 extern "C"
 __global__ void flip_rgba_to_nv12_kernel(
-    uint8_t* y_plane, int y_step,
-    uint8_t* uv_plane, int uv_step,
-    const uint8_t* rgba, int rgba_step,
+    uint8_t* y_plane, size_t y_step,
+    uint8_t* uv_plane, size_t uv_step,
+    const uint8_t* rgba, size_t rgba_step,
     int width, int height)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
