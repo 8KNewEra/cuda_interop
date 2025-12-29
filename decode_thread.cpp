@@ -198,14 +198,7 @@ void decode_thread::processFrame() {
 
     if(decode_state==STATE_DECODE_READY){
         decode_state=STATE_DECODING;
-
-        //複数ストリームとシングルストリームで別ルートを用意
-        if(vd.size()==1){
-            get_singlestream_gpudecode_image();
-        }else{
-            get_multistream_decode_image();
-        }
-
+        get_gpudecode_image();
         decode_state=STATE_WAIT_DECODE_FLAG;
     }
 
@@ -562,7 +555,7 @@ void decode_thread::get_last_frame_pts() {
 }
 
 //複数ストリームフレーム取得
-void decode_thread::get_multistream_decode_image() {
+void decode_thread::get_gpudecode_image() {
     AVPacket* pkt = av_packet_alloc();
     std::vector<bool> got_frame(vd.size(), false);
     int got_count = 0;
@@ -607,7 +600,7 @@ void decode_thread::get_multistream_decode_image() {
             }
 
             //終端→先頭に戻ってループ
-            if (VideoInfo.current_frameNo >= VideoInfo.max_framesNo-1) {
+            if (VideoInfo.current_frameNo >= VideoInfo.max_framesNo) {
                 emit decode_end();
 
                 //複数ストリームは0でシーク
@@ -651,87 +644,6 @@ void decode_thread::get_multistream_decode_image() {
     }
     // 念のため
     CUDA_RGBA_to_merge();
-    av_packet_unref(pkt);
-}
-
-//シングルストリームフレーム取得
-void decode_thread::get_singlestream_gpudecode_image(){
-    AVPacket* pkt = av_packet_alloc();
-
-    // ----------- シーク処理 -----------
-    if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
-
-        if (video_reverse_flag) {
-            slider_No--;
-            if (slider_No < 0)
-                slider_No = VideoInfo.max_framesNo;
-        }
-
-        // ビデオ/オーディオの両方 flush
-        avcodec_flush_buffers(vd[0].codec_ctx);
-        if (audio_ctx)
-            avcodec_flush_buffers(audio_ctx);
-
-        av_seek_frame(fmt_ctx, vd[0].stream_index,
-                      slider_No * VideoInfo.pts_per_frame,
-                      AVSEEK_FLAG_BACKWARD);
-
-        VideoInfo.current_frameNo = slider_No;
-    }
-
-    // ----------- パケット読み込みループ -----------
-    while (true) {
-        int ret = av_read_frame(fmt_ctx, pkt);
-
-        // ---------- EOF ----------
-        if (ret < 0) {
-
-            // 映像側フラッシュ
-            avcodec_send_packet(vd[0].codec_ctx, nullptr);
-
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
-                CUDA_RGBA_to_merge();
-                break;
-            }
-
-            // 終端→先頭に戻ってループ
-            uint64_t seek_frame;
-            if (VideoInfo.current_frameNo < VideoInfo.max_framesNo - 1) {
-                seek_frame = VideoInfo.current_frameNo + 1;
-            } else {
-                emit decode_end();
-                seek_frame = 0;
-            }
-
-            avcodec_flush_buffers(vd[0].codec_ctx);
-            if (audio_ctx)
-                avcodec_flush_buffers(audio_ctx);
-
-            av_seek_frame(fmt_ctx, vd[0].stream_index,
-                          seek_frame * VideoInfo.pts_per_frame,
-                          AVSEEK_FLAG_ANY);
-            continue;
-        }
-
-        // ----------- AUDIO PACKET -----------
-        if (pkt->stream_index == audio_stream_index) {
-            get_decode_audio(pkt);
-            continue;  // → 映像パケットを探しに行く
-        }
-
-        // ----------- VIDEO PACKET -----------
-        if (pkt->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, pkt) < 0) {
-                continue;
-            }
-
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
-                CUDA_RGBA_to_merge();
-                break;  // 映像が取れたら終了
-            }
-        }
-    }
-    // 念のため
     av_packet_unref(pkt);
 }
 

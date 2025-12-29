@@ -50,9 +50,6 @@ signals:
     void decode_error(QString error);
 
 public slots:
-    void get_multistream_decode_image();
-    void get_singlestream_gpudecode_image();
-    void get_decode_audio(AVPacket* pkt);
     void sliderPlayback(int value);
     void resumePlayback();
     void pausePlayback();
@@ -75,6 +72,8 @@ private:
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     void get_last_frame_pts();
+    void get_gpudecode_image();
+    void get_decode_audio(AVPacket* pkt);
     void CUDA_RGBA_to_merge();
 
     bool video_play_flag;
