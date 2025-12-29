@@ -18,7 +18,6 @@ CONFIG += c++17
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
-    audio_thread.cpp \
     cuda_imageprocess.cpp \
     decode_thread.cpp \
     encode_setting.cpp \
@@ -31,7 +30,6 @@ SOURCES += \
 
 HEADERS += \
     __global__.h \
-    audio_thread.h \
     cuda_imageprocess.h \
     decode_thread.h \
     encode_setting.h \
