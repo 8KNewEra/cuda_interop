@@ -35,11 +35,14 @@ public:
     ~save_encode();
     void encode(uint8_t* d_rgba, size_t pitch_rgba);
 
+    struct QueuedPacket {
+        AVPacket* pkt;
+        int stream_index;
+    };
+
 private:
     void initialized_ffmpeg_hardware_context(int i);
     void initialized_ffmpeg_codec_context(int i,int max_split);
-    void encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba);
-    void normal_encode(uint8_t* d_rgba, size_t pitch_rgba);
     int height_,width_;
 
     // --- FFmpeg 関連 ---

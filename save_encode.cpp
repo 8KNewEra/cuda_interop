@@ -66,30 +66,41 @@ save_encode::save_encode(int h,int w) {
 }
 
 save_encode::~save_encode() {
-    for(int i=0;i<ve.size();i++){
-        //全フレーム送信後にフラッシュ
+    // ---- packet 回収（即 write しない）----
+    std::vector<QueuedPacket> pkt_queue;
+    for (int i = 0; i < ve.size(); i++) {
         avcodec_send_frame(ve[i].codec_ctx, nullptr);
 
-        AVPacket *pkt = av_packet_alloc();
         while (true) {
+            AVPacket* pkt = av_packet_alloc();
             int ret = avcodec_receive_packet(ve[i].codec_ctx, pkt);
-            if (ret == AVERROR(EAGAIN)) {
-                continue;
-            }
-            if (ret == AVERROR_EOF) {
+            if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) {
+                av_packet_free(&pkt);
                 break;
             }
-            if (ret < 0) {
-                throw std::runtime_error("Error during flushing");
-            }
 
-            av_packet_rescale_ts(pkt, ve[i].codec_ctx->time_base, ve[i].stream->time_base);
+            av_packet_rescale_ts(pkt,
+                                 ve[i].codec_ctx->time_base,
+                                 ve[i].stream->time_base);
             pkt->stream_index = ve[i].stream->index;
-            av_interleaved_write_frame(fmt_ctx, pkt);
-            av_packet_unref(pkt);
+            pkt_queue.push_back({ pkt, pkt->stream_index });
         }
-        av_packet_free(&pkt);
+    }
 
+    // ---- PTS 順に完全整列 ----
+    std::sort(pkt_queue.begin(), pkt_queue.end(),
+              [](const QueuedPacket& a, const QueuedPacket& b) {
+                  return a.pkt->pts < b.pkt->pts;
+              });
+
+    // ---- mux（順序保証）----
+    for (auto& qp : pkt_queue) {
+        av_interleaved_write_frame(fmt_ctx, qp.pkt);
+        av_packet_free(&qp.pkt);
+    }
+
+    // ---- 各メモリ解放 ----
+    for(int i=0;i<ve.size();i++){
         //ハードウェアフレームを解放
         if (ve[i].hw_frame) {
             av_frame_free(&ve[i].hw_frame);
@@ -263,27 +274,27 @@ void save_encode::initialized_ffmpeg_hardware_context(int i) {
 }
 
 void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
-    if(ve.size()==1){
-        normal_encode(d_rgba,pitch_rgba);
-    }else if(ve.size()==4){
-        encode_split_x4(d_rgba,pitch_rgba);
+    if(ve.size()==4){
+        //RGBAをNV12に変換してffmpegへ転送
+        CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
+            d_rgba,pitch_rgba,
+            ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
+            ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
+            ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
+            ve[3].hw_frame->data[0],ve[3].hw_frame->linesize[0], ve[3].hw_frame->data[1],ve[3].hw_frame->linesize[1],
+            width_*2,height_*2,width_,height_,stream);
+
+            //CUDAカーネル同期
+            cudaEventRecord(event, stream);
+            cudaEventSynchronize(event);
+    }else if(ve.size()==1){
+        //RGBAをNV12に変換してffmpegへ転送
+        CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,height_, width_,stream);
+
+        //CUDAカーネル同期
+        cudaEventRecord(event, stream);
+        cudaEventSynchronize(event);
     }
-}
-
-void save_encode::encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba)
-{
-    //RGBAをNV12に変換してffmpegへ転送
-    CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
-        d_rgba,pitch_rgba,
-        ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
-        ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
-        ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
-        ve[3].hw_frame->data[0],ve[3].hw_frame->linesize[0], ve[3].hw_frame->data[1],ve[3].hw_frame->linesize[1],
-        width_*2,height_*2,width_,height_,stream);
-
-    //CUDAカーネル同期
-    cudaEventRecord(event, stream);
-    cudaEventSynchronize(event);
 
     // 1. 全 encoder に frame を送る
     for (int i = 0; i < ve.size(); i++) {
@@ -291,57 +302,48 @@ void save_encode::encode_split_x4(uint8_t* d_rgba, size_t pitch_rgba)
         avcodec_send_frame(ve[i].codec_ctx, ve[i].hw_frame);
     }
 
-    // 2. 全 encoder から packet を回収
-    bool got;
-    do {
-        got = false;
-        for (int i = 0; i < ve.size(); i++) {
+    // ---- packet 回収（即 write しない）----
+    std::vector<QueuedPacket> pkt_queue;
+    for (int i = 0; i < ve.size(); i++) {
+        while (true) {
             AVPacket* pkt = av_packet_alloc();
             int ret = avcodec_receive_packet(ve[i].codec_ctx, pkt);
-            if (ret == 0) {
-                av_packet_rescale_ts(pkt,
-                                     ve[i].codec_ctx->time_base,
-                                     ve[i].stream->time_base);
-                pkt->stream_index = ve[i].stream->index;
-                av_interleaved_write_frame(fmt_ctx, pkt);
-                got = true;
+
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                av_packet_free(&pkt);
+                break;
             }
-            av_packet_free(&pkt);
+
+            av_packet_rescale_ts(
+                pkt,
+                ve[i].codec_ctx->time_base,
+                ve[i].stream->time_base
+                );
+
+            pkt->stream_index = ve[i].stream->index;
+            pkt_queue.push_back({ pkt, pkt->stream_index });
         }
-    } while (got);
+    }
 
-    frame_index+=1;
-}
+    // ---- PTS 順に完全整列 ----
+    std::sort(pkt_queue.begin(), pkt_queue.end(),
+              [&](const QueuedPacket& a, const QueuedPacket& b) {
+                  AVStream* sa = fmt_ctx->streams[a.stream_index];
+                  AVStream* sb = fmt_ctx->streams[b.stream_index];
 
-void save_encode::normal_encode(uint8_t* d_rgba, size_t pitch_rgba)
-{
-    //RGBAをNV12に変換してffmpegへ転送
-    CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,height_, width_,stream);
+                  int c = av_compare_ts(a.pkt->dts, sa->time_base,
+                                        b.pkt->dts, sb->time_base);
+                  if (c != 0) return c < 0;
 
-    //CUDAカーネル同期
-    cudaEventRecord(event, stream);
-    cudaEventSynchronize(event);
+                  return av_compare_ts(a.pkt->pts, sa->time_base,
+                                       b.pkt->pts, sb->time_base) < 0;
+              });
 
-    // 1. 全 encoder に frame を送る
-    ve[0].hw_frame->pts = frame_index * pts_step;
-    avcodec_send_frame(ve[0].codec_ctx, ve[0].hw_frame);
-
-    // 2. 全 encoder から packet を回収
-    bool got;
-    do {
-        got = false;
-        AVPacket* pkt = av_packet_alloc();
-        int ret = avcodec_receive_packet(ve[0].codec_ctx, pkt);
-        if (ret == 0) {
-            av_packet_rescale_ts(pkt,
-                                 ve[0].codec_ctx->time_base,
-                                 ve[0].stream->time_base);
-            pkt->stream_index = ve[0].stream->index;
-            av_interleaved_write_frame(fmt_ctx, pkt);
-            got = true;
-            av_packet_free(&pkt);
-        }
-    } while (got);
+    // ---- mux（順序保証）----
+    for (auto& qp : pkt_queue) {
+        av_interleaved_write_frame(fmt_ctx, qp.pkt);
+        av_packet_free(&qp.pkt);
+    }
 
     frame_index+=1;
 }
