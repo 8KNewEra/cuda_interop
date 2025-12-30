@@ -87,6 +87,10 @@ void cpudecode::initialized_ffmpeg(){
         // ★ CPU デコードなので hw_device_ctx は設定しない
         dec.codec_ctx->hw_device_ctx = nullptr;
 
+        dec.codec_ctx->thread_count = 0;
+        dec.codec_ctx->thread_type  = FF_THREAD_FRAME;
+
+
         ret = avcodec_open2(dec.codec_ctx, dec.decoder, nullptr);
         if (ret < 0) {
             emit decode_error("Codec open error");
@@ -363,97 +367,110 @@ void cpudecode::get_last_frame_pts() {
 }
 
 //複数ストリームフレーム取得
-void cpudecode::get_decode_image() {
+void cpudecode::get_decode_image()
+{
     AVPacket* pkt = av_packet_alloc();
     std::vector<bool> got_frame(vd.size(), false);
     int got_count = 0;
 
-    //----------- シーク処理 -----------
+    // ----------- シーク処理 -----------
     if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
+
         if (video_reverse_flag) {
             slider_No--;
             if (slider_No < 0)
                 slider_No = VideoInfo.max_framesNo;
         }
 
-        // ビデオ/オーディオの両方 flush
         if (audio_ctx)
             avcodec_flush_buffers(audio_ctx);
 
-        for (auto& dec : vd) {
+        for (auto& dec : vd)
             avcodec_flush_buffers(dec.codec_ctx);
-        }
 
         av_seek_frame(fmt_ctx, 0,
                       slider_No * VideoInfo.pts_per_frame,
                       AVSEEK_FLAG_BACKWARD);
 
         VideoInfo.current_frameNo = slider_No;
-
-        a+=1;
     }
 
+    // ----------- デコードループ -----------
     while (got_count < vd.size()) {
+
         int ret = av_read_frame(fmt_ctx, pkt);
+
         // ---------- EOF ----------
         if (ret < 0) {
+
             for (int i = 0; i < vd.size(); i++) {
-                // 映像側フラッシュ
                 avcodec_send_packet(vd[i].codec_ctx, nullptr);
 
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
-                    got_frame[i] = true;
-                    got_count++;
+                while (true) {
+                    AVFrame* frame = av_frame_alloc();
+                    int r = avcodec_receive_frame(vd[i].codec_ctx, frame);
+
+                    if (r == 0) {
+                        got_frame[i] = true;
+                        got_count++;
+                        av_frame_free(&frame);
+                    }
+                    else {
+                        av_frame_free(&frame);
+                        break;
+                    }
                 }
             }
 
-            //終端→先頭に戻ってループ
-            if (VideoInfo.current_frameNo >= VideoInfo.max_framesNo) {
-                emit decode_end();
-
-                //複数ストリームは0でシーク
-                for (auto& dec : vd) { avcodec_flush_buffers(dec.codec_ctx); }
-                if (audio_ctx)
-                    avcodec_flush_buffers(audio_ctx);
-
-                av_seek_frame(fmt_ctx, 0,
-                              0 * VideoInfo.pts_per_frame,
-                              AVSEEK_FLAG_ANY);
-
-                continue;
-            }
-
-            if(got_count==vd.size()){
+            if (got_count == vd.size()) {
                 gpu_upload();
-                av_packet_unref(pkt);
             }
+            break;
         }
 
-        // ----------- AUDIO PACKET -----------
+        // ----------- AUDIO -----------
         if (pkt->stream_index == audio_stream_index) {
             get_decode_audio(pkt);
-            continue;  // → 映像パケットを探しに行く
+            av_packet_unref(pkt);
+            continue;
         }
 
-        // ----------- VIDEO PACKET -----------
+        // ----------- VIDEO -----------
         for (int i = 0; i < vd.size(); i++) {
-            if (pkt->stream_index == vd[i].stream_index&& !got_frame[i]) {
-                if (avcodec_send_packet(vd[i].codec_ctx, pkt) < 0) {
-                    continue;
-                }
 
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
+            if (pkt->stream_index != vd[i].stream_index || got_frame[i])
+                continue;
+
+            if (avcodec_send_packet(vd[i].codec_ctx, pkt) < 0)
+                continue;
+
+            while (true) {
+                AVFrame* frame = av_frame_alloc();
+                int r = avcodec_receive_frame(vd[i].codec_ctx, frame);
+
+                if (r == 0) {
                     got_frame[i] = true;
                     got_count++;
-                    break;  // 映像が取れたら終了
+                    gpu_upload();
+                    av_frame_free(&frame);
+                    break;  // このストリームは1枚でOK
+                }
+                else {
+                    av_frame_free(&frame);
+                    if (r == AVERROR(EAGAIN) || r == AVERROR_EOF)
+                        break;
+                    else
+                        break;
                 }
             }
         }
+
+        av_packet_unref(pkt);
     }
-    // 念のため
-    gpu_upload();
-    av_packet_unref(pkt);
+
+    av_packet_free(&pkt);
 }
+
 
 //オーディオ
 void cpudecode::get_decode_audio(AVPacket* pkt){
