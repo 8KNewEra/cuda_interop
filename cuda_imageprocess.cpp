@@ -4,6 +4,8 @@
 extern "C"{
     __global__ void nv12_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
     __global__ void nv12_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
+    __global__ void yuv420p_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
+    __global__ void yuv420p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
     __global__ void gradetion_kernel(uint8_t* output_rgba, int output_rgba_step,const uint8_t* input_rgba, int input_rgba_step,int width, int height);
     __global__ void flip_rgba_to_nv12_kernel(uint8_t* y_plane, size_t y_step,uint8_t* uv_plane,size_t uv_step,const uint8_t* rgba, size_t rgba_step,int width, int height);
     __global__ void calc_histogram_shared_kernel(HistData* Histdata,cudaTextureObject_t texObj, int width, int height);
@@ -431,6 +433,64 @@ bool CUDA_ImageProcess::rgba_to_nv12x4_flip_split(uint8_t* In, size_t pitchIn,
 
     cudaError_t err =cudaLaunchKernel((const void*)rgba_to_nv12x4_flip_split_kernel,
                                        grid, block, args, 0, stream);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+bool CUDA_ImageProcess::yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream){
+    void* args[] = {&d_rgba, &pitch_rgba,
+                    &d_y, &pitch_y,
+                    &d_u, &pitch_u,
+                    &d_v, &pitch_v,
+                    &width, &height };
+
+    dim3 block(16,16);
+    dim3 grid((width + 15)/16, (height + 15)/16);
+
+    cudaError_t err = cudaLaunchKernel((const void*)yuv420p_to_rgba_8bit_kernel,
+                                       grid, block, args, 0, stream);
+
+    cudaGetLastError();   // ← 必ずチェック
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+bool CUDA_ImageProcess::yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream){
+    void* args[] = {&d_rgba, &pitch_rgba,
+                    &d_y, &pitch_y,
+                    &d_u, &pitch_u,
+                    &d_v, &pitch_v,
+                    &width, &height };
+
+    dim3 block(16,16);
+    dim3 grid((width + 15)/16, (height + 15)/16);
+
+    cudaError_t err = cudaLaunchKernel((const void*)yuv420p_to_rgba_10bit_kernel,
+                                       grid, block, args, 0, stream);
+
+    cudaGetLastError();   // ← 必ずチェック
 
     if (err != cudaSuccess) {
         qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);

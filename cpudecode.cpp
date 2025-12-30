@@ -67,9 +67,18 @@ void cpudecode::initialized_ffmpeg(){
         AVCodecParameters* codecpar =
                 fmt_ctx->streams[video_stream_index]->codecpar;
 
-        dec.decoder = avcodec_find_decoder(codecpar->codec_id);
+        const char* codec_name =
+            avcodec_get_name(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
+
+        const char* decoder_name = selectDecoder(codec_name);
+        if (!decoder_name) {
+            emit decode_error("Unsupported codec");
+            return;
+        }
+
+        dec.decoder = avcodec_find_decoder_by_name(decoder_name);
         if (!dec.decoder) {
-            emit decode_error("CPU decoder not found");
+            emit decode_error("Decoder not found");
             return;
         }
 
@@ -123,17 +132,22 @@ void cpudecode::initialized_ffmpeg(){
     // CUDA周り設定
     // ------------------------
     //CUDAメモリ確保
-    cudaError_t err = cudaMallocPitch(
-        &d_rgba,
-        &pitch_rgba,
-        VideoInfo.width * VideoInfo.width_scale * 4,
-        VideoInfo.height * VideoInfo.height_scale
-        );
+    int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
+    cudaMallocPitch(&d_rgba, &pitch_rgba,
+                    VideoInfo.width * 4,
+                    VideoInfo.height);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaMallocPitch failed"
-                 << cudaGetErrorString(err);
-    }
+    cudaMallocPitch(&d_y, &pitch_y,
+                    VideoInfo.width * bytesPerSample,
+                    VideoInfo.height);
+
+    cudaMallocPitch(&d_u, &pitch_u,
+                    (VideoInfo.width / 2) * bytesPerSample,
+                    VideoInfo.height / 2);
+
+    cudaMallocPitch(&d_v, &pitch_v,
+                    (VideoInfo.width / 2) * bytesPerSample,
+                    VideoInfo.height / 2);
 
     //CUDA Stream作成
     cudaStreamCreateWithFlags(
@@ -141,11 +155,15 @@ void cpudecode::initialized_ffmpeg(){
         cudaStreamNonBlocking
         );
 
+
+
     //CUDA event 作成
     cudaEventCreateWithFlags(
         &events,
         cudaEventDisableTiming
         );
+
+
 
     // -----------------------------
     // 音声ストリームの探索
@@ -367,11 +385,8 @@ void cpudecode::get_last_frame_pts() {
 }
 
 //複数ストリームフレーム取得
-void cpudecode::get_decode_image()
-{
+void cpudecode::get_decode_image(){
     AVPacket* pkt = av_packet_alloc();
-    std::vector<bool> got_frame(vd.size(), false);
-    int got_count = 0;
 
     // ----------- シーク処理 -----------
     if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
@@ -382,95 +397,73 @@ void cpudecode::get_decode_image()
                 slider_No = VideoInfo.max_framesNo;
         }
 
+        // ビデオ/オーディオの両方 flush
+        avcodec_flush_buffers(vd[0].codec_ctx);
         if (audio_ctx)
             avcodec_flush_buffers(audio_ctx);
 
-        for (auto& dec : vd)
-            avcodec_flush_buffers(dec.codec_ctx);
-
-        av_seek_frame(fmt_ctx, 0,
+        av_seek_frame(fmt_ctx, vd[0].stream_index,
                       slider_No * VideoInfo.pts_per_frame,
                       AVSEEK_FLAG_BACKWARD);
 
         VideoInfo.current_frameNo = slider_No;
     }
 
-    // ----------- デコードループ -----------
-    while (got_count < vd.size()) {
-
+    // ----------- パケット読み込みループ -----------
+    while (true) {
         int ret = av_read_frame(fmt_ctx, pkt);
 
         // ---------- EOF ----------
         if (ret < 0) {
 
-            for (int i = 0; i < vd.size(); i++) {
-                avcodec_send_packet(vd[i].codec_ctx, nullptr);
+            // 映像側フラッシュ
+            avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
-                while (true) {
-                    AVFrame* frame = av_frame_alloc();
-                    int r = avcodec_receive_frame(vd[i].codec_ctx, frame);
-
-                    if (r == 0) {
-                        got_frame[i] = true;
-                        got_count++;
-                        av_frame_free(&frame);
-                    }
-                    else {
-                        av_frame_free(&frame);
-                        break;
-                    }
-                }
-            }
-
-            if (got_count == vd.size()) {
+            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
                 gpu_upload();
+                break;
             }
-            break;
-        }
 
-        // ----------- AUDIO -----------
-        if (pkt->stream_index == audio_stream_index) {
-            get_decode_audio(pkt);
-            av_packet_unref(pkt);
+            // 終端→先頭に戻ってループ
+            uint64_t seek_frame;
+            if (VideoInfo.current_frameNo < VideoInfo.max_framesNo - 1) {
+                seek_frame = VideoInfo.current_frameNo + 1;
+            } else {
+                emit decode_end();
+                seek_frame = 0;
+            }
+
+            avcodec_flush_buffers(vd[0].codec_ctx);
+            if (audio_ctx)
+                avcodec_flush_buffers(audio_ctx);
+
+            av_seek_frame(fmt_ctx, vd[0].stream_index,
+                          seek_frame * VideoInfo.pts_per_frame,
+                          AVSEEK_FLAG_ANY);
             continue;
         }
 
-        // ----------- VIDEO -----------
-        for (int i = 0; i < vd.size(); i++) {
-
-            if (pkt->stream_index != vd[i].stream_index || got_frame[i])
-                continue;
-
-            if (avcodec_send_packet(vd[i].codec_ctx, pkt) < 0)
-                continue;
-
-            while (true) {
-                AVFrame* frame = av_frame_alloc();
-                int r = avcodec_receive_frame(vd[i].codec_ctx, frame);
-
-                if (r == 0) {
-                    got_frame[i] = true;
-                    got_count++;
-                    gpu_upload();
-                    av_frame_free(&frame);
-                    break;  // このストリームは1枚でOK
-                }
-                else {
-                    av_frame_free(&frame);
-                    if (r == AVERROR(EAGAIN) || r == AVERROR_EOF)
-                        break;
-                    else
-                        break;
-                }
-            }
+        // ----------- AUDIO PACKET -----------
+        if (pkt->stream_index == audio_stream_index) {
+            get_decode_audio(pkt);
+            continue;  // → 映像パケットを探しに行く
         }
 
-        av_packet_unref(pkt);
+        // ----------- VIDEO PACKET -----------
+        if (pkt->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, pkt) < 0) {
+                continue;
+            }
+
+            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                gpu_upload();
+                break;  // 映像が取れたら終了
+            }
+        }
     }
-
-    av_packet_free(&pkt);
+    // 念のため
+    av_packet_unref(pkt);
 }
-
 
 //オーディオ
 void cpudecode::get_decode_audio(AVPacket* pkt){
@@ -538,25 +531,60 @@ void cpudecode::get_decode_audio(AVPacket* pkt){
 
 //GPUへアップロード
 void cpudecode::gpu_upload(){
-    sws_scale(
-        sws_ctx,
-        vd[0].Frame->data,
-        vd[0].Frame->linesize,
-        0,
-        VideoInfo.height,
-        rgba_frame->data,
-        rgba_frame->linesize
-        );
+    int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
+    //GPUアップロード
+    cudaMemcpy2D(d_y, pitch_y,
+                 vd[0].Frame->data[0], vd[0].Frame->linesize[0],
+                 VideoInfo.width * bytesPerSample,
+                 VideoInfo.height,
+                 cudaMemcpyHostToDevice);
 
-    cudaMemcpy2D(
-        d_rgba,
-        pitch_rgba,
-        rgba_buf,
-        rgba_linesize,
-        VideoInfo.width * 4,
-        VideoInfo.height,
-        cudaMemcpyHostToDevice
-        );
+    cudaMemcpy2D(d_u, pitch_u,
+                 vd[0].Frame->data[1], vd[0].Frame->linesize[1],
+                 (VideoInfo.width / 2) * bytesPerSample,
+                 VideoInfo.height / 2,
+                 cudaMemcpyHostToDevice);
+
+    cudaMemcpy2D(d_v, pitch_v,
+                 vd[0].Frame->data[2], vd[0].Frame->linesize[2],
+                 (VideoInfo.width / 2) * bytesPerSample,
+                 VideoInfo.height / 2,
+                 cudaMemcpyHostToDevice);
+
+    // yuv420p → RGBA
+    if(VideoInfo.bitdepth == 8){
+        CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(
+            d_rgba,
+            pitch_rgba,
+            d_y,
+            pitch_y,
+            d_u,
+            pitch_u,
+            d_v,
+            pitch_v,
+            VideoInfo.width,
+            VideoInfo.height,
+            stream
+            );
+    }else if(VideoInfo.bitdepth == 10){
+        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(
+            d_rgba,
+            pitch_rgba,
+            d_y,
+            pitch_y,
+            d_u,
+            pitch_u,
+            d_v,
+            pitch_v,
+            VideoInfo.width,
+            VideoInfo.height,
+            stream
+            );
+    }
+
+    //CUDAカーネル同期
+    cudaEventRecord(events, stream);
+    cudaEventSynchronize(events);
 
     //フレーム番号取得
     VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;

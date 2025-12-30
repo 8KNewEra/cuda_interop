@@ -128,7 +128,6 @@ protected:
     AVFrame*    rgba_frame = nullptr;
     uint8_t*    rgba_buf = nullptr;
     int         rgba_linesize = 0;
-
 };
 
 #endif // DECODE_THREAD_H

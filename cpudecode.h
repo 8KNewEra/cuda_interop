@@ -16,6 +16,10 @@ protected:
     void get_decode_audio(AVPacket* pkt)override;
     void get_decode_image()override;
     void gpu_upload();
+
+    uint8_t *d_y=nullptr,*d_u=nullptr,*d_v=nullptr;
+    size_t pitch_y,pitch_u,pitch_v;
+
 };
 
 #endif // CPUDECODE_H
