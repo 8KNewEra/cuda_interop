@@ -18,6 +18,7 @@ CONFIG += c++17
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+    cpudecode.cpp \
     cuda_imageprocess.cpp \
     decode_thread.cpp \
     encode_setting.cpp \
@@ -26,10 +27,12 @@ SOURCES += \
     info_thread.cpp \
     main.cpp \
     mainwindow.cpp \
+    nvgpudecode.cpp \
     save_encode.cpp
 
 HEADERS += \
     __global__.h \
+    cpudecode.h \
     cuda_imageprocess.h \
     decode_thread.h \
     encode_setting.h \
@@ -37,6 +40,7 @@ HEADERS += \
     glwidget.h \
     info_thread.h \
     mainwindow.h \
+    nvgpudecode.h \
     save_encode.h
 
 FORMS += \

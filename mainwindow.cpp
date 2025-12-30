@@ -1,5 +1,7 @@
 #include "mainwindow.h"
+#include "cpudecode.h"
 #include "decode_thread.h"
+#include "nvgpudecode.h"
 #include "ui_mainwindow.h"
 #include "glwidget.h"
 
@@ -358,7 +360,7 @@ void MainWindow::slider_set_range(){
 //デコードスレッド開始
 void MainWindow::start_decode_thread() {
     if (!run_decode_thread) {
-        decodestream = new decode_thread(input_filename,audio_mode);
+        decodestream = new nvgpudecode(input_filename,audio_mode);
         decode__thread = new QThread;
 
         decodestream->moveToThread(decode__thread);

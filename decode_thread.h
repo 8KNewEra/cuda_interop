@@ -60,21 +60,20 @@ public slots:
     void receve_decode_flag();
     void set_decode_speed(int speed);
 
-private:
+protected:
     enum DecodeState {
         STATE_DECODE_READY,
         STATE_DECODING,
         STATE_WAIT_DECODE_FLAG
     };
 
-    void initialized_ffmpeg();
+    virtual void initialized_ffmpeg()=0;
+    virtual const char* selectDecoder(const char* codec_name)=0;
+    virtual double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index)=0;
+    virtual void get_last_frame_pts()=0;
+    virtual void get_gpudecode_image()=0;
+    virtual void get_decode_audio(AVPacket* pkt)=0;
     QString ffmpegErrStr(int errnum);
-    const char* selectDecoder(const char* codec_name);
-    double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
-    void get_last_frame_pts();
-    void get_gpudecode_image();
-    void get_decode_audio(AVPacket* pkt);
-    void CUDA_RGBA_to_merge();
 
     bool video_play_flag;
     bool video_reverse_flag;
@@ -128,6 +127,13 @@ private:
     QIODevice* audioOutput = nullptr;
 
     int a=0;
+
+    //CPUデコード用
+    SwsContext* sws_ctx = nullptr;
+    AVFrame*    rgba_frame = nullptr;
+    uint8_t*    rgba_buf = nullptr;
+    int         rgba_linesize = 0;
+
 };
 
 #endif // DECODE_THREAD_H
