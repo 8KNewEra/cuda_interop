@@ -27,22 +27,20 @@ void cpudecode::initialized_ffmpeg(){
     }
 
     // 映像ストリーム検索
-    std::vector<int> video_stream_indices;
+    int video_stream_index=-1;
     for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
         if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            video_stream_indices.push_back(i);
+            video_stream_index=i;
         }
     }
 
-    if (video_stream_indices.empty()) {
+    if (video_stream_index==-1) {
         emit decode_error("No video streams found");
         return;
     }
 
     // bit depth 判定（CPU）
-    AVCodecParameters* par =
-        fmt_ctx->streams[video_stream_indices[0]]->codecpar;
-
+    AVCodecParameters* par =fmt_ctx->streams[video_stream_index]->codecpar;
     if (par->codec_id == AV_CODEC_ID_HEVC ||
         par->codec_id == AV_CODEC_ID_H264) {
 
@@ -59,17 +57,15 @@ void cpudecode::initialized_ffmpeg(){
     // ------------------------
     // デコーダ作成（CPU）
     // ------------------------
-    for (int stream_index : video_stream_indices) {
+    {
+        VideoDecorder dec;
 
-        vd.emplace_back();
-        auto& dec = vd.back();
-
-        dec.stream_index = stream_index;
-        dec.hw_frame = av_frame_alloc();   // ← CPU frame として使用
+        dec.stream_index = video_stream_index;
+        dec.Frame = av_frame_alloc();   // ← CPU frame として使用
 
         // codec ID から CPU decoder を取得
         AVCodecParameters* codecpar =
-            fmt_ctx->streams[stream_index]->codecpar;
+                fmt_ctx->streams[video_stream_index]->codecpar;
 
         dec.decoder = avcodec_find_decoder(codecpar->codec_id);
         if (!dec.decoder) {
@@ -82,7 +78,7 @@ void cpudecode::initialized_ffmpeg(){
         ret = avcodec_parameters_to_context(
             dec.codec_ctx,
             codecpar
-            );
+        );
         if (ret < 0) {
             emit decode_error("Failed to copy codec parameters");
             return;
@@ -96,9 +92,33 @@ void cpudecode::initialized_ffmpeg(){
             emit decode_error("Codec open error");
             return;
         }
+
+        vd.push_back(dec);
     }
 
-    //CUDA周りメモリ確保
+    // ------------------------
+    // 動画情報取得
+    // ------------------------
+    //フレームレートを取得
+    VideoInfo.fps = getFrameRate(fmt_ctx, vd[0].stream_index);
+
+    //1フレームのPTSを計算
+    double time_base_d = av_q2d(fmt_ctx->streams[vd[0].stream_index]->time_base);
+    VideoInfo.pts_per_frame = 1.0 / (VideoInfo.fps * time_base_d);
+    qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
+
+    //最終フレームptsを取得
+    get_last_frame_pts();
+
+    //デコードモード
+    VideoInfo.decode_mode = "Decode Mode:Non split(tile:1)\n";
+    VideoInfo.width_scale=1;
+    VideoInfo.height_scale=1;
+
+    // ------------------------
+    // CUDA周り設定
+    // ------------------------
+    //CUDAメモリ確保
     cudaError_t err = cudaMallocPitch(
         &d_rgba,
         &pitch_rgba,
@@ -111,21 +131,17 @@ void cpudecode::initialized_ffmpeg(){
                  << cudaGetErrorString(err);
     }
 
-    //フレームレートを取得
-    VideoInfo.fps = getFrameRate(fmt_ctx, vd[0].stream_index);
+    //CUDA Stream作成
+    cudaStreamCreateWithFlags(
+        &stream,
+        cudaStreamNonBlocking
+        );
 
-    //1フレームのPTSを計算
-    double time_base_d = av_q2d(fmt_ctx->streams[vd[0].stream_index]->time_base);
-    VideoInfo.pts_per_frame = 1.0 / (VideoInfo.fps * time_base_d);
-    qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
-
-    //最終フレームptsを取得
-    get_last_frame_pts();
-
-    //再生
-    video_play_flag = true;
-    video_reverse_flag = false;
-    slider_No=0;
+    //CUDA event 作成
+    cudaEventCreateWithFlags(
+        &events,
+        cudaEventDisableTiming
+        );
 
     // -----------------------------
     // 音声ストリームの探索
@@ -203,6 +219,11 @@ void cpudecode::initialized_ffmpeg(){
 
     //スライダー設定
     emit send_video_info();
+
+    //再生
+    video_play_flag = true;
+    video_reverse_flag = false;
+    slider_No=0;
 }
 
 // デコーダ設定
@@ -273,10 +294,10 @@ void cpudecode::get_last_frame_pts() {
         if (ret < 0) {
             // EOFに到達：デコーダに残りを流す
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
-            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
-                last_pts = vd[0].hw_frame->best_effort_timestamp;
-                VideoInfo.width = vd[0].hw_frame->width;
-                VideoInfo.height = vd[0].hw_frame->height;
+            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                last_pts = vd[0].Frame->best_effort_timestamp;
+                VideoInfo.width = vd[0].Frame->width;
+                VideoInfo.height = vd[0].Frame->height;
                 frame_received = true;
             }
             break;
@@ -284,13 +305,13 @@ void cpudecode::get_last_frame_pts() {
 
         if (pkt->stream_index == vd[0].stream_index) {
             if (avcodec_send_packet(vd[0].codec_ctx, pkt) == 0) {
-                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
-                    last_pts = vd[0].hw_frame->best_effort_timestamp;
-                    VideoInfo.width = vd[0].hw_frame->width;
-                    VideoInfo.height = vd[0].hw_frame->height;
+                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                    last_pts = vd[0].Frame->best_effort_timestamp;
+                    VideoInfo.width = vd[0].Frame->width;
+                    VideoInfo.height = vd[0].Frame->height;
 
                     AVPixelFormat src_fmt =
-                        (AVPixelFormat)vd[0].hw_frame->format;
+                        (AVPixelFormat)vd[0].Frame->format;
 
                     sws_ctx = sws_getContext(
                         VideoInfo.width,
@@ -342,7 +363,7 @@ void cpudecode::get_last_frame_pts() {
 }
 
 //複数ストリームフレーム取得
-void cpudecode::get_gpudecode_image() {
+void cpudecode::get_decode_image() {
     AVPacket* pkt = av_packet_alloc();
     std::vector<bool> got_frame(vd.size(), false);
     int got_count = 0;
@@ -380,7 +401,7 @@ void cpudecode::get_gpudecode_image() {
                 // 映像側フラッシュ
                 avcodec_send_packet(vd[i].codec_ctx, nullptr);
 
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
+                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
                     got_frame[i] = true;
                     got_count++;
                 }
@@ -421,7 +442,7 @@ void cpudecode::get_gpudecode_image() {
                     continue;
                 }
 
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
+                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
                     got_frame[i] = true;
                     got_count++;
                     break;  // 映像が取れたら終了
@@ -500,40 +521,29 @@ void cpudecode::get_decode_audio(AVPacket* pkt){
 
 //GPUへアップロード
 void cpudecode::gpu_upload(){
-    // sws_scale(
-    //     sws_ctx,
-    //     vd[0].hw_frame->data,
-    //     vd[0].hw_frame->linesize,
-    //     0,
-    //     VideoInfo.height,
-    //     rgba_frame->data,
-    //     rgba_frame->linesize
-    //     );
+    sws_scale(
+        sws_ctx,
+        vd[0].Frame->data,
+        vd[0].Frame->linesize,
+        0,
+        VideoInfo.height,
+        rgba_frame->data,
+        rgba_frame->linesize
+        );
 
-    // cudaMemcpy2D(
-    //     d_rgba,
-    //     pitch_rgba,
-    //     rgba_buf,
-    //     rgba_linesize,
-    //     VideoInfo.width * 4,
-    //     VideoInfo.height,
-    //     cudaMemcpyHostToDevice
-    //     );
-
-    qDebug()<<VideoInfo.height<<":"<<VideoInfo.width;
-
-    uint8_t* qqq;
-    size_t a;
-    cudaError_t err = cudaMallocPitch(
-        &qqq,
-        &a,
-        VideoInfo.width * VideoInfo.width_scale * 4,
-        VideoInfo.height * VideoInfo.height_scale
+    cudaMemcpy2D(
+        d_rgba,
+        pitch_rgba,
+        rgba_buf,
+        rgba_linesize,
+        VideoInfo.width * 4,
+        VideoInfo.height,
+        cudaMemcpyHostToDevice
         );
 
     //フレーム番号取得
-    VideoInfo.current_frameNo = vd[0].hw_frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+    VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
     slider_No = VideoInfo.current_frameNo;
 
-    emit send_decode_image(qqq, a, VideoInfo.current_frameNo);
+    emit send_decode_image(d_rgba, pitch_rgba, VideoInfo.current_frameNo);
 }

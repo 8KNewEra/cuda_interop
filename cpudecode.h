@@ -13,8 +13,8 @@ protected:
     const char*selectDecoder(const char* codec_name) override;
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index)override;
     void get_last_frame_pts()override;
-    void get_gpudecode_image()override;
     void get_decode_audio(AVPacket* pkt)override;
+    void get_decode_image()override;
     void gpu_upload();
 };
 

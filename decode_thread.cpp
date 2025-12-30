@@ -72,9 +72,9 @@ decode_thread::~decode_thread() {
 
     auto safe_free_frames = [&]() {
         for (int i = 0; i < vd.size(); i++) {
-            if (vd[i].hw_frame) {
-                av_frame_free(&vd[i].hw_frame);
-                vd[i].hw_frame = nullptr;
+            if (vd[i].Frame) {
+                av_frame_free(&vd[i].Frame);
+                vd[i].Frame = nullptr;
             }
         }
     };
@@ -204,7 +204,7 @@ void decode_thread::processFrame() {
 
     if(decode_state==STATE_DECODE_READY){
         decode_state=STATE_DECODING;
-        get_gpudecode_image();
+        get_decode_image();
         decode_state=STATE_WAIT_DECODE_FLAG;
     }
 

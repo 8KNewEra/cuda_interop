@@ -50,6 +50,7 @@ void nvgpudecode::initialized_ffmpeg(){
         return;
     }
 
+    //ビット深度取得
     AVCodecParameters* par = fmt_ctx->streams[0]->codecpar;
     if (par->codec_id == AV_CODEC_ID_HEVC||par->codec_id == AV_CODEC_ID_H264) {
         if (par->format == AV_PIX_FMT_YUV420P10 ||
@@ -62,6 +63,9 @@ void nvgpudecode::initialized_ffmpeg(){
 
     qDebug()<<VideoInfo.bitdepth;
 
+    // ------------------------
+    // デコーダ作成（GPU）
+    // ------------------------
     //デコーダ作成
     for (int i = 0; i < video_stream_indices.size(); i++) {
         int stream_index = video_stream_indices[i];
@@ -70,7 +74,7 @@ void nvgpudecode::initialized_ffmpeg(){
         auto& dec = vd.back();
 
         dec.stream_index = stream_index;
-        dec.hw_frame = av_frame_alloc();
+        dec.Frame = av_frame_alloc();
 
         const char* codec_name =
             avcodec_get_name(fmt_ctx->streams[stream_index]->codecpar->codec_id);
@@ -111,6 +115,9 @@ void nvgpudecode::initialized_ffmpeg(){
         }
     }
 
+    // ------------------------
+    // 動画情報取得
+    // ------------------------
     //フレームレートを取得
     VideoInfo.fps = getFrameRate(fmt_ctx, vd[0].stream_index);
 
@@ -121,11 +128,6 @@ void nvgpudecode::initialized_ffmpeg(){
 
     //最終フレームptsを取得
     get_last_frame_pts();
-
-    //再生
-    video_play_flag = true;
-    video_reverse_flag = false;
-    slider_No=0;
 
     //デコードモード
     if(vd.size()==1){
@@ -142,6 +144,9 @@ void nvgpudecode::initialized_ffmpeg(){
         VideoInfo.height_scale=2;
     }
 
+    // ------------------------
+    // CUDA周り設定
+    // ------------------------
     //CUDA周りメモリ確保
     cudaError_t err = cudaMallocPitch(
         &d_rgba,
@@ -243,6 +248,11 @@ void nvgpudecode::initialized_ffmpeg(){
 
     //スライダー設定
     emit send_video_info();
+
+    //再生
+    video_play_flag = true;
+    video_reverse_flag = false;
+    slider_No=0;
 }
 
 // デコーダ設定
@@ -312,10 +322,10 @@ void nvgpudecode::get_last_frame_pts() {
         if (ret < 0) {
             // EOFに到達：デコーダに残りを流す
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
-            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
-                last_pts = vd[0].hw_frame->best_effort_timestamp;
-                VideoInfo.width = vd[0].hw_frame->width;
-                VideoInfo.height = vd[0].hw_frame->height;
+            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                last_pts = vd[0].Frame->best_effort_timestamp;
+                VideoInfo.width = vd[0].Frame->width;
+                VideoInfo.height = vd[0].Frame->height;
                 frame_received = true;
             }
             break;
@@ -323,10 +333,10 @@ void nvgpudecode::get_last_frame_pts() {
 
         if (pkt->stream_index == vd[0].stream_index) {
             if (avcodec_send_packet(vd[0].codec_ctx, pkt) == 0) {
-                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frame) == 0) {
-                    last_pts = vd[0].hw_frame->best_effort_timestamp;
-                    VideoInfo.width = vd[0].hw_frame->width;
-                    VideoInfo.height = vd[0].hw_frame->height;
+                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                    last_pts = vd[0].Frame->best_effort_timestamp;
+                    VideoInfo.width = vd[0].Frame->width;
+                    VideoInfo.height = vd[0].Frame->height;
                     frame_received = true;
                 }
             }
@@ -346,7 +356,7 @@ void nvgpudecode::get_last_frame_pts() {
 }
 
 //複数ストリームフレーム取得
-void nvgpudecode::get_gpudecode_image() {
+void nvgpudecode::get_decode_image() {
     AVPacket* pkt = av_packet_alloc();
     std::vector<bool> got_frame(vd.size(), false);
     int got_count = 0;
@@ -371,7 +381,6 @@ void nvgpudecode::get_gpudecode_image() {
                       slider_No * VideoInfo.pts_per_frame,
                       AVSEEK_FLAG_BACKWARD);
 
-        qDebug()<<"aaaaaaaaaaaaaaaa" ;
         VideoInfo.current_frameNo = slider_No;
 
         a+=1;
@@ -385,7 +394,7 @@ void nvgpudecode::get_gpudecode_image() {
                 // 映像側フラッシュ
                 avcodec_send_packet(vd[i].codec_ctx, nullptr);
 
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
+                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
                     got_frame[i] = true;
                     got_count++;
                 }
@@ -426,7 +435,7 @@ void nvgpudecode::get_gpudecode_image() {
                     continue;
                 }
 
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frame) == 0) {
+                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
                     got_frame[i] = true;
                     got_count++;
                     break;  // 映像が取れたら終了
@@ -510,10 +519,10 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     }
     else if (vd.size() == 4) {
         CUDA_IMG_Proc->nv12x4_to_rgba_merge(
-            vd[0].hw_frame->data[0],vd[0].hw_frame->linesize[0], vd[0].hw_frame->data[1],vd[0].hw_frame->linesize[1],
-            vd[1].hw_frame->data[0],vd[1].hw_frame->linesize[0], vd[1].hw_frame->data[1],vd[1].hw_frame->linesize[1],
-            vd[2].hw_frame->data[0],vd[2].hw_frame->linesize[0], vd[2].hw_frame->data[1],vd[2].hw_frame->linesize[1],
-            vd[3].hw_frame->data[0],vd[3].hw_frame->linesize[0], vd[3].hw_frame->data[1],vd[3].hw_frame->linesize[1],
+            vd[0].Frame->data[0],vd[0].Frame->linesize[0], vd[0].Frame->data[1],vd[0].Frame->linesize[1],
+            vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
+            vd[2].Frame->data[0],vd[2].Frame->linesize[0], vd[2].Frame->data[1],vd[2].Frame->linesize[1],
+            vd[3].Frame->data[0],vd[3].Frame->linesize[0], vd[3].Frame->data[1],vd[3].Frame->linesize[1],
             d_rgba, pitch_rgba,VideoInfo.width*2,VideoInfo.height*2,VideoInfo.width,VideoInfo.height);
 
         //CUDAカーネル同期
@@ -521,7 +530,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
         cudaEventSynchronize(events);
 
         //フレーム番号取得
-        VideoInfo.current_frameNo = vd[0].hw_frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = VideoInfo.current_frameNo;
 
         emit send_decode_image(d_rgba, pitch_rgba,VideoInfo.current_frameNo);
@@ -531,10 +540,10 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             CUDA_IMG_Proc->NV12_to_RGBA_8bit(
                 d_rgba,
                 pitch_rgba,
-                vd[0].hw_frame->data[0],
-                vd[0].hw_frame->linesize[0],
-                vd[0].hw_frame->data[1],
-                vd[0].hw_frame->linesize[1],
+                vd[0].Frame->data[0],
+                vd[0].Frame->linesize[0],
+                vd[0].Frame->data[1],
+                vd[0].Frame->linesize[1],
                 VideoInfo.height,
                 VideoInfo.width,
                 stream
@@ -543,10 +552,10 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             CUDA_IMG_Proc->NV12_to_RGBA_10bit(
                 d_rgba,
                 pitch_rgba,
-                vd[0].hw_frame->data[0],
-                vd[0].hw_frame->linesize[0],
-                vd[0].hw_frame->data[1],
-                vd[0].hw_frame->linesize[1],
+                vd[0].Frame->data[0],
+                vd[0].Frame->linesize[0],
+                vd[0].Frame->data[1],
+                vd[0].Frame->linesize[1],
                 VideoInfo.height,
                 VideoInfo.width,
                 stream
@@ -558,7 +567,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
         cudaEventSynchronize(events);
 
         //フレーム番号取得
-        VideoInfo.current_frameNo = vd[0].hw_frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = VideoInfo.current_frameNo;
 
         emit send_decode_image(d_rgba,  pitch_rgba, VideoInfo.current_frameNo);

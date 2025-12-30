@@ -360,7 +360,7 @@ void MainWindow::slider_set_range(){
 //デコードスレッド開始
 void MainWindow::start_decode_thread() {
     if (!run_decode_thread) {
-        decodestream = new nvgpudecode(input_filename,audio_mode);
+        decodestream = new cpudecode(input_filename,audio_mode);
         decode__thread = new QThread;
 
         decodestream->moveToThread(decode__thread);

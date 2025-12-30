@@ -26,10 +26,9 @@ extern int g_cudaDeviceID;
 
 struct VideoDecorder {
     AVCodecContext* codec_ctx = nullptr;
-    AVStream* stream = nullptr;
     int stream_index=0;
     const AVCodec* decoder;
-    AVFrame* hw_frame;
+    AVFrame* Frame;
 };
 
 class decode_thread : public QObject {
@@ -67,19 +66,26 @@ protected:
         STATE_WAIT_DECODE_FLAG
     };
 
+    //デコード周り
     virtual void initialized_ffmpeg()=0;
     virtual const char* selectDecoder(const char* codec_name)=0;
     virtual double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index)=0;
     virtual void get_last_frame_pts()=0;
-    virtual void get_gpudecode_image()=0;
+    virtual void get_decode_image()=0;
     virtual void get_decode_audio(AVPacket* pkt)=0;
+
+    //エラー処理
     QString ffmpegErrStr(int errnum);
 
+    //制御
     bool video_play_flag;
     bool video_reverse_flag;
     bool thread_stop_flag =false;
+    int slider_No;
+    int a=0;
+    QMutex mutex;
 
-    // FFmpeg関連
+    //FFmpeg関連
     const char* input_filename;
     QByteArray File_byteArray;
     std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成
@@ -87,14 +93,11 @@ protected:
     AVBufferRef* hw_device_ctx = nullptr;
     DecodeState decode_state = STATE_DECODE_READY;
     DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
-    int slider_No;
-    QMutex mutex;
 
     //タイマー関連
     QTimer *timer;
     QElapsedTimer elapsedTimer;
     int interval_ms;
-
 
     //CUDA
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
@@ -104,29 +107,21 @@ protected:
     cudaEvent_t events;
 
     //音声
-    // ----- Audio -----
     int audio_stream_index = -1;
     AVCodecContext* audio_ctx = nullptr;
     const AVCodec* audio_decoder = nullptr;
-
     SwrContext* swr = nullptr;
     uint8_t* audio_buffer = nullptr;
     int audio_buffer_size = 0;
-
     AVChannelLayout in_ch_layout = {};
     AVChannelLayout out_ch_layout = {};
-
     int in_sample_rate  = 0;
     int out_sample_rate = 0;
-
     AVSampleFormat in_format  = AV_SAMPLE_FMT_NONE;
     AVSampleFormat out_format = AV_SAMPLE_FMT_S16;  // S16 にリサンプルする
-
     QByteArray pcm;
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
-
-    int a=0;
 
     //CPUデコード用
     SwsContext* sws_ctx = nullptr;
