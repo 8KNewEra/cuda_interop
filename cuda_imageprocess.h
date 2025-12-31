@@ -19,11 +19,18 @@ public:
     bool yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
     bool yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
     bool Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int height, int width,cudaStream_t stream);
-    bool nv12x4_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
+    bool nv12x2_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
                               uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
-                              uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
-                              uint8_t* y3,  size_t pitchY3,uint8_t* uv3, size_t pitchUV3,
                               uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH,cudaStream_t stream);
+    bool rgba_to_nv12x2_flip_split(uint8_t* In, size_t pitchIn,
+                                   uint8_t* y0,  size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                   uint8_t* y1,  size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                   int srcW, int srcH, int outW, int outH, cudaStream_t stream);
+    bool nv12x4_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
+                                   uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
+                                   uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
+                                   uint8_t* y3,  size_t pitchY3,uint8_t* uv3, size_t pitchUV3,
+                                   uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH,cudaStream_t stream);
     bool rgba_to_nv12x4_flip_split(uint8_t* In, size_t pitchIn,
                                    uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
                                    uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,

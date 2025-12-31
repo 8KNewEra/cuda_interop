@@ -12,6 +12,15 @@ extern "C"{
     __global__ void histgram_normalize_kernel(float* vbo,int num_bins,HistData* Histdata,HistStats* input_stats);
     __global__ void histgram_status_kernel(HistData* Histdata,HistStats* out_stats);
     __global__ void flip_rgba_to_nv12_kernel(uint8_t* y_plane, size_t y_step,uint8_t* uv_plane,size_t uv_step,const uint8_t* rgba, size_t rgba_step,int width, int height);
+    __global__ void nv12x2_to_rgba_merge_kernel(
+        const uint8_t* y0,  size_t pitchY0,const uint8_t* uv0, size_t pitchUV0,
+        const uint8_t* y1,  size_t pitchY1,const uint8_t* uv1, size_t pitchUV1,
+        uint8_t* out, size_t pitchOut, int outW, int outH,int srcW, int srcH);
+    __global__ void rgba_to_nv12x2_flip_split_kernel(
+        const uint8_t* In, size_t pitchIn,
+        uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
+        uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
+        int srcW, int srcH,int outW, int outH);
     __global__ void nv12x4_to_rgba_merge_kernel(
         const uint8_t* y0,  size_t pitchY0,const uint8_t* uv0, size_t pitchUV0,
         const uint8_t* y1,  size_t pitchY1,const uint8_t* uv1, size_t pitchUV1,
@@ -192,6 +201,74 @@ bool CUDA_ImageProcess::Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* 
 
     cudaError_t err = cudaLaunchKernel((const void*)flip_rgba_to_nv12_kernel,
                      grid, block, args, 0, stream);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+//NV12→RGBA→結合 2ストリームデコード
+bool CUDA_ImageProcess::nv12x2_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
+                                             uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
+                                             uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH,cudaStream_t stream){
+
+    void* args[] = {&y0, &pitchY0,&uv0,&pitchUV0,
+        &y1, &pitchY1,&uv1,&pitchUV1,
+        &out, &pitchOut,&outW, &outH,&srcW,&srcH
+    };
+
+    dim3 block(16, 16);
+    dim3 grid(
+        (outW  + block.x - 1) / block.x,
+        (outH + block.y - 1) / block.y
+        );
+
+    cudaError_t err =cudaLaunchKernel((const void*)nv12x2_to_rgba_merge_kernel,
+                                       grid, block, args, 0, stream);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+//反転→RGBA→NV12→2分割 2ストリームエンコード
+bool CUDA_ImageProcess::rgba_to_nv12x2_flip_split(uint8_t* In, size_t pitchIn,
+                                                  uint8_t* y0,  size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                                  uint8_t* y1,  size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                                  int srcW, int srcH, int outW, int outH, cudaStream_t stream){
+
+    void* args[] = {&In, &pitchIn,
+        &y0, &pitchY0,&uv0,&pitchUV0,
+        &y1, &pitchY1,&uv1,&pitchUV1,
+        &srcW, &srcH,&outW,&outH
+    };
+
+    dim3 block(16, 16);
+    dim3 grid(
+        (srcW  + block.x - 1) / block.x,
+        (srcH + block.y - 1) / block.y
+        );
+
+    cudaError_t err =cudaLaunchKernel((const void*)rgba_to_nv12x2_flip_split_kernel,
+                                       grid, block, args, 0, stream);
 
     if (err != cudaSuccess) {
         qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);

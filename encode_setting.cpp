@@ -14,8 +14,8 @@ encode_setting::encode_setting(QWidget *parent)
     ui->allow_overwrite_checkBox->hide();
 
     settingmap[0] = {"h264_nvenc", 1,"0",0,"p1","default","cbr","1pass",1,1};
-    settingmap[1] = {"hevc_nvenc",2,"1",1,"p2","hq","vbr","2pass-quarter-res",15,4};
-    settingmap[2] = {"av1_nvenc",5,"",2,"p3","ll","cq","2pass-full-res",30,0};
+    settingmap[1] = {"hevc_nvenc",2,"1",1,"p2","hq","vbr","2pass-quarter-res",15,2};
+    settingmap[2] = {"av1_nvenc",5,"",2,"p3","ll","cq","2pass-full-res",30,4};
     settingmap[3] = {"",10,"",3,"p4","ull","","",60,0};
     settingmap[4] = {"",15,"",4,"p5","lossless","","",120,0};
     settingmap[5] = {"",20,"",5,"p6","","","",250,0};
@@ -84,7 +84,7 @@ encode_setting::encode_setting(QWidget *parent)
     //タイルエンコードプロファイル
     {
         QStringList tile_items;
-        tile_items <<"タイル数:1"<<"タイル数:4";
+        tile_items <<"タイル数:1"<<"タイル数:2"<<"タイル数:4";
         ui->comboBox_tile->addItems(tile_items);
         QObject::connect(ui->comboBox_tile, &QComboBox::currentIndexChanged, this, [&](int index) {
             settings.encode_tile = settingmap[index].encode_tile;
@@ -596,7 +596,7 @@ void encode_setting::slider(int min,int max){
 
     //H264チェック
     //タイル数チェック
-    if(VideoInfo.width*VideoInfo.width_scale>8192||VideoInfo.height*VideoInfo.height_scale>8192){
+    if((VideoInfo.width*VideoInfo.width_scale>8192||VideoInfo.height*VideoInfo.height_scale>8192)&&ui->comboBox_codec->currentIndex()==4){
         qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(0,true);
         if(ui->comboBox_tile->currentIndex()==0){
             ui->comboBox_tile->setCurrentIndex(1);

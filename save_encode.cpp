@@ -19,6 +19,9 @@ save_encode::save_encode(int h,int w) {
     if(max_size==1){
         height_ = h;
         width_  = w;
+    }else if(max_size==2){
+        height_ = h;
+        width_  = w*1/2;
     }else if(max_size==4){
         height_ = h*1/2;
         width_  = w*1/2;
@@ -292,6 +295,12 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
             ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
             ve[3].hw_frame->data[0],ve[3].hw_frame->linesize[0], ve[3].hw_frame->data[1],ve[3].hw_frame->linesize[1],
             width_*2,height_*2,width_,height_,stream);
+    }else if(ve.size()==2){
+        CUDA_IMG_Proc->rgba_to_nv12x2_flip_split(
+            d_rgba,pitch_rgba,
+            ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
+            ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
+            width_*2,height_*1,width_,height_,stream);
     }else if(ve.size()==1){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,width_,height_,stream);

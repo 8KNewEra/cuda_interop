@@ -524,7 +524,11 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
 
     //本カーネル
     if (vd.size() == 2) {
-
+        //NV12→RGBA→結合
+        CUDA_IMG_Proc->nv12x2_to_rgba_merge(
+            vd[0].Frame->data[0],vd[0].Frame->linesize[0], vd[0].Frame->data[1],vd[0].Frame->linesize[1],
+            vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
+            d_rgba, pitch_rgba,VideoInfo.width*2,VideoInfo.height,VideoInfo.width,VideoInfo.height,stream);
     }else if (vd.size() == 4) {
         //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x4_to_rgba_merge(
