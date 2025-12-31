@@ -96,9 +96,11 @@ void cpudecode::initialized_ffmpeg(){
         // ★ CPU デコードなので hw_device_ctx は設定しない
         dec.codec_ctx->hw_device_ctx = nullptr;
 
-        dec.codec_ctx->thread_count = 0;
-        dec.codec_ctx->thread_type  = FF_THREAD_FRAME;
-
+        //H264の場合は並列化
+        if(fmt_ctx->streams[video_stream_index]->codecpar->codec_id==AV_CODEC_ID_H264){
+            dec.codec_ctx->thread_count = 0;
+            dec.codec_ctx->thread_type  = FF_THREAD_FRAME;
+        }
 
         ret = avcodec_open2(dec.codec_ctx, dec.decoder, nullptr);
         if (ret < 0) {
@@ -133,6 +135,8 @@ void cpudecode::initialized_ffmpeg(){
     // ------------------------
     //CUDAメモリ確保
     int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
+    y_size = VideoInfo.width * VideoInfo.height * bytesPerSample;
+    uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2) * bytesPerSample;
     cudaMallocPitch(&d_rgba, &pitch_rgba,
                     VideoInfo.width * 4,
                     VideoInfo.height);
@@ -149,21 +153,22 @@ void cpudecode::initialized_ffmpeg(){
                     (VideoInfo.width / 2) * bytesPerSample,
                     VideoInfo.height / 2);
 
+    //pinned登録
+    cudaHostRegister(vd[0].Frame->data[0], y_size, cudaHostRegisterDefault);
+    cudaHostRegister(vd[0].Frame->data[1], uv_size, cudaHostRegisterDefault);
+    cudaHostRegister(vd[0].Frame->data[2], uv_size, cudaHostRegisterDefault);
+
     //CUDA Stream作成
     cudaStreamCreateWithFlags(
         &stream,
         cudaStreamNonBlocking
         );
 
-
-
     //CUDA event 作成
     cudaEventCreateWithFlags(
         &events,
         cudaEventDisableTiming
         );
-
-
 
     // -----------------------------
     // 音声ストリームの探索
@@ -331,41 +336,6 @@ void cpudecode::get_last_frame_pts() {
                     last_pts = vd[0].Frame->best_effort_timestamp;
                     VideoInfo.width = vd[0].Frame->width;
                     VideoInfo.height = vd[0].Frame->height;
-
-                    AVPixelFormat src_fmt =
-                        (AVPixelFormat)vd[0].Frame->format;
-
-                    sws_ctx = sws_getContext(
-                        VideoInfo.width,
-                        VideoInfo.height,
-                        AV_PIX_FMT_YUV420P,                // ★ frame と一致させる
-                        VideoInfo.width,
-                        VideoInfo.height,
-                        AV_PIX_FMT_RGBA,
-                        SWS_BILINEAR,
-                        nullptr,
-                        nullptr,
-                        nullptr
-                        );
-
-
-                    rgba_frame = av_frame_alloc();
-                    rgba_frame->format = AV_PIX_FMT_RGBA;
-                    rgba_frame->width  = VideoInfo.width;
-                    rgba_frame->height = VideoInfo.height;
-
-                    av_image_alloc(
-                        rgba_frame->data,
-                        rgba_frame->linesize,
-                        VideoInfo.width,
-                        VideoInfo.height,
-                        AV_PIX_FMT_RGBA,
-                        1
-                        );
-
-                    rgba_buf = rgba_frame->data[0];
-                    rgba_linesize = rgba_frame->linesize[0];
-
                     frame_received = true;
                 }
             }

@@ -120,6 +120,18 @@ decode_thread::~decode_thread() {
         safe_cuda_free((void*&)d_rgba, "d_rgba");
     }
 
+    if(d_y){
+        safe_cuda_free((void*&)d_y, "d_y");
+    }
+
+    if(d_u){
+        safe_cuda_free((void*&)d_u, "d_u");
+    }
+
+    if(d_v){
+        safe_cuda_free((void*&)d_v, "d_v");
+    }
+
     delete CUDA_IMG_Proc;
     CUDA_IMG_Proc=nullptr;
 

@@ -106,6 +106,11 @@ protected:
     cudaStream_t stream;
     cudaEvent_t events;
 
+
+    //CPUデコード用
+    uint8_t *d_y=nullptr,*d_u=nullptr,*d_v=nullptr;
+    size_t pitch_y,pitch_u,pitch_v,y_size,uv_size;
+
     //音声
     int audio_stream_index = -1;
     AVCodecContext* audio_ctx = nullptr;
@@ -122,12 +127,6 @@ protected:
     QByteArray pcm;
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
-
-    //CPUデコード用
-    SwsContext* sws_ctx = nullptr;
-    AVFrame*    rgba_frame = nullptr;
-    uint8_t*    rgba_buf = nullptr;
-    int         rgba_linesize = 0;
 };
 
 #endif // DECODE_THREAD_H
