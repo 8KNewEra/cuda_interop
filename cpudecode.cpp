@@ -245,7 +245,7 @@ void cpudecode::initialized_ffmpeg(){
     }
 
     //スライダー設定
-    emit send_video_info();
+    emit send_slider_info();
 
     //再生
     video_play_flag = true;
@@ -521,6 +521,11 @@ void cpudecode::gpu_upload(){
                  VideoInfo.height / 2,
                  cudaMemcpyHostToDevice);
 
+    //ダミーカーネルで完全な同期
+    CUDA_IMG_Proc->Dummy(stream);
+    cudaEventRecord(events, stream);
+    cudaEventSynchronize(events);
+
     // yuv420p → RGBA
     if(VideoInfo.bitdepth == 8){
         CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(
@@ -553,6 +558,11 @@ void cpudecode::gpu_upload(){
     }
 
     //CUDAカーネル同期
+    cudaEventRecord(events, stream);
+    cudaEventSynchronize(events);
+
+    //ダミーカーネルで完全な同期
+    CUDA_IMG_Proc->Dummy(stream);
     cudaEventRecord(events, stream);
     cudaEventSynchronize(events);
 

@@ -247,7 +247,7 @@ void nvgpudecode::initialized_ffmpeg(){
     }
 
     //スライダー設定
-    emit send_video_info();
+    emit send_slider_info();
 
     //再生
     video_play_flag = true;
@@ -382,8 +382,6 @@ void nvgpudecode::get_decode_image() {
                       AVSEEK_FLAG_BACKWARD);
 
         VideoInfo.current_frameNo = slider_No;
-
-        a+=1;
     }
 
     while (got_count < vd.size()) {
@@ -534,7 +532,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
             vd[2].Frame->data[0],vd[2].Frame->linesize[0], vd[2].Frame->data[1],vd[2].Frame->linesize[1],
             vd[3].Frame->data[0],vd[3].Frame->linesize[0], vd[3].Frame->data[1],vd[3].Frame->linesize[1],
-            d_rgba, pitch_rgba,VideoInfo.width*2,VideoInfo.height*2,VideoInfo.width,VideoInfo.height);
+            d_rgba, pitch_rgba,VideoInfo.width*2,VideoInfo.height*2,VideoInfo.width,VideoInfo.height,stream);
     }else{
         // NV12 → RGBA
         if(VideoInfo.bitdepth == 8){
@@ -545,8 +543,8 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
                 vd[0].Frame->linesize[0],
                 vd[0].Frame->data[1],
                 vd[0].Frame->linesize[1],
-                VideoInfo.height,
                 VideoInfo.width,
+                VideoInfo.height,
                 stream
                 );
         }else if(VideoInfo.bitdepth == 10){
@@ -557,8 +555,8 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
                 vd[0].Frame->linesize[0],
                 vd[0].Frame->data[1],
                 vd[0].Frame->linesize[1],
-                VideoInfo.height,
                 VideoInfo.width,
+                VideoInfo.height,
                 stream
                 );
         }

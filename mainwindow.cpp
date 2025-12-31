@@ -259,6 +259,8 @@ void MainWindow::Open_Video_File()
         if(run_decode_thread){
             stop_decode_thread();
         }
+        ui->info->setEnabled(false);
+        ui->actionOpenFile->setEnabled(false);
 
         start_decode_thread(filePath);
 
@@ -349,6 +351,23 @@ void MainWindow::slider_set_range(){
     if(VideoInfo.audio)
         ui->action_audio_low_laytency->setEnabled(true);
 
+    //一通りUIのセットを行う
+    ui->actionOpenFile->setEnabled(true);
+    ui->info->setEnabled(true);
+    ui->play_pushButton->setEnabled(true);
+    ui->pause_pushButton->setEnabled(true);
+    ui->reverse_pushButton->setEnabled(true);
+    ui->Live_horizontalSlider->setEnabled(true);
+    ui->label_speed->setEnabled(true);
+    ui->comboBox_speed->setEnabled(true);
+    ui->actionFileSave->setEnabled(true);
+    ui->actionCloseFile->setEnabled(true);
+    ui->action_videoinfo->setEnabled(true);
+    ui->action_histgram->setEnabled(true);
+    ui->action_filter_sobel->setEnabled(true);
+    ui->action_filter_gausian->setEnabled(true);
+    ui->action_filter_averaging->setEnabled(true);
+
     qDebug() << "Framerate:" << VideoInfo.fps;
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
     ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
@@ -371,7 +390,7 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio);
 
         QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
-        QObject::connect(decodestream, &decode_thread::send_video_info, this, &MainWindow::slider_set_range);
+        QObject::connect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::slider_set_range);
 
         QObject::connect(ui->play_pushButton, &QPushButton::clicked, decodestream, &decode_thread::resumePlayback, Qt::QueuedConnection);
         QObject::connect(ui->pause_pushButton, &QPushButton::clicked, decodestream, &decode_thread::pausePlayback, Qt::QueuedConnection);
@@ -394,35 +413,24 @@ void MainWindow::start_decode_thread(QString filePath) {
                                      tr("デコードエラー"),
                                      tr("デコード中にエラーが発生しました:\n%1").arg(error),
                                      QMessageBox::Ok);
+
+                ui->actionOpenFile->setEnabled(true);
+                ui->info->setEnabled(true);
             }, Qt::QueuedConnection);
         });
 
+        //スレッドが開始してから処理を開始
         QObject::connect(decode__thread, &QThread::started, this, [this]() {
             run_decode_thread = true;
             QMetaObject::invokeMethod(decodestream, "startProcessing", Qt::QueuedConnection);
-
             ui->comboBox_speed->setCurrentIndex(6);
-
-            ui->play_pushButton->setEnabled(true);
-            ui->pause_pushButton->setEnabled(true);
-            ui->reverse_pushButton->setEnabled(true);
-            ui->Live_horizontalSlider->setEnabled(true);
-            ui->label_speed->setEnabled(true);
-            ui->comboBox_speed->setEnabled(true);
-            ui->actionFileSave->setEnabled(true);
-            ui->actionCloseFile->setEnabled(true);
-            ui->action_videoinfo->setEnabled(true);
-            ui->action_histgram->setEnabled(true);
-            ui->action_filter_sobel->setEnabled(true);
-            ui->action_filter_gausian->setEnabled(true);
-            ui->action_filter_averaging->setEnabled(true);
-
         }, Qt::AutoConnection);
 
         decode__thread->start();
     }
 }
 
+//GPU利用可否の判定
 bool MainWindow::canUseGpuDecode(QString filename)
 {
     QByteArray File_byteArray = filename.toUtf8();
@@ -467,6 +475,10 @@ void MainWindow::stop_decode_thread(){
     if (run_decode_thread) {
         audio_mode=decodestream->audio_mode;
         run_decode_thread=false;
+
+        //UI設定
+        ui->actionOpenFile->setEnabled(true);
+        ui->info->setEnabled(true);
         ui->play_pushButton->setEnabled(false);
         ui->pause_pushButton->setEnabled(false);
         ui->reverse_pushButton->setEnabled(false);

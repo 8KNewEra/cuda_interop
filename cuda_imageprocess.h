@@ -14,31 +14,32 @@ public:
     ~CUDA_ImageProcess();
 
     bool Dummy(cudaStream_t stream);
-    bool Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int height, int width,cudaStream_t stream);
     bool NV12_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream);
     bool NV12_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream);
     bool yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
     bool yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
-    bool Gradation(uint8_t *output,size_t pitch_output,uint8_t *input,size_t pitch_input,int height,int width);
-    bool calc_histgram(HistData* Histdata,cudaTextureObject_t texObj,int width,int height);
-    bool draw_histgram(cudaSurfaceObject_t surfOut,int width,int height,uint32_t* d_hist_r,uint32_t* d_hist_g,uint32_t* d_hist_b,unsigned int* max_r,unsigned int* max_g,unsigned int* max_b);
-    bool histgram_normalize(float* vbo,int num_bins,HistData* Histdata,HistStats* input_stats);
-    bool histogram_status(HistData* Histdata,HistStats* input_stats);
-    bool image_combine_x2(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,int width, int height);
-    bool image_combine_x4(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,uint8_t* img3, size_t pitch3,uint8_t* img4, size_t pitch4,int width, int height, int blend);
-    bool image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t* In, size_t pitchIn,int width, int height,cudaStream_t stream);
+    bool Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int height, int width,cudaStream_t stream);
     bool nv12x4_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
                               uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
                               uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
                               uint8_t* y3,  size_t pitchY3,uint8_t* uv3, size_t pitchUV3,
-                              uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH);
+                              uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH,cudaStream_t stream);
     bool rgba_to_nv12x4_flip_split(uint8_t* In, size_t pitchIn,
                                    uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
                                    uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
                                    uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
                                    uint8_t* y3,  size_t pitchY3,uint8_t* uv3, size_t pitchUV3,
                                    int outW, int outH,int srcW, int srcH, cudaStream_t stream);
-};
 
+    bool calc_histgram(HistData* Histdata,cudaTextureObject_t texObj,int width,int height);
+    bool histgram_normalize(float* vbo,int num_bins,HistData* Histdata,HistStats* input_stats);
+    bool histogram_status(HistData* Histdata,HistStats* input_stats);
+
+    //使わないやつ
+    bool image_combine_x2(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,int width, int height,cudaStream_t stream);
+    bool image_combine_x4(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,uint8_t* img3, size_t pitch3,uint8_t* img4, size_t pitch4,int width, int height, int blend,cudaStream_t stream);
+    bool image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t* In, size_t pitchIn,int width, int height,cudaStream_t stream);
+    bool Gradation(uint8_t *output,size_t pitch_output,uint8_t *input,size_t pitch_input,int height,int width,cudaStream_t stream);
+};
 
 #endif // CUDA_IMAGEPROCESS_H

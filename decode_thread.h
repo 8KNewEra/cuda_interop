@@ -43,7 +43,7 @@ public:
 signals:
     void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,int slider);
     void send_audio(QByteArray pcm);
-    void send_video_info();
+    void send_slider_info();
     void finished();
     void decode_end();
     void decode_error(QString error);
@@ -82,12 +82,11 @@ protected:
     bool video_reverse_flag;
     bool thread_stop_flag =false;
     int slider_No;
-    int a=0;
     QMutex mutex;
 
     //FFmpeg関連
-    const char* input_filename;
     QByteArray File_byteArray;
+    const char* input_filename;
     std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
@@ -105,7 +104,6 @@ protected:
     size_t pitch_rgba;
     cudaStream_t stream;
     cudaEvent_t events;
-
 
     //CPUデコード用
     uint8_t *d_y=nullptr,*d_u=nullptr,*d_v=nullptr;
