@@ -256,13 +256,11 @@ void MainWindow::Open_Video_File()
     if (!filePath.isEmpty()) {
         qDebug() << "選択されたファイル:" << filePath;
 
-        input_filename = filePath;
-
         if(run_decode_thread){
             stop_decode_thread();
         }
 
-        start_decode_thread();
+        start_decode_thread(filePath);
 
     } else {
         qDebug() << "ファイル選択がキャンセルされました";
@@ -358,9 +356,14 @@ void MainWindow::slider_set_range(){
 }
 
 //デコードスレッド開始
-void MainWindow::start_decode_thread() {
+void MainWindow::start_decode_thread(QString filePath) {
     if (!run_decode_thread) {
-        decodestream = new cpudecode(input_filename,audio_mode);
+        if(canUseGpuDecode(filePath)){
+            decodestream = new nvgpudecode(filePath,audio_mode);
+        }else{
+            decodestream = new cpudecode(filePath,audio_mode);
+        }
+
         decode__thread = new QThread;
 
         decodestream->moveToThread(decode__thread);
@@ -418,6 +421,45 @@ void MainWindow::start_decode_thread() {
 
         decode__thread->start();
     }
+}
+
+bool MainWindow::canUseGpuDecode(QString filename)
+{
+    QByteArray File_byteArray = filename.toUtf8();
+    const char* input_filename = File_byteArray.constData();
+    AVFormatContext* fmt = nullptr;
+
+    if (avformat_open_input(&fmt, input_filename, nullptr, nullptr) < 0)
+        return false;
+
+    if (avformat_find_stream_info(fmt, nullptr) < 0) {
+        avformat_close_input(&fmt);
+        return false;
+    }
+
+    int video_stream = -1;
+    for (unsigned i = 0; i < fmt->nb_streams; i++) {
+        if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            video_stream = i;
+            break;
+        }
+    }
+
+    if (video_stream < 0) {
+        avformat_close_input(&fmt);
+        return false;
+    }
+
+    AVCodecParameters* par = fmt->streams[video_stream]->codecpar;
+    if (par->codec_id == AV_CODEC_ID_H264)
+        return (par->width <= 4096 && par->height <= 4096);
+
+    if (par->codec_id == AV_CODEC_ID_HEVC || par->codec_id == AV_CODEC_ID_AV1)
+        return (par->width <= 8192 && par->height <= 8192);
+
+    avformat_close_input(&fmt);
+
+    return false;
 }
 
 //デコードスレッド停止

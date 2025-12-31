@@ -61,8 +61,9 @@ private:
     bool isFullScreenMode = false;
 
     //ライブスレッド動作
-    void start_decode_thread();
+    void start_decode_thread(QString filePath);
     void stop_decode_thread();
+    bool canUseGpuDecode(QString filename);
     void set_preview_speed(const QString &text);
     void decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider);
     QThread *decode__thread;
@@ -89,7 +90,6 @@ private:
     //ファイル
     void Open_Video_File();
     void Close_Video_File();
-    QString input_filename;
 
     void encode_set();
     void start_encode();
