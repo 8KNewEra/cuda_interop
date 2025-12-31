@@ -274,6 +274,15 @@ void save_encode::initialized_ffmpeg_hardware_context(int i) {
 }
 
 void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
+    // ------------------------
+    // CUDA NV12変換
+    // ------------------------
+    //ダミーカーネルで完全な同期
+    CUDA_IMG_Proc->Dummy(stream);
+    cudaEventRecord(event, stream);
+    cudaEventSynchronize(event);
+
+    //本カーネル
     if(ve.size()==4){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
@@ -283,19 +292,23 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
             ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
             ve[3].hw_frame->data[0],ve[3].hw_frame->linesize[0], ve[3].hw_frame->data[1],ve[3].hw_frame->linesize[1],
             width_*2,height_*2,width_,height_,stream);
-
-        //CUDAカーネル同期
-        cudaEventRecord(event, stream);
-        cudaEventSynchronize(event);
     }else if(ve.size()==1){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,height_, width_,stream);
-
-        //CUDAカーネル同期
-        cudaEventRecord(event, stream);
-        cudaEventSynchronize(event);
     }
 
+    //本カーネル同期
+    cudaEventRecord(event, stream);
+    cudaEventSynchronize(event);
+
+    //ダミーカーネルで完全な同期
+    CUDA_IMG_Proc->Dummy(stream);
+    cudaEventRecord(event, stream);
+    cudaEventSynchronize(event);
+
+    // ------------------------
+    // エンコード
+    // ------------------------
     // 1. 全 encoder に frame を送る
     for (int i = 0; i < ve.size(); i++) {
         ve[i].hw_frame->pts = frame_index * pts_step;

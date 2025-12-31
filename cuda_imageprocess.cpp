@@ -2,6 +2,7 @@
 
 //CUDAカーネル関数
 extern "C"{
+    __global__ void dummy_kernel();
     __global__ void nv12_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
     __global__ void nv12_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
     __global__ void yuv420p_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
@@ -37,6 +38,28 @@ CUDA_ImageProcess::CUDA_ImageProcess(){
 
 CUDA_ImageProcess::~CUDA_ImageProcess(){
     qDebug() << "CUDA_ImageProces: Destructor called";
+}
+
+//ダミーカーネル、処理の完了を確実に待つ
+bool CUDA_ImageProcess::Dummy(cudaStream_t stream){
+    dim3 block(1);
+    dim3 grid(1);
+
+    cudaError_t err = cudaLaunchKernel((const void*)dummy_kernel,
+                                       grid, block, 0, 0, stream);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
 }
 
 //NV12→RGBA

@@ -438,13 +438,18 @@ void nvgpudecode::get_decode_image() {
                 if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
                     got_frame[i] = true;
                     got_count++;
-                    break;  // 映像が取れたら終了
                 }
             }
         }
     }
-    // 念のため
+
+    // CUDAの処理,NVDEC完了待ち
+    cudaEventRecord(events, stream);
+    cudaEventSynchronize(events);
+
     CUDA_RGBA_to_merge();
+
+    // パケット開放
     av_packet_unref(pkt);
 }
 
@@ -514,26 +519,22 @@ void nvgpudecode::get_decode_audio(AVPacket* pkt){
 
 //CUDAで映像フレームを処理
 void nvgpudecode::CUDA_RGBA_to_merge(){
+    //ダミーカーネルで完全な同期
+    CUDA_IMG_Proc->Dummy(stream);
+    cudaEventRecord(events, stream);
+    cudaEventSynchronize(events);
+
+    //本カーネル
     if (vd.size() == 2) {
 
-    }
-    else if (vd.size() == 4) {
+    }else if (vd.size() == 4) {
+        //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x4_to_rgba_merge(
             vd[0].Frame->data[0],vd[0].Frame->linesize[0], vd[0].Frame->data[1],vd[0].Frame->linesize[1],
             vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
             vd[2].Frame->data[0],vd[2].Frame->linesize[0], vd[2].Frame->data[1],vd[2].Frame->linesize[1],
             vd[3].Frame->data[0],vd[3].Frame->linesize[0], vd[3].Frame->data[1],vd[3].Frame->linesize[1],
             d_rgba, pitch_rgba,VideoInfo.width*2,VideoInfo.height*2,VideoInfo.width,VideoInfo.height);
-
-        //CUDAカーネル同期
-        cudaEventRecord(events, stream);
-        cudaEventSynchronize(events);
-
-        //フレーム番号取得
-        VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = VideoInfo.current_frameNo;
-
-        emit send_decode_image(d_rgba, pitch_rgba,VideoInfo.current_frameNo);
     }else{
         // NV12 → RGBA
         if(VideoInfo.bitdepth == 8){
@@ -561,15 +562,20 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
                 stream
                 );
         }
-
-        //CUDAカーネル同期
-        cudaEventRecord(events, stream);
-        cudaEventSynchronize(events);
-
-        //フレーム番号取得
-        VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = VideoInfo.current_frameNo;
-
-        emit send_decode_image(d_rgba,  pitch_rgba, VideoInfo.current_frameNo);
     }
+
+    //本カーネル同期
+    cudaEventRecord(events, stream);
+    cudaEventSynchronize(events);
+
+    //ダミーカーネルで完全な同期
+    CUDA_IMG_Proc->Dummy(stream);
+    cudaEventRecord(events, stream);
+    cudaEventSynchronize(events);
+
+    //フレーム番号取得
+    VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+    slider_No = VideoInfo.current_frameNo;
+
+    emit send_decode_image(d_rgba,  pitch_rgba, VideoInfo.current_frameNo);
 }
