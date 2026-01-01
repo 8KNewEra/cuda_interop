@@ -2,6 +2,8 @@
 #include "qdir.h"
 #include <QDebug>
 
+#define Rerease 0
+
 GLWidget::GLWidget(QWindow *parent)
     :  QOpenGLWindow(NoPartialUpdate, parent),
     cudaResource1(nullptr),
@@ -123,12 +125,21 @@ void GLWidget::initializeGL()
     glBindVertexArray(0);
 
     // === シェーダ読み込み ===
+#if Rerease
+    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "shaders/sobel.vert");
+    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "shaders/sobel.frag");
+    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "shaders/gaussian.vert");
+    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "shaders/gaussian.frag");
+    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "shaders/averaging.vert");
+    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "shaders/averaging.frag");
+#else
     Sobel_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../shaders/sobel.vert");
     Sobel_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../shaders/sobel.frag");
     Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../shaders/gaussian.vert");
     Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../shaders/gaussian.frag");
     Averaging_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../shaders/averaging.vert");
     Averaging_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../shaders/averaging.frag");
+#endif
 
     //シェーダーリンク
     if (!Sobel_program.link()) {
@@ -610,14 +621,13 @@ void GLWidget::initCudaMalloc(int width, int height)
 }
 
 //CUDAからOpenGLへ転送
-void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int a) {
+void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No) {
     // QElapsedTimer timer;
     // timer.start();
 
-    FrameNo = a;
+    FrameNo = No;
     //initialized完了チェック
     if (!initialize_completed_flag) {
-        emit decode_please();
         return;
     };
 
@@ -631,14 +641,12 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int a) {
         width_=VideoInfo.width*VideoInfo.width_scale;
         height_=VideoInfo.height*VideoInfo.height_scale;
         GLresize();
-        emit decode_please();
         return;
     }
 
     //入力データチェック
     if (!d_rgba) {
         qDebug() << "入力データがNULLです";
-        emit decode_please();
         return;
     }
 
@@ -648,7 +656,6 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int a) {
     err = cudaGraphicsMapResources(1, &cudaResource1, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
         return; // エラーが発生したら処理を中断
     }
 
@@ -656,7 +663,6 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int a) {
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
         cudaGraphicsUnmapResources(1, &cudaResource1, 0); // マップ解除を試みる
-        emit decode_please();
         return; // エラーが発生したら処理を中断
     }
 
@@ -674,13 +680,12 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int a) {
             );
     } else {
         qDebug() << "Invalid pitch: widthBytes > pitch!";
-        emit decode_please();
+        return;
     }
 
     err = cudaGraphicsUnmapResources(1, &cudaResource1, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
         return; // エラーが発生したら処理を中断
     }
 
@@ -695,7 +700,6 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int a) {
 void GLWidget::downloadToGLTexture_and_Encode() {
     if (!cudaResource2) {
         qDebug() << "cudaResource2 is nullptr, can't map";
-        emit decode_please();
         return;
     }
 
@@ -705,7 +709,6 @@ void GLWidget::downloadToGLTexture_and_Encode() {
     err = cudaGraphicsMapResources(1, &cudaResource2, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
         return;
     }
 
@@ -713,7 +716,6 @@ void GLWidget::downloadToGLTexture_and_Encode() {
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
         cudaGraphicsUnmapResources(1, &cudaResource2, 0); // マップ解除を試みる
-        emit decode_please();
         return; // エラーが発生したら処理を中断
     }
 
@@ -723,7 +725,7 @@ void GLWidget::downloadToGLTexture_and_Encode() {
         cudaMemcpy2DFromArray(d_rgba, pitch_rgba, array, 0, 0, widthBytes, height_, cudaMemcpyDeviceToDevice);
     } else {
         qDebug() << "Invalid pitch: widthBytes > pitch!";
-        emit decode_please();
+        return;
     }
 
 
@@ -731,7 +733,6 @@ void GLWidget::downloadToGLTexture_and_Encode() {
     err = cudaGraphicsUnmapResources(1, &cudaResource2, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        emit decode_please();
         return;
     }
 
@@ -827,12 +828,10 @@ void GLWidget::initCudaHist() {
 void GLWidget::histgram_Analysys(){
     if (!cudaResource_hist) {
         qDebug() << "cudaResource_analysis is nullptr, can't map";
-        emit decode_please();
         return;
     }
     if (!cudaResource2) {
         qDebug() << "cudaResource_analysis is nullptr, can't map";
-        emit decode_please();
         return;
     }
 
@@ -1026,6 +1025,7 @@ void GLWidget::getCudaCapabilityForOpenGLGPU()
              << g_prop.major << "." << g_prop.minor;
 }
 
+//FBOコピー
 void GLWidget::copyFBO(GLuint srcFbo, GLuint dstFbo, int width, int height)
 {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, srcFbo);

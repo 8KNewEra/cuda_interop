@@ -130,11 +130,7 @@ void nvgpudecode::initialized_ffmpeg(){
     get_last_frame_pts();
 
     //デコードモード
-    if(vd.size()==1){
-        VideoInfo.decode_mode = "Decode Mode:Non split(tile:1)\n";
-        VideoInfo.width_scale=1;
-        VideoInfo.height_scale=1;
-    }else if(vd.size()==2){
+    if(vd.size()==2){
         VideoInfo.decode_mode = "Decode Mode:split_x2(tile:2×1)\n";
         VideoInfo.width_scale=2;
         VideoInfo.height_scale=1;
@@ -142,6 +138,14 @@ void nvgpudecode::initialized_ffmpeg(){
         VideoInfo.decode_mode = "Decode Mode:split_x4(tile:2×2)\n";
         VideoInfo.width_scale=2;
         VideoInfo.height_scale=2;
+    }else if(vd.size()==8){
+        VideoInfo.decode_mode = "Decode Mode:split_x8(tile:4×2)\n";
+        VideoInfo.width_scale=4;
+        VideoInfo.height_scale=2;
+    }else{
+        VideoInfo.decode_mode = "Decode Mode:Non split(tile:1)\n";
+        VideoInfo.width_scale=1;
+        VideoInfo.height_scale=1;
     }
 
     // ------------------------
@@ -255,7 +259,7 @@ void nvgpudecode::initialized_ffmpeg(){
     slider_No=0;
 }
 
-// デコーダ設定
+//デコーダ設定
 const char*nvgpudecode::selectDecoder(const char* codec_name) {
     const char*codec="";
     if (strcmp(codec_name, "h264") == 0) {
@@ -355,7 +359,7 @@ void nvgpudecode::get_last_frame_pts() {
     }
 }
 
-//複数ストリームフレーム取得
+//映像ストリーム取得
 void nvgpudecode::get_decode_image() {
     AVPacket* pkt = av_packet_alloc();
     std::vector<bool> got_frame(vd.size(), false);
@@ -528,7 +532,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
         CUDA_IMG_Proc->nv12x2_to_rgba_merge(
             vd[0].Frame->data[0],vd[0].Frame->linesize[0], vd[0].Frame->data[1],vd[0].Frame->linesize[1],
             vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
-            d_rgba, pitch_rgba,VideoInfo.width*2,VideoInfo.height,VideoInfo.width,VideoInfo.height,stream);
+            d_rgba, pitch_rgba,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
     }else if (vd.size() == 4) {
         //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x4_to_rgba_merge(
@@ -536,7 +540,19 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
             vd[2].Frame->data[0],vd[2].Frame->linesize[0], vd[2].Frame->data[1],vd[2].Frame->linesize[1],
             vd[3].Frame->data[0],vd[3].Frame->linesize[0], vd[3].Frame->data[1],vd[3].Frame->linesize[1],
-            d_rgba, pitch_rgba,VideoInfo.width*2,VideoInfo.height*2,VideoInfo.width,VideoInfo.height,stream);
+            d_rgba, pitch_rgba,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
+    }else if(vd.size() == 8){
+        //NV12→RGBA→結合
+        CUDA_IMG_Proc->nv12x8_to_rgba_merge(
+            vd[0].Frame->data[0],vd[0].Frame->linesize[0], vd[0].Frame->data[1],vd[0].Frame->linesize[1],
+            vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
+            vd[2].Frame->data[0],vd[2].Frame->linesize[0], vd[2].Frame->data[1],vd[2].Frame->linesize[1],
+            vd[3].Frame->data[0],vd[3].Frame->linesize[0], vd[3].Frame->data[1],vd[3].Frame->linesize[1],
+            vd[4].Frame->data[0],vd[4].Frame->linesize[0], vd[4].Frame->data[1],vd[4].Frame->linesize[1],
+            vd[5].Frame->data[0],vd[5].Frame->linesize[0], vd[5].Frame->data[1],vd[5].Frame->linesize[1],
+            vd[6].Frame->data[0],vd[6].Frame->linesize[0], vd[6].Frame->data[1],vd[6].Frame->linesize[1],
+            vd[7].Frame->data[0],vd[7].Frame->linesize[0], vd[7].Frame->data[1],vd[7].Frame->linesize[1],
+            d_rgba, pitch_rgba,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
     }else{
         // NV12 → RGBA
         if(VideoInfo.bitdepth == 8){
@@ -547,8 +563,8 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
                 vd[0].Frame->linesize[0],
                 vd[0].Frame->data[1],
                 vd[0].Frame->linesize[1],
-                VideoInfo.width,
-                VideoInfo.height,
+                VideoInfo.width*VideoInfo.width_scale,
+                VideoInfo.height*VideoInfo.height_scale,
                 stream
                 );
         }else if(VideoInfo.bitdepth == 10){
@@ -559,8 +575,8 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
                 vd[0].Frame->linesize[0],
                 vd[0].Frame->data[1],
                 vd[0].Frame->linesize[1],
-                VideoInfo.width,
-                VideoInfo.height,
+                VideoInfo.width*VideoInfo.width_scale,
+                VideoInfo.height*VideoInfo.height_scale,
                 stream
                 );
         }

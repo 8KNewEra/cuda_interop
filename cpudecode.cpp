@@ -253,7 +253,7 @@ void cpudecode::initialized_ffmpeg(){
     slider_No=0;
 }
 
-// デコーダ設定
+//デコーダ設定
 const char*cpudecode::selectDecoder(const char* codec_name) {
     const char*codec="";
     if (strcmp(codec_name, "h264") == 0) {
@@ -269,7 +269,6 @@ const char*cpudecode::selectDecoder(const char* codec_name) {
     VideoInfo.Codec=codec;
     return codec;
 }
-
 
 //フレームレートを取得する関数
 double cpudecode::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index) {
@@ -354,7 +353,7 @@ void cpudecode::get_last_frame_pts() {
     }
 }
 
-//複数ストリームフレーム取得
+//映像ストリーム取得
 void cpudecode::get_decode_image(){
     AVPacket* pkt = av_packet_alloc();
 
