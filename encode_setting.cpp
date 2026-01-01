@@ -84,19 +84,22 @@ encode_setting::encode_setting(QWidget *parent)
     //タイルエンコードプロファイル
     {
         QStringList tile_items;
-        tile_items <<"タイル数:1"<<"タイル数:2"<<"タイル数:4"<<"タイル数:8";
+        tile_items <<"stream_x1"<<"stream_x2"<<"stream_x4"<<"stream_x8";
         ui->comboBox_tile->addItems(tile_items);
         QObject::connect(ui->comboBox_tile, &QComboBox::currentIndexChanged, this, [&](int index) {
             settings.encode_tile = settingmap[index].encode_tile;
+            tile_split_exchange();
 
-            if((settings.encode_tile==1&&VideoInfo.width*VideoInfo.width_scale>4096)||(settings.encode_tile==1&&VideoInfo.height*VideoInfo.height_scale>4096)){
+            if(VideoInfo.width*VideoInfo.width_scale/settings.width_tile>4096||VideoInfo.height*VideoInfo.height_scale/settings.height_tile>4096){
                 qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
                 if(ui->comboBox_codec->currentIndex()==0){
                     ui->comboBox_codec->setCurrentIndex(1);
                 }
-            }else if((settings.encode_tile==4&&VideoInfo.width*VideoInfo.width_scale<=8192)||(settings.encode_tile==4&&VideoInfo.height*VideoInfo.height_scale<=8192)){
+            }else{
                 qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,false);
             }
+
+            combo_index_control2();
         }, Qt::QueuedConnection);
     }
 
@@ -412,43 +415,31 @@ void encode_setting::read_txt(){
                 settings.Save_Path = line.mid(line.indexOf(':') + 1).remove('"').toStdString();
             }else if (line.startsWith("Codec:")){
                 if(g_prop.major > 8 || (g_prop.major == 8 && g_prop.minor >= 9)){
-                    settings.Codec = line.split(':')[1].remove('"').toStdString();
                     combo_index[0]=foundIndex("codec",line.split(':')[1].remove('"'));
                 }else{
                     if(line.split(':')[1].remove('"').toStdString()=="av1_nvenc"){
-                        settings.Codec = "hevc_nvenc";
                         combo_index[0]=foundIndex("codec","hevc_nvenc");
                     }else{
-                        settings.Codec = line.split(':')[1].remove('"').toStdString();
                         combo_index[0]=foundIndex("codec",line.split(':')[1].remove('"'));
                     }
                 }
             }else if (line.startsWith("save_fps:")){
-                settings.save_fps = line.split(':')[1].toInt();
                 combo_index[1]=foundIndex("fps",line.split(':')[1].remove('"'));
             }else if (line.startsWith("split_encode_mode:")){
-                settings.split_encode_mode = line.split(':')[1].toInt();
                 combo_index[2]=foundIndex("split_encode_mode",line.split(':')[1].remove('"'));
             }else if (line.startsWith("b_frames:")){
-                settings.b_frames = line.split(':')[1].toInt();
                 combo_index[3]=foundIndex("b_frames",line.split(':')[1].remove('"'));
             }else if (line.startsWith("preset:")){
-                settings.preset = line.split(':')[1].toInt();
                 combo_index[4]=foundIndex("preset",line.split(':')[1].remove('"'));
             }else if (line.startsWith("tune:")){
-                settings.tune = line.split(':')[1].toInt();
                 combo_index[5]=foundIndex("tune",line.split(':')[1].remove('"'));
             }else if (line.startsWith("rc_mode:")){
-                settings.rc_mode = line.split(':')[1].toInt();
                 combo_index[6]=foundIndex("rc_mode",line.split(':')[1].remove('"'));
             }else if (line.startsWith("pass_mode:")){
-                settings.pass_mode = line.split(':')[1].toInt();
                 combo_index[7]=foundIndex("pass_mode",line.split(':')[1].remove('"'));
             }else if (line.startsWith("gop_size:")){
-                settings.gop_size = line.split(':')[1].toInt();
                 combo_index[8]=foundIndex("gop_size",line.split(':')[1].remove('"'));
             }else if (line.startsWith("encode_tile:")){
-                settings.encode_tile = line.split(':')[1].toInt();
                 combo_index[9]=foundIndex("encode_tile",line.split(':')[1].remove('"'));
             }else if (line.startsWith("allow_overwrite:")){
                 allow_overwrite = line.split(':')[1].remove('"').trimmed().compare("true", Qt::CaseInsensitive) == 0;
@@ -594,22 +585,7 @@ void encode_setting::slider(int min,int max){
     ui->encode_progressBar->setRange(min, max);
     ui->encode_progressBar->setValue(min);
 
-    //H264チェック
-    //タイル数チェック
-    if((VideoInfo.width*VideoInfo.width_scale>8192||VideoInfo.height*VideoInfo.height_scale>8192)&&ui->comboBox_codec->currentIndex()==4){
-        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(0,true);
-        if(ui->comboBox_tile->currentIndex()==0){
-            ui->comboBox_tile->setCurrentIndex(1);
-        }
-
-        qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
-        if(ui->comboBox_codec->currentIndex()==0){
-            ui->comboBox_codec->setCurrentIndex(1);
-        }
-    }else{
-        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(0,false);
-        qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,false);
-    }
+    tile_index_control();
 }
 
 //進捗バーを動かす
@@ -624,6 +600,9 @@ void encode_setting::combo_index_control2(){
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,1,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),4,4,true,true);
+    }else if(settings.encode_tile>1){
+        combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
+        combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),1,7,true,true);
     }else if(settings.Codec == "h264_nvenc"){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),5,7,true,true);
@@ -657,5 +636,65 @@ void encode_setting::combo_index_control(QComboBox* comboBox,QListView* view, in
 
             // qDebug()<<currentIndex<<":"<<ini_index<<":"<<target_index<<":"<<change_index;
         }
+    }
+}
+
+void encode_setting::tile_index_control(){
+    //H264チェック
+    if(VideoInfo.width*VideoInfo.width_scale/settings.width_tile>4096||VideoInfo.height*VideoInfo.height_scale/settings.height_tile>4096){
+        qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
+        ui->comboBox_codec->setCurrentIndex(1);
+    }else{
+        qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,false);
+    }
+
+    //タイル数チェック
+    qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(0,false);
+    qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(1,false);
+    qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(2,false);
+    qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(3,false);
+    //2×2
+    if(VideoInfo.width*VideoInfo.width_scale/2>8192||VideoInfo.height*VideoInfo.height_scale/2>8192){
+        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(0,true);
+        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(1,true);
+        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(2,true);
+        if(ui->comboBox_tile->currentIndex()<3){
+            ui->comboBox_tile->setCurrentIndex(3);
+        }
+    }
+
+    //2×1
+    if(VideoInfo.width*VideoInfo.width_scale/2>8192||VideoInfo.height*VideoInfo.height_scale>8192){
+        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(0,true);
+        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(1,true);
+        if(ui->comboBox_tile->currentIndex()<2){
+            ui->comboBox_tile->setCurrentIndex(2);
+        }
+    }
+
+    //1×1
+    if(VideoInfo.width*VideoInfo.width_scale>8192||VideoInfo.height*VideoInfo.height_scale>8192){
+        qobject_cast<QListView*>(ui->comboBox_tile->view())->setRowHidden(0,true);
+        if(ui->comboBox_tile->currentIndex()<1){
+            ui->comboBox_tile->setCurrentIndex(1);
+        }
+    }
+}
+
+//タイル数から縦横分割数を変換
+void encode_setting::tile_split_exchange(){
+    int max_size = settings.encode_tile;
+    if(max_size==2){
+        settings.width_tile = 2;
+        settings.height_tile  = 1;
+    }else if(max_size==4){
+        settings.width_tile = 2;
+        settings.height_tile  = 2;
+    }else if(max_size==8){
+        settings.width_tile = 4;
+        settings.height_tile  = 2;
+    }else{
+        settings.width_tile = 1;
+        settings.height_tile  = 1;
     }
 }

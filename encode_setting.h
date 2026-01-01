@@ -47,7 +47,9 @@ private:
     void extracted(QListView *&view, int &target_index, bool &flag);
     void combo_index_control(QComboBox* comboBox,QListView *view, int ini_index,int target_index, bool flag,bool index_change_flag);
     void combo_index_control2();
+    void tile_index_control();
     QString file_check(const QString &filePath);
+    void tile_split_exchange();
     struct SettingEntry {
         QString codec;
         int framerate_items;

@@ -2,6 +2,8 @@
 #include "qdebug.h"
 
 save_encode::save_encode(int h,int w) {
+    width_=w;
+    height_=h;
     frame_index = 0;
     int ret = 0;
 
@@ -15,26 +17,11 @@ save_encode::save_encode(int h,int w) {
     if (ret < 0 || !fmt_ctx) throw std::runtime_error("Failed to allocate format context");
 
     // ② Encoder / Stream を複数作る
-    int max_size = encode_settings.encode_tile;
-    if(max_size==1){
-        height_ = h;
-        width_  = w;
-    }else if(max_size==2){
-        height_ = h;
-        width_  = w*1/2;
-    }else if(max_size==4){
-        height_ = h*1/2;
-        width_  = w*1/2;
-    }else if(max_size==8){
-        height_ = h*1/2;
-        width_  = w*1/4;
-    }
-
-    for (int i = 0; i < max_size; i++) {
+    for (int i = 0; i < encode_settings.encode_tile; i++) {
         ve.emplace_back();
 
         initialized_ffmpeg_hardware_context(i);
-        initialized_ffmpeg_codec_context(i,max_size);
+        initialized_ffmpeg_codec_context(i,encode_settings.encode_tile);
 
         // ★ stream 作成だけ
         ve[i].stream = avformat_new_stream(fmt_ctx, nullptr);
@@ -72,37 +59,29 @@ save_encode::save_encode(int h,int w) {
 }
 
 save_encode::~save_encode() {
-    // ---- packet 回収（即 write しない）----
-    std::vector<QueuedPacket> pkt_queue;
     for (int i = 0; i < ve.size(); i++) {
+        // flush
         avcodec_send_frame(ve[i].codec_ctx, nullptr);
-
         while (true) {
             AVPacket* pkt = av_packet_alloc();
             int ret = avcodec_receive_packet(ve[i].codec_ctx, pkt);
-            if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) {
+
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
                 av_packet_free(&pkt);
                 break;
             }
 
-            av_packet_rescale_ts(pkt,
-                                 ve[i].codec_ctx->time_base,
-                                 ve[i].stream->time_base);
+            av_packet_rescale_ts(
+                pkt,
+                ve[i].codec_ctx->time_base,
+                ve[i].stream->time_base
+                );
+
             pkt->stream_index = ve[i].stream->index;
-            pkt_queue.push_back({ pkt, pkt->stream_index });
+            // ★ ソートしない ★
+            av_interleaved_write_frame(fmt_ctx, pkt);
+            av_packet_free(&pkt);
         }
-    }
-
-    // ---- PTS 順に完全整列 ----
-    std::sort(pkt_queue.begin(), pkt_queue.end(),
-              [](const QueuedPacket& a, const QueuedPacket& b) {
-                  return a.pkt->pts < b.pkt->pts;
-              });
-
-    // ---- mux（順序保証）----
-    for (auto& qp : pkt_queue) {
-        av_interleaved_write_frame(fmt_ctx, qp.pkt);
-        av_packet_free(&qp.pkt);
     }
 
     // ---- 各メモリ解放 ----
@@ -183,8 +162,8 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
         fprintf(stderr, "No suitable hardware pixel format found for encoder %s.\n", codec->name);
     }
 
-    ve[i].codec_ctx->width = width_;
-    ve[i].codec_ctx->height = height_;
+    ve[i].codec_ctx->width = width_/encode_settings.width_tile;
+    ve[i].codec_ctx->height = height_/encode_settings.height_tile;
     ve[i].codec_ctx->pix_fmt = hw_pix_fmt;
 
     fps = encode_settings.save_fps;
@@ -265,16 +244,16 @@ void save_encode::initialized_ffmpeg_hardware_context(int i) {
     AVHWFramesContext* frames_ctx = (AVHWFramesContext*)(ve[i].hw_frames_ctx->data);
     frames_ctx->format = AV_PIX_FMT_CUDA;
     frames_ctx->sw_format = AV_PIX_FMT_NV12;
-    frames_ctx->width = width_;
-    frames_ctx->height = height_;
+    frames_ctx->width = width_/encode_settings.width_tile;
+    frames_ctx->height = height_/encode_settings.height_tile;
     frames_ctx->initial_pool_size = 10;
     ret = av_hwframe_ctx_init(ve[i].hw_frames_ctx);
     if (ret < 0) throw std::runtime_error("Failed to init frames_ctx");
 
     ve[i].hw_frame = av_frame_alloc();
     ve[i].hw_frame->format = AV_PIX_FMT_CUDA;
-    ve[i].hw_frame->width = width_;
-    ve[i].hw_frame->height = height_;
+    ve[i].hw_frame->width = width_/encode_settings.width_tile;
+    ve[i].hw_frame->height = height_/encode_settings.height_tile;
     ret = av_hwframe_get_buffer(ve[i].hw_frames_ctx, ve[i].hw_frame, 0);
     if (ret < 0) throw std::runtime_error("Failed to alloc hw_frame");
 }
@@ -297,7 +276,7 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
             d_rgba,pitch_rgba,
             ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
             ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
-            width_*2,height_*1,width_,height_,stream);
+            width_,height_,width_/2,height_,stream);
     }else if(ve.size()==4){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
@@ -306,7 +285,7 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
             ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
             ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
             ve[3].hw_frame->data[0],ve[3].hw_frame->linesize[0], ve[3].hw_frame->data[1],ve[3].hw_frame->linesize[1],
-            width_*2,height_*2,width_,height_,stream);
+            width_,height_,width_/2,height_/2,stream);
     }else if(ve.size()==8){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->rgba_to_nv12x8_flip_split(
@@ -319,7 +298,7 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
             ve[5].hw_frame->data[0],ve[5].hw_frame->linesize[0], ve[5].hw_frame->data[1],ve[5].hw_frame->linesize[1],
             ve[6].hw_frame->data[0],ve[6].hw_frame->linesize[0], ve[6].hw_frame->data[1],ve[6].hw_frame->linesize[1],
             ve[7].hw_frame->data[0],ve[7].hw_frame->linesize[0], ve[7].hw_frame->data[1],ve[7].hw_frame->linesize[1],
-            width_*4,height_*2,width_,height_,stream);
+            width_,height_,width_/4,height_/2,stream);
     }
 
     //本カーネル同期
@@ -340,8 +319,7 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
         avcodec_send_frame(ve[i].codec_ctx, ve[i].hw_frame);
     }
 
-    // ---- packet 回収（即 write しない）----
-    std::vector<QueuedPacket> pkt_queue;
+    // ---- mux（順序保証）----
     for (int i = 0; i < ve.size(); i++) {
         while (true) {
             AVPacket* pkt = av_packet_alloc();
@@ -359,28 +337,10 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
                 );
 
             pkt->stream_index = ve[i].stream->index;
-            pkt_queue.push_back({ pkt, pkt->stream_index });
+
+            av_interleaved_write_frame(fmt_ctx, pkt);
+            av_packet_free(&pkt);
         }
-    }
-
-    // ---- PTS 順に完全整列 ----
-    std::sort(pkt_queue.begin(), pkt_queue.end(),
-              [&](const QueuedPacket& a, const QueuedPacket& b) {
-                  AVStream* sa = fmt_ctx->streams[a.stream_index];
-                  AVStream* sb = fmt_ctx->streams[b.stream_index];
-
-                  int c = av_compare_ts(a.pkt->dts, sa->time_base,
-                                        b.pkt->dts, sb->time_base);
-                  if (c != 0) return c < 0;
-
-                  return av_compare_ts(a.pkt->pts, sa->time_base,
-                                       b.pkt->pts, sb->time_base) < 0;
-              });
-
-    // ---- mux（順序保証）----
-    for (auto& qp : pkt_queue) {
-        av_interleaved_write_frame(fmt_ctx, qp.pkt);
-        av_packet_free(&qp.pkt);
     }
 
     frame_index+=1;

@@ -19,6 +19,8 @@ struct EncodeSettings {
     std::string split_encode_mode{};
     std::string pass_mode{};
     int encode_tile = 1;
+    int width_tile = 1;
+    int height_tile = 1;
 
     int target_bit_rate{};
     int max_bit_rate{};

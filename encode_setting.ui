@@ -267,9 +267,9 @@
    <widget class="QLabel" name="label_7">
     <property name="geometry">
      <rect>
-      <x>266</x>
+      <x>246</x>
       <y>67</y>
-      <width>71</width>
+      <width>111</width>
       <height>20</height>
      </rect>
     </property>
@@ -279,7 +279,7 @@
      </font>
     </property>
     <property name="text">
-     <string>エンコードタイル数</string>
+     <string>Tiled Multi-Stream</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignCenter</set>
