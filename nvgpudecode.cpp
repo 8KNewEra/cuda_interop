@@ -501,7 +501,7 @@ void nvgpudecode::get_decode_audio(AVPacket* pkt){
 
             int bytes = samples * 2 * av_get_bytes_per_sample(out_format);
 
-            if(!encode_flag){
+            if(encode_state==STATE_NOT_ENCODE){
                 if (audio_mode) {
                     if (audioOutput && bytes > 0){
                         audioOutput->write((char*)audio_buffer, bytes);

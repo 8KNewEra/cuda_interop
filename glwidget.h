@@ -60,7 +60,6 @@ private:
     void downloadToGLTexture_and_Encode();
     std::vector<int> make_nice_y_labels(int max_value);
     void getCudaCapabilityForOpenGLGPU();
-    void copyFBO(GLuint srcFbo, GLuint dstFbo, int width, int height);
 
     //CUDA Interop
     cudaGraphicsResource* cudaResource1;
@@ -74,13 +73,11 @@ private:
     GLuint inputTextureID;  // ← 入力用
     GLuint fboTextureID;    // ← 出力先（FBOバインド用）
     GLuint tempTextureID;
-    GLuint backupTextureID;
     GLuint vbo_hist = 0;
     GLuint fbo = 0;
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint tempfbo = 0;
-    GLuint backupfbo = 0;
     QPainter painter;
 
     //シェーダ―
@@ -109,6 +106,7 @@ private:
 
     //エンコード関連
     int encode_state=STATE_NOT_ENCODE;
+    int prev_encode_state=STATE_NOT_ENCODE;
     save_encode* save_encoder=nullptr;
     int encode_FrameCount=0;
 

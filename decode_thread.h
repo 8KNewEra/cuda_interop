@@ -37,7 +37,7 @@ class decode_thread : public QObject {
 public:
     explicit decode_thread(QString FilePath,bool audio_m,QObject *parent = nullptr);
     ~decode_thread() override;
-    bool encode_flag=false;
+    int encode_state=STATE_NOT_ENCODE;
     bool audio_mode=false;
 
 signals:

@@ -526,12 +526,12 @@ void MainWindow::start_info_thread(){
 //エンコードウィンドウ起動時
 void MainWindow::encode_set(){
     //ウィンドウ起動フラグを立てる
-    encode_state=STATE_ENCODE_READY;
-    decodestream->encode_flag=true;
+    encode_state = STATE_ENCODE_READY;
     glWidget->encode_mode(encode_state);
+    decodestream->encode_state = encode_state;
 
     //現在のフレーム位置を記憶
-    Now_Frame=slider_No;
+    Now_Frame = slider_No;
 
     //停止/再生速度を最大に、エンコードは最速でやるため
     emit send_manual_pause();
@@ -560,10 +560,11 @@ void MainWindow::start_encode(){
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
 
         //エンコード開始
-        encode_state=STATE_ENCODING;
-        emit decode_please();
+        encode_state = STATE_ENCODING;
+        decodestream->encode_state = encode_state;
         glWidget->encode_mode(encode_state);
-        glWidget->MaxFrame=VideoInfo.max_framesNo;
+        glWidget->MaxFrame = VideoInfo.max_framesNo;
+        emit decode_please();
 
         //FrameNoが0なことを確認
         emit send_manual_slider(0);
@@ -595,6 +596,7 @@ void MainWindow::start_encode(){
             emit send_manual_pause();
 
             encode_state=STATE_ENCODE_READY;
+            decodestream->encode_state = encode_state;
             glWidget->encode_mode(encode_state);
 
             //エンコード設定uiに終了通知と処理時間
@@ -610,11 +612,11 @@ void MainWindow::start_encode(){
 
 //エンコードウィンドウを閉じる
 void MainWindow::finished_encode(){
-    encode_state=STATE_NOT_ENCODE;
-    decodestream->encode_flag=false;
-    slider_No=Now_Frame;
+    encode_state = STATE_NOT_ENCODE;
+    glWidget->encode_mode(encode_state);
+    decodestream->encode_state = encode_state;
+    slider_No = Now_Frame;
     emit decode_please();
     emit send_manual_slider(Now_Frame);
     emit send_manual_resumeplayback();
-    glWidget->encode_mode(encode_state);
 }
