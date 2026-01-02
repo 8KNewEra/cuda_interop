@@ -552,13 +552,14 @@ void nvgpudecode::get_multidecode_image() {
 
             if(got_count==vd.size()){
                 CUDA_RGBA_to_merge();
-                av_packet_unref(pkt);
             }
+            av_packet_unref(pkt);
         }
 
         // ----------- AUDIO PACKET -----------
         if (pkt->stream_index == audio_stream_index) {
             get_decode_audio(pkt);
+            av_packet_unref(pkt);
             continue;  // → 映像パケットを探しに行く
         }
 
@@ -572,6 +573,7 @@ void nvgpudecode::get_multidecode_image() {
                 if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
                     got_frame[i] = true;
                     got_count++;
+                    av_packet_unref(pkt);
                 }
             }
         }
@@ -585,6 +587,7 @@ void nvgpudecode::get_multidecode_image() {
 
     // パケット開放
     av_packet_unref(pkt);
+    av_packet_free(&pkt);
 }
 
 //オーディオ
