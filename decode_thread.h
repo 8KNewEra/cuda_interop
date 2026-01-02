@@ -67,14 +67,15 @@ protected:
     };
 
     //デコード周り
-    virtual void initialized_ffmpeg()=0;
+    virtual bool initialized_ffmpeg()=0;
     virtual const char* selectDecoder(const char* codec_name)=0;
     virtual double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index)=0;
-    virtual void get_last_frame_pts()=0;
+    virtual bool get_last_frame_pts()=0;
     virtual void get_decode_image()=0;
     virtual void get_decode_audio(AVPacket* pkt)=0;
 
     //エラー処理
+    QString Error_String="";
     QString ffmpegErrStr(int errnum);
 
     //制御
@@ -100,10 +101,10 @@ protected:
 
     //CUDA
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
-    uint8_t* d_rgba;
+    uint8_t* d_rgba=nullptr;
     size_t pitch_rgba;
-    cudaStream_t stream;
-    cudaEvent_t events;
+    cudaStream_t stream=nullptr;
+    cudaEvent_t events=nullptr;
 
     //CPUデコード用
     uint8_t *d_y=nullptr,*d_u=nullptr,*d_v=nullptr;

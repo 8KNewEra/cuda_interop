@@ -158,14 +158,17 @@ void decode_thread::set_decode_speed(int speed){
 }
 
 void decode_thread::startProcessing() {
-    initialized_ffmpeg();
-
-    interval_ms = static_cast<double>(1000.0 / 33);
-    connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
-    elapsedTimer.start();
-    timer->start(interval_ms);
-
-    qDebug() << "Live Thread: Start Processing";
+    if(initialized_ffmpeg()){
+        interval_ms = static_cast<double>(1000.0 / 33);
+        connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
+        elapsedTimer.start();
+        timer->start(interval_ms);
+        Error_String="";
+        qDebug() << "Live Thread: Start Processing";
+    }else{
+        emit decode_error(Error_String);
+        emit finished();
+    }
 }
 
 void decode_thread::stopProcessing() {

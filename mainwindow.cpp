@@ -417,14 +417,14 @@ void MainWindow::start_decode_thread(QString filePath) {
                 ui->actionOpenFile->setEnabled(true);
                 ui->info->setEnabled(true);
             }, Qt::QueuedConnection);
-        });
+        },Qt::SingleShotConnection);
 
         //スレッドが開始してから処理を開始
         QObject::connect(decode__thread, &QThread::started, this, [this]() {
             run_decode_thread = true;
             QMetaObject::invokeMethod(decodestream, "startProcessing", Qt::QueuedConnection);
             ui->comboBox_speed->setCurrentIndex(6);
-        }, Qt::AutoConnection);
+        }, Qt::SingleShotConnection);
 
         decode__thread->start();
     }

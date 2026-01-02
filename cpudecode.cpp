@@ -4,45 +4,55 @@
 // mp4 CPUデコード
 // ===============================
 
-//ffmpeg初期化
-void cpudecode::initialized_ffmpeg(){
+// ffmpeg初期化（CPU）
+bool cpudecode::initialized_ffmpeg()
+{
     int ret;
 
+    // ------------------------
     // ファイルを開く
+    // ------------------------
     ret = avformat_open_input(&fmt_ctx, input_filename, nullptr, nullptr);
     if (ret < 0) {
-        QString error = "Could not open input file: " + ffmpegErrStr(ret);
-        qDebug() << error;
-        emit decode_error(error);
-        return;
+        Error_String = QString("avformat_open_input failed: %1")
+        .arg(ffmpegErrStr(ret));
+        return false;
     }
 
+    // ------------------------
     // ストリーム情報取得
+    // ------------------------
     ret = avformat_find_stream_info(fmt_ctx, nullptr);
     if (ret < 0) {
-        QString error = "Failed to retrieve input stream information: " + ffmpegErrStr(ret);
-        qDebug() << error;
-        emit decode_error(error);
-        return;
+        Error_String = QString("avformat_find_stream_info failed: %1")
+        .arg(ffmpegErrStr(ret));
+        return false;
     }
 
+    // ------------------------
     // 映像ストリーム検索
-    int video_stream_index=-1;
+    // ------------------------
+    int video_stream_index = -1;
     for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
         if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            video_stream_index=i;
+            video_stream_index = i;
+            break;
         }
     }
 
-    if (video_stream_index==-1) {
-        emit decode_error("No video streams found");
-        return;
+    if (video_stream_index == -1) {
+        Error_String = "No video streams found";
+        return false;
     }
 
+    // ------------------------
     // bit depth 判定（CPU）
-    AVCodecParameters* par =fmt_ctx->streams[video_stream_index]->codecpar;
+    // ------------------------
+    AVCodecParameters* par = fmt_ctx->streams[video_stream_index]->codecpar;
+
     if (par->codec_id == AV_CODEC_ID_HEVC ||
-        par->codec_id == AV_CODEC_ID_H264) {
+        par->codec_id == AV_CODEC_ID_H264 ||
+        par->codec_id == AV_CODEC_ID_AV1) {
 
         if (par->format == AV_PIX_FMT_YUV420P10 ||
             par->format == AV_PIX_FMT_P010) {
@@ -59,53 +69,64 @@ void cpudecode::initialized_ffmpeg(){
     // ------------------------
     {
         VideoDecorder dec;
-
         dec.stream_index = video_stream_index;
-        dec.Frame = av_frame_alloc();   // ← CPU frame として使用
 
-        // codec ID から CPU decoder を取得
+        dec.Frame = av_frame_alloc();
+        if (!dec.Frame) {
+            Error_String = "av_frame_alloc failed";
+            return false;
+        }
+
         AVCodecParameters* codecpar =
-                fmt_ctx->streams[video_stream_index]->codecpar;
+            fmt_ctx->streams[video_stream_index]->codecpar;
 
         const char* codec_name =
-            avcodec_get_name(fmt_ctx->streams[video_stream_index]->codecpar->codec_id);
+            avcodec_get_name(codecpar->codec_id);
 
         const char* decoder_name = selectDecoder(codec_name);
         if (!decoder_name) {
-            emit decode_error("Unsupported codec");
-            return;
+            Error_String = QString("Unsupported codec: %1")
+            .arg(codec_name);
+            return false;
         }
 
         dec.decoder = avcodec_find_decoder_by_name(decoder_name);
         if (!dec.decoder) {
-            emit decode_error("Decoder not found");
-            return;
+            Error_String = QString("Decoder not found: %1")
+            .arg(decoder_name);
+            return false;
         }
 
         dec.codec_ctx = avcodec_alloc_context3(dec.decoder);
-
-        ret = avcodec_parameters_to_context(
-            dec.codec_ctx,
-            codecpar
-        );
-        if (ret < 0) {
-            emit decode_error("Failed to copy codec parameters");
-            return;
+        if (!dec.codec_ctx) {
+            Error_String = "avcodec_alloc_context3 failed";
+            return false;
         }
 
-        // ★ CPU デコードなので hw_device_ctx は設定しない
-        dec.codec_ctx->hw_device_ctx = nullptr;
+        ret = avcodec_parameters_to_context(dec.codec_ctx, codecpar);
+        if (ret < 0) {
+            Error_String = QString("avcodec_parameters_to_context failed: %1")
+            .arg(ffmpegErrStr(ret));
+            return false;
+        }
 
-        //H264の場合は並列化
-        if(fmt_ctx->streams[video_stream_index]->codecpar->codec_id==AV_CODEC_ID_H264){
-            dec.codec_ctx->thread_count = 0;
+        // CPU デコード
+        dec.codec_ctx->hw_device_ctx = nullptr;
+        dec.codec_ctx->pkt_timebase =
+            fmt_ctx->streams[video_stream_index]->time_base;
+
+        // H.264 のみ並列デコード
+        if (codecpar->codec_id == AV_CODEC_ID_H264) {
+            dec.codec_ctx->thread_count = 0;          // auto
             dec.codec_ctx->thread_type  = FF_THREAD_FRAME;
         }
 
         ret = avcodec_open2(dec.codec_ctx, dec.decoder, nullptr);
         if (ret < 0) {
-            emit decode_error("Codec open error");
-            return;
+            Error_String = QString("avcodec_open2 failed (%1): %2")
+            .arg(decoder_name)
+                .arg(ffmpegErrStr(ret));
+            return false;
         }
 
         vd.push_back(dec);
@@ -114,65 +135,98 @@ void cpudecode::initialized_ffmpeg(){
     // ------------------------
     // 動画情報取得
     // ------------------------
-    //フレームレートを取得
     VideoInfo.fps = getFrameRate(fmt_ctx, vd[0].stream_index);
 
-    //1フレームのPTSを計算
-    double time_base_d = av_q2d(fmt_ctx->streams[vd[0].stream_index]->time_base);
-    VideoInfo.pts_per_frame = 1.0 / (VideoInfo.fps * time_base_d);
+    double time_base_d =
+        av_q2d(fmt_ctx->streams[vd[0].stream_index]->time_base);
+
+    VideoInfo.pts_per_frame =
+        1.0 / (VideoInfo.fps * time_base_d);
+
     qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
 
-    //最終フレームptsを取得
-    get_last_frame_pts();
-
-    //デコードモード
-    VideoInfo.decode_mode = "Decode Mode:Non split(tile:1)\n";
-    VideoInfo.width_scale=1;
-    VideoInfo.height_scale=1;
+    if (!get_last_frame_pts()) {
+        Error_String = "get_last_frame_pts failed";
+        return false;
+    }
 
     // ------------------------
-    // CUDA周り設定
+    // デコードモード
     // ------------------------
-    //CUDAメモリ確保
+    VideoInfo.decode_mode   = "Tiled Multi-Stream:stream_x1(tile:1)\n";
+    VideoInfo.width_scale  = 1;
+    VideoInfo.height_scale = 1;
+
+    // ------------------------
+    // CUDA メモリ確保（CPU decode + GPU upload）
+    // ------------------------
     int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
-    y_size = VideoInfo.width * VideoInfo.height * bytesPerSample;
+
+    y_size  = VideoInfo.width * VideoInfo.height * bytesPerSample;
     uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2) * bytesPerSample;
-    cudaMallocPitch(&d_rgba, &pitch_rgba,
-                    VideoInfo.width * 4,
-                    VideoInfo.height);
 
-    cudaMallocPitch(&d_y, &pitch_y,
-                    VideoInfo.width * bytesPerSample,
-                    VideoInfo.height);
+    cudaError_t err;
 
-    cudaMallocPitch(&d_u, &pitch_u,
-                    (VideoInfo.width / 2) * bytesPerSample,
-                    VideoInfo.height / 2);
+    err = cudaMallocPitch(&d_rgba, &pitch_rgba,
+                          VideoInfo.width * 4,
+                          VideoInfo.height);
+    if (err != cudaSuccess) {
+        Error_String = QString("cudaMallocPitch(d_rgba) failed: %1")
+        .arg(QString::fromUtf8(cudaGetErrorString(err)));
+        return false;
+    }
 
-    cudaMallocPitch(&d_v, &pitch_v,
-                    (VideoInfo.width / 2) * bytesPerSample,
-                    VideoInfo.height / 2);
+    err = cudaMallocPitch(&d_y, &pitch_y,
+                          VideoInfo.width * bytesPerSample,
+                          VideoInfo.height);
+    if (err != cudaSuccess) {
+        Error_String = QString("cudaMallocPitch(d_y) failed: %1")
+        .arg(QString::fromUtf8(cudaGetErrorString(err)));
+        return false;
+    }
 
-    //pinned登録
-    cudaHostRegister(vd[0].Frame->data[0], y_size, cudaHostRegisterDefault);
+    err = cudaMallocPitch(&d_u, &pitch_u,
+                          (VideoInfo.width / 2) * bytesPerSample,
+                          VideoInfo.height / 2);
+    if (err != cudaSuccess) {
+        Error_String = QString("cudaMallocPitch(d_u) failed: %1")
+        .arg(QString::fromUtf8(cudaGetErrorString(err)));
+        return false;
+    }
+
+    err = cudaMallocPitch(&d_v, &pitch_v,
+                          (VideoInfo.width / 2) * bytesPerSample,
+                          VideoInfo.height / 2);
+    if (err != cudaSuccess) {
+        Error_String = QString("cudaMallocPitch(d_v) failed: %1")
+        .arg(QString::fromUtf8(cudaGetErrorString(err)));
+        return false;
+    }
+
+    // pinned 登録
+    cudaHostRegister(vd[0].Frame->data[0], y_size,  cudaHostRegisterDefault);
     cudaHostRegister(vd[0].Frame->data[1], uv_size, cudaHostRegisterDefault);
     cudaHostRegister(vd[0].Frame->data[2], uv_size, cudaHostRegisterDefault);
 
-    //CUDA Stream作成
-    cudaStreamCreateWithFlags(
-        &stream,
-        cudaStreamNonBlocking
-        );
+    // CUDA Stream
+    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+    if (err != cudaSuccess) {
+        Error_String = QString("cudaStream failed: %1")
+        .arg(QString::fromUtf8(cudaGetErrorString(err)));
+        return false;
+    }
 
-    //CUDA event 作成
-    cudaEventCreateWithFlags(
-        &events,
-        cudaEventDisableTiming
-        );
+    // CUDA Event
+    cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
+    if (err != cudaSuccess) {
+        Error_String = QString("cudaEvent failed: %1")
+        .arg(QString::fromUtf8(cudaGetErrorString(err)));
+        return false;
+    }
 
-    // -----------------------------
-    // 音声ストリームの探索
-    // -----------------------------
+    // ------------------------
+    // 音声ストリーム探索
+    // ------------------------
     for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
         if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             audio_stream_index = i;
@@ -181,40 +235,41 @@ void cpudecode::initialized_ffmpeg(){
     }
 
     if (audio_stream_index == -1) {
-        qDebug() << "Audio stream not found";
-        VideoInfo.audio=false;
+        VideoInfo.audio = false;
     } else {
-        // --------- Audio Decoder ----------
-        audio_decoder = avcodec_find_decoder(fmt_ctx->streams[audio_stream_index]->codecpar->codec_id);
-        audio_ctx = avcodec_alloc_context3(audio_decoder);
-
-        avcodec_parameters_to_context(audio_ctx, fmt_ctx->streams[audio_stream_index]->codecpar);
-
-        if (avcodec_open2(audio_ctx, audio_decoder, nullptr) < 0) {
-            qDebug() << "Failed to open audio decoder";
-            audio_stream_index = -1;
-            return;
+        audio_decoder =
+            avcodec_find_decoder(fmt_ctx->streams[audio_stream_index]->codecpar->codec_id);
+        if (!audio_decoder) {
+            Error_String = "Audio decoder not found";
+            return false;
         }
-        qDebug() << "Audio decoder opened";
 
-        // 入力情報を member に保存
+        audio_ctx = avcodec_alloc_context3(audio_decoder);
+        avcodec_parameters_to_context(
+            audio_ctx,
+            fmt_ctx->streams[audio_stream_index]->codecpar
+            );
+
+        ret = avcodec_open2(audio_ctx, audio_decoder, nullptr);
+        if (ret < 0) {
+            Error_String = QString("avcodec_open2(audio) failed: %1")
+            .arg(ffmpegErrStr(ret));
+            return false;
+        }
+
         in_sample_rate = audio_ctx->sample_rate;
         in_format      = audio_ctx->sample_fmt;
         av_channel_layout_copy(&in_ch_layout, &audio_ctx->ch_layout);
 
-        // 出力情報（固定）
-        out_sample_rate = audio_ctx->sample_rate;  // 入力と同じでOK
+        out_sample_rate = audio_ctx->sample_rate;
         out_format      = AV_SAMPLE_FMT_S16;
-
-        // 出力レイアウト（ステレオ）→ メンバ変数に設定
         av_channel_layout_default(&out_ch_layout, 2);
 
-        // SwrContext 作成 (メンバ変数 swr を利用)
         if (swr) {
             swr_free(&swr);
         }
 
-        int ret = swr_alloc_set_opts2(
+        ret = swr_alloc_set_opts2(
             &swr,
             &out_ch_layout,
             out_format,
@@ -227,30 +282,32 @@ void cpudecode::initialized_ffmpeg(){
             );
 
         if (ret < 0 || swr_init(swr) < 0) {
-            qDebug() << "Failed to init swr";
-            return;
+            Error_String = "swr_init failed";
+            return false;
         }
 
-        // ---------- QAudioSink ----------
         QAudioFormat fmt;
         fmt.setSampleRate(out_sample_rate);
         fmt.setChannelCount(2);
         fmt.setSampleFormat(QAudioFormat::Int16);
 
-        audioSink = new QAudioSink(fmt);
+        audioSink   = new QAudioSink(fmt);
         audioOutput = audioSink->start();
 
-        qDebug() << "Audio ready";
-        VideoInfo.audio=true;
+        VideoInfo.audio = true;
     }
 
     //スライダー設定
     emit send_slider_info();
 
-    //再生
-    video_play_flag = true;
-    video_reverse_flag = false;
-    slider_No=0;
+    // ------------------------
+    // 再生初期化
+    // ------------------------
+    video_play_flag     = true;
+    video_reverse_flag  = false;
+    slider_No           = 0;
+
+    return true;
 }
 
 //デコーダ設定
@@ -293,8 +350,8 @@ double cpudecode::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index)
     return frame_rate_value;
 }
 
-//最終フレームpts取得
-void cpudecode::get_last_frame_pts() {
+//テストでコード、最終フレームpts取得
+bool cpudecode::get_last_frame_pts() {
     AVPacket* pkt = av_packet_alloc();
     avcodec_flush_buffers(vd[0].codec_ctx);
 
@@ -306,8 +363,8 @@ void cpudecode::get_last_frame_pts() {
 
     // 後方シーク（できるだけ終端に近づく）
     if (av_seek_frame(fmt_ctx, vd[0].stream_index, duration_pts, AVSEEK_FLAG_BACKWARD) < 0) {
-        qDebug() << "seek failed";
-        return;
+        Error_String = "seek failed";
+        return false;
     }
 
     avcodec_flush_buffers(vd[0].codec_ctx);
@@ -349,8 +406,11 @@ void cpudecode::get_last_frame_pts() {
         VideoInfo.max_framesNo = fmt_ctx->streams[vd[0].stream_index]->duration/VideoInfo.pts_per_frame-1;
         VideoInfo.current_frameNo = VideoInfo.max_framesNo;
     } else {
-        qDebug() << "No frame found at end.";
+        Error_String = "No frame found at end.";
+        return false;
     }
+
+    return true;
 }
 
 //映像ストリーム取得
