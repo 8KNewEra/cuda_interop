@@ -16,6 +16,8 @@ protected:
     bool get_last_frame_pts()override;
     void get_decode_image()override;
     void get_decode_audio(AVPacket* pkt)override;
+    void get_singledecode_image();
+    void get_multidecode_image();
     void CUDA_RGBA_to_merge();
 };
 

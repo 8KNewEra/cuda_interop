@@ -601,6 +601,8 @@ void encode_setting::combo_index_control2(){
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,1,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),4,4,true,true);
     }else if(settings.encode_tile>1){
+        combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
+        combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),1,7,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),4,4,true,true);
     }else if(settings.Codec == "h264_nvenc"){

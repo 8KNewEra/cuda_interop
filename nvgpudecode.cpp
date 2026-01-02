@@ -401,8 +401,98 @@ bool nvgpudecode::get_last_frame_pts() {
     return true;
 }
 
-//映像ストリーム取得
-void nvgpudecode::get_decode_image() {
+//映像取得
+void nvgpudecode::get_decode_image(){
+    if(vd.size()==1){
+        get_singledecode_image();
+    }else{
+        get_multidecode_image();
+    }
+}
+
+//映像シングルストリーム
+void nvgpudecode::get_singledecode_image(){
+    AVPacket* pkt = av_packet_alloc();
+
+    // ----------- シーク処理 -----------
+    if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
+
+        if (video_reverse_flag) {
+            slider_No--;
+            if (slider_No < 0)
+                slider_No = VideoInfo.max_framesNo;
+        }
+
+        // ビデオ/オーディオの両方 flush
+        avcodec_flush_buffers(vd[0].codec_ctx);
+        if (audio_ctx)
+            avcodec_flush_buffers(audio_ctx);
+
+        av_seek_frame(fmt_ctx, vd[0].stream_index,
+                      slider_No * VideoInfo.pts_per_frame,
+                      AVSEEK_FLAG_BACKWARD);
+
+        VideoInfo.current_frameNo = slider_No;
+    }
+
+    // ----------- パケット読み込みループ -----------
+    while (true) {
+        int ret = av_read_frame(fmt_ctx, pkt);
+
+        // ---------- EOF ----------
+        if (ret < 0) {
+
+            // 映像側フラッシュ
+            avcodec_send_packet(vd[0].codec_ctx, nullptr);
+
+            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                CUDA_RGBA_to_merge();
+                break;
+            }
+
+            // 終端→先頭に戻ってループ
+            uint64_t seek_frame;
+            if (VideoInfo.current_frameNo < VideoInfo.max_framesNo - 1) {
+                seek_frame = VideoInfo.current_frameNo + 1;
+            } else {
+                emit decode_end();
+                seek_frame = 0;
+            }
+
+            avcodec_flush_buffers(vd[0].codec_ctx);
+            if (audio_ctx)
+                avcodec_flush_buffers(audio_ctx);
+
+            av_seek_frame(fmt_ctx, vd[0].stream_index,
+                          seek_frame * VideoInfo.pts_per_frame,
+                          AVSEEK_FLAG_ANY);
+            continue;
+        }
+
+        // ----------- AUDIO PACKET -----------
+        if (pkt->stream_index == audio_stream_index) {
+            get_decode_audio(pkt);
+            continue;  // → 映像パケットを探しに行く
+        }
+
+        // ----------- VIDEO PACKET -----------
+        if (pkt->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, pkt) < 0) {
+                continue;
+            }
+
+            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                CUDA_RGBA_to_merge();
+                break;  // 映像が取れたら終了
+            }
+        }
+    }
+    // 念のため
+    av_packet_unref(pkt);
+}
+
+//映像マルチストリーム
+void nvgpudecode::get_multidecode_image() {
     AVPacket* pkt = av_packet_alloc();
     std::vector<bool> got_frame(vd.size(), false);
     int got_count = 0;
@@ -423,7 +513,7 @@ void nvgpudecode::get_decode_image() {
             avcodec_flush_buffers(dec.codec_ctx);
         }
 
-        av_seek_frame(fmt_ctx, 0,
+        av_seek_frame(fmt_ctx, vd[0].stream_index,
                       slider_No * VideoInfo.pts_per_frame,
                       AVSEEK_FLAG_BACKWARD);
 
@@ -453,7 +543,7 @@ void nvgpudecode::get_decode_image() {
                 if (audio_ctx)
                     avcodec_flush_buffers(audio_ctx);
 
-                av_seek_frame(fmt_ctx, 0,
+                av_seek_frame(fmt_ctx, vd[0].stream_index,
                               0 * VideoInfo.pts_per_frame,
                               AVSEEK_FLAG_ANY);
 
