@@ -77,6 +77,11 @@ decode_thread::~decode_thread() {
                 vd[i].Frame = nullptr;
             }
         }
+
+        if (audio_frame) {
+            av_frame_free(&audio_frame);
+            audio_frame = nullptr;
+        }
     };
 
     auto safe_free_hwctx = [&]() {
@@ -97,11 +102,19 @@ decode_thread::~decode_thread() {
         }
     };
 
+    auto safe_free_packet = [&]() {
+        if (packet) {
+            av_packet_free(&packet);
+            packet = nullptr;
+        }
+    };
+
     try {
         safe_free_codec();
         safe_free_format();
         safe_free_frames();
         safe_free_hwctx();
+        safe_free_packet();
     } catch (...) {
         qWarning() << "Exception during FFmpeg cleanup (ignored)";
     }

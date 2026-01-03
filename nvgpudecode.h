@@ -11,13 +11,13 @@ public:
 
 protected:
     bool initialized_ffmpeg() override;
-    const char*selectDecoder(const char* codec_name) override;
-    double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index)override;
-    bool get_last_frame_pts()override;
     void get_decode_image()override;
-    void get_decode_audio(AVPacket* pkt)override;
+    const char*selectDecoder(const char* codec_name);
+    double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
+    bool get_last_frame_pts();
     void get_singledecode_image();
     void get_multidecode_image();
+    void get_decode_audio();
     void CUDA_RGBA_to_merge();
 };
 

@@ -68,11 +68,11 @@ protected:
 
     //デコード周り
     virtual bool initialized_ffmpeg()=0;
-    virtual const char* selectDecoder(const char* codec_name)=0;
-    virtual double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index)=0;
-    virtual bool get_last_frame_pts()=0;
     virtual void get_decode_image()=0;
-    virtual void get_decode_audio(AVPacket* pkt)=0;
+    const char* selectDecoder(const char* codec_name);
+    double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
+    bool get_last_frame_pts();
+    void get_decode_audio();
 
     //エラー処理
     QString Error_String="";
@@ -86,6 +86,8 @@ protected:
     QMutex mutex;
 
     //FFmpeg関連
+    AVPacket* packet = nullptr;
+    AVFrame* audio_frame = nullptr;
     QByteArray File_byteArray;
     const char* input_filename;
     std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成

@@ -7,6 +7,7 @@
 // ffmpeg初期化（CPU）
 bool cpudecode::initialized_ffmpeg()
 {
+    packet = av_packet_alloc();
     int ret;
 
     // ------------------------
@@ -237,6 +238,8 @@ bool cpudecode::initialized_ffmpeg()
     if (audio_stream_index == -1) {
         VideoInfo.audio = false;
     } else {
+        audio_frame = av_frame_alloc();
+
         audio_decoder =
             avcodec_find_decoder(fmt_ctx->streams[audio_stream_index]->codecpar->codec_id);
         if (!audio_decoder) {
@@ -352,7 +355,6 @@ double cpudecode::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index)
 
 //テストでコード、最終フレームpts取得
 bool cpudecode::get_last_frame_pts() {
-    AVPacket* pkt = av_packet_alloc();
     avcodec_flush_buffers(vd[0].codec_ctx);
 
     int64_t duration_pts = fmt_ctx->streams[vd[0].stream_index]->duration;
@@ -373,7 +375,7 @@ bool cpudecode::get_last_frame_pts() {
     bool frame_received = false;
 
     while (true) {
-        int ret = av_read_frame(fmt_ctx, pkt);
+        int ret = av_read_frame(fmt_ctx, packet);
         if (ret < 0) {
             // EOFに到達：デコーダに残りを流す
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
@@ -386,8 +388,8 @@ bool cpudecode::get_last_frame_pts() {
             break;
         }
 
-        if (pkt->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, pkt) == 0) {
+        if (packet->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
                 while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
                     last_pts = vd[0].Frame->best_effort_timestamp;
                     VideoInfo.width = vd[0].Frame->width;
@@ -396,8 +398,10 @@ bool cpudecode::get_last_frame_pts() {
                 }
             }
         }
-        av_packet_unref(pkt);
     }
+
+    //packet解放
+    av_packet_unref(packet);
 
     if (frame_received) {
         AVRational tb = fmt_ctx->streams[vd[0].stream_index]->time_base;
@@ -415,18 +419,14 @@ bool cpudecode::get_last_frame_pts() {
 
 //映像ストリーム取得
 void cpudecode::get_decode_image(){
-    AVPacket* pkt = av_packet_alloc();
-
     // ----------- シーク処理 -----------
     if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
-
         if (video_reverse_flag) {
             slider_No--;
             if (slider_No < 0)
                 slider_No = VideoInfo.max_framesNo;
         }
 
-        // ビデオ/オーディオの両方 flush
         avcodec_flush_buffers(vd[0].codec_ctx);
         if (audio_ctx)
             avcodec_flush_buffers(audio_ctx);
@@ -440,16 +440,14 @@ void cpudecode::get_decode_image(){
 
     // ----------- パケット読み込みループ -----------
     while (true) {
-        int ret = av_read_frame(fmt_ctx, pkt);
-
+        int ret = av_read_frame(fmt_ctx, packet);
         // ---------- EOF ----------
         if (ret < 0) {
-
-            // 映像側フラッシュ
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
             if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
                 gpu_upload();
+                av_packet_unref(packet);
                 break;
             }
 
@@ -469,42 +467,43 @@ void cpudecode::get_decode_image(){
             av_seek_frame(fmt_ctx, vd[0].stream_index,
                           seek_frame * VideoInfo.pts_per_frame,
                           AVSEEK_FLAG_ANY);
+
+            av_packet_unref(packet);
             continue;
         }
 
         // ----------- AUDIO PACKET -----------
-        if (pkt->stream_index == audio_stream_index) {
-            get_decode_audio(pkt);
-            continue;  // → 映像パケットを探しに行く
+        if (packet->stream_index == audio_stream_index) {
+            get_decode_audio();
+            av_packet_unref(packet);
+            continue;
         }
 
         // ----------- VIDEO PACKET -----------
-        if (pkt->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, pkt) < 0) {
-                continue;
-            }
-
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                gpu_upload();
-                break;  // 映像が取れたら終了
+        if (packet->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
+                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                    gpu_upload();
+                    av_packet_unref(packet);
+                    break;
+                }
             }
         }
+
+        av_packet_unref(packet);
     }
-    // 念のため
-    av_packet_unref(pkt);
 }
 
 //オーディオ
-void cpudecode::get_decode_audio(AVPacket* pkt){
-    if (avcodec_send_packet(audio_ctx, pkt) >= 0) {
-        AVFrame* af = av_frame_alloc();
-        while (avcodec_receive_frame(audio_ctx, af) >= 0) {
+void cpudecode::get_decode_audio(){
+    if (avcodec_send_packet(audio_ctx, packet) >= 0) {
+        while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
 
             int out_channels = out_ch_layout.nb_channels;
             int bps         = av_get_bytes_per_sample(out_format);
 
             int max_out_samples = av_rescale_rnd(
-                swr_get_delay(swr, in_sample_rate) + af->nb_samples,
+                swr_get_delay(swr, in_sample_rate) + audio_frame->nb_samples,
                 out_sample_rate,
                 in_sample_rate,
                 AV_ROUND_UP
@@ -521,8 +520,8 @@ void cpudecode::get_decode_audio(AVPacket* pkt){
                 swr,
                 out_planes,
                 max_out_samples,
-                (const uint8_t**)af->extended_data,
-                af->nb_samples
+                (const uint8_t**)audio_frame->extended_data,
+                audio_frame->nb_samples
                 );
 
             if (audio_buffer_size < out_samples * 4 * 2) {
@@ -534,8 +533,8 @@ void cpudecode::get_decode_audio(AVPacket* pkt){
                 swr,
                 &audio_buffer,
                 out_samples,
-                (const uint8_t**)af->extended_data,
-                af->nb_samples
+                (const uint8_t**)audio_frame->extended_data,
+                audio_frame->nb_samples
                 );
 
             int bytes = samples * 2 * av_get_bytes_per_sample(out_format);
@@ -553,9 +552,7 @@ void cpudecode::get_decode_audio(AVPacket* pkt){
                 }
             }
         }
-        av_frame_free(&af);
     }
-    av_packet_unref(pkt);
 }
 
 //GPUへアップロード

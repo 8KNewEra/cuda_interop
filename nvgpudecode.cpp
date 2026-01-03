@@ -7,6 +7,7 @@
 // ffmpeg初期化
 bool nvgpudecode::initialized_ffmpeg()
 {
+    packet = av_packet_alloc();
     int ret;
 
     // ------------------------
@@ -226,6 +227,8 @@ bool nvgpudecode::initialized_ffmpeg()
         Error_String = "Audio stream not found";
         VideoInfo.audio = false;
     } else {
+        audio_frame = av_frame_alloc();
+
         audio_decoder =
             avcodec_find_decoder(fmt_ctx->streams[audio_stream_index]->codecpar->codec_id);
         audio_ctx = avcodec_alloc_context3(audio_decoder);
@@ -340,7 +343,6 @@ double nvgpudecode::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_inde
 
 //テストでコード、最終フレームpts取得
 bool nvgpudecode::get_last_frame_pts() {
-    AVPacket* pkt = av_packet_alloc();
     avcodec_flush_buffers(vd[0].codec_ctx);
 
     int64_t duration_pts = fmt_ctx->streams[vd[0].stream_index]->duration;
@@ -361,7 +363,7 @@ bool nvgpudecode::get_last_frame_pts() {
     bool frame_received = false;
 
     while (true) {
-        int ret = av_read_frame(fmt_ctx, pkt);
+        int ret = av_read_frame(fmt_ctx, packet);
         if (ret < 0) {
             // EOFに到達：デコーダに残りを流す
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
@@ -374,8 +376,8 @@ bool nvgpudecode::get_last_frame_pts() {
             break;
         }
 
-        if (pkt->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, pkt) == 0) {
+        if (packet->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
                 while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
                     last_pts = vd[0].Frame->best_effort_timestamp;
                     VideoInfo.width = vd[0].Frame->width;
@@ -384,8 +386,9 @@ bool nvgpudecode::get_last_frame_pts() {
                 }
             }
         }
-        av_packet_unref(pkt);
     }
+
+    av_packet_unref(packet);
 
     if (frame_received) {
         AVRational tb = fmt_ctx->streams[vd[0].stream_index]->time_base;
@@ -411,9 +414,7 @@ void nvgpudecode::get_decode_image(){
 }
 
 //映像シングルストリーム
-void nvgpudecode::get_singledecode_image(){
-    AVPacket* pkt = av_packet_alloc();
-
+void nvgpudecode::get_singledecode_image() {
     // ----------- シーク処理 -----------
     if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
 
@@ -423,7 +424,6 @@ void nvgpudecode::get_singledecode_image(){
                 slider_No = VideoInfo.max_framesNo;
         }
 
-        // ビデオ/オーディオの両方 flush
         avcodec_flush_buffers(vd[0].codec_ctx);
         if (audio_ctx)
             avcodec_flush_buffers(audio_ctx);
@@ -437,16 +437,16 @@ void nvgpudecode::get_singledecode_image(){
 
     // ----------- パケット読み込みループ -----------
     while (true) {
-        int ret = av_read_frame(fmt_ctx, pkt);
+        int ret = av_read_frame(fmt_ctx, packet);
 
         // ---------- EOF ----------
         if (ret < 0) {
 
-            // 映像側フラッシュ
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
             if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
                 CUDA_RGBA_to_merge();
+                av_packet_unref(packet);
                 break;
             }
 
@@ -466,34 +466,35 @@ void nvgpudecode::get_singledecode_image(){
             av_seek_frame(fmt_ctx, vd[0].stream_index,
                           seek_frame * VideoInfo.pts_per_frame,
                           AVSEEK_FLAG_ANY);
+
+            av_packet_unref(packet);
             continue;
         }
 
         // ----------- AUDIO PACKET -----------
-        if (pkt->stream_index == audio_stream_index) {
-            get_decode_audio(pkt);
-            continue;  // → 映像パケットを探しに行く
+        if (packet->stream_index == audio_stream_index) {
+            get_decode_audio();
+            av_packet_unref(packet);
+            continue;
         }
 
         // ----------- VIDEO PACKET -----------
-        if (pkt->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, pkt) < 0) {
-                continue;
-            }
-
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                CUDA_RGBA_to_merge();
-                break;  // 映像が取れたら終了
+        if (packet->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
+                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                    CUDA_RGBA_to_merge();
+                    av_packet_unref(packet);
+                    break;
+                }
             }
         }
+
+        av_packet_unref(packet);
     }
-    // 念のため
-    av_packet_unref(pkt);
 }
 
 //映像マルチストリーム
 void nvgpudecode::get_multidecode_image() {
-    AVPacket* pkt = av_packet_alloc();
     std::vector<bool> got_frame(vd.size(), false);
     int got_count = 0;
 
@@ -521,62 +522,55 @@ void nvgpudecode::get_multidecode_image() {
     }
 
     while (got_count < vd.size()) {
-        int ret = av_read_frame(fmt_ctx, pkt);
-        // ---------- EOF ----------
+        int ret = av_read_frame(fmt_ctx, packet);
+
         if (ret < 0) {
             for (int i = 0; i < vd.size(); i++) {
-                // 映像側フラッシュ
                 avcodec_send_packet(vd[i].codec_ctx, nullptr);
-
                 if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
                     got_frame[i] = true;
                     got_count++;
                 }
             }
 
-            //終端→先頭に戻ってループ
             if (VideoInfo.current_frameNo >= VideoInfo.max_framesNo) {
                 emit decode_end();
 
-                //複数ストリームは0でシーク
-                for (auto& dec : vd) { avcodec_flush_buffers(dec.codec_ctx); }
+                for (auto& dec : vd) avcodec_flush_buffers(dec.codec_ctx);
                 if (audio_ctx)
                     avcodec_flush_buffers(audio_ctx);
 
-                av_seek_frame(fmt_ctx, vd[0].stream_index,
-                              0 * VideoInfo.pts_per_frame,
-                              AVSEEK_FLAG_ANY);
-
+                av_seek_frame(fmt_ctx, vd[0].stream_index, 0, AVSEEK_FLAG_ANY);
+                av_packet_unref(packet);
                 continue;
             }
 
-            if(got_count==vd.size()){
+            if (got_count == vd.size()) {
                 CUDA_RGBA_to_merge();
             }
-            av_packet_unref(pkt);
+
+            av_packet_unref(packet);
+            break;
         }
 
-        // ----------- AUDIO PACKET -----------
-        if (pkt->stream_index == audio_stream_index) {
-            get_decode_audio(pkt);
-            av_packet_unref(pkt);
-            continue;  // → 映像パケットを探しに行く
+        if (packet->stream_index == audio_stream_index) {
+            get_decode_audio();
+            av_packet_unref(packet);
+            continue;
         }
 
-        // ----------- VIDEO PACKET -----------
         for (int i = 0; i < vd.size(); i++) {
-            if (pkt->stream_index == vd[i].stream_index&& !got_frame[i]) {
-                if (avcodec_send_packet(vd[i].codec_ctx, pkt) < 0) {
-                    continue;
-                }
-
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
-                    got_frame[i] = true;
-                    got_count++;
-                    av_packet_unref(pkt);
+            if (packet->stream_index == vd[i].stream_index && !got_frame[i]) {
+                if (avcodec_send_packet(vd[i].codec_ctx, packet) == 0) {
+                    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
+                        got_frame[i] = true;
+                        got_count++;
+                    }
                 }
             }
         }
+
+        av_packet_unref(packet);
     }
 
     // CUDAの処理,NVDEC完了待ち
@@ -584,23 +578,18 @@ void nvgpudecode::get_multidecode_image() {
     cudaEventSynchronize(events);
 
     CUDA_RGBA_to_merge();
-
-    // パケット開放
-    av_packet_unref(pkt);
-    av_packet_free(&pkt);
 }
 
 //オーディオ
-void nvgpudecode::get_decode_audio(AVPacket* pkt){
-    if (avcodec_send_packet(audio_ctx, pkt) >= 0) {
-        AVFrame* af = av_frame_alloc();
-        while (avcodec_receive_frame(audio_ctx, af) >= 0) {
+void nvgpudecode::get_decode_audio(){
+    if (avcodec_send_packet(audio_ctx, packet) >= 0) {
+        while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
 
             int out_channels = out_ch_layout.nb_channels;
             int bps         = av_get_bytes_per_sample(out_format);
 
             int max_out_samples = av_rescale_rnd(
-                swr_get_delay(swr, in_sample_rate) + af->nb_samples,
+                swr_get_delay(swr, in_sample_rate) + audio_frame->nb_samples,
                 out_sample_rate,
                 in_sample_rate,
                 AV_ROUND_UP
@@ -617,8 +606,8 @@ void nvgpudecode::get_decode_audio(AVPacket* pkt){
                 swr,
                 out_planes,
                 max_out_samples,
-                (const uint8_t**)af->extended_data,
-                af->nb_samples
+                (const uint8_t**)audio_frame->extended_data,
+                audio_frame->nb_samples
                 );
 
             if (audio_buffer_size < out_samples * 4 * 2) {
@@ -630,8 +619,8 @@ void nvgpudecode::get_decode_audio(AVPacket* pkt){
                 swr,
                 &audio_buffer,
                 out_samples,
-                (const uint8_t**)af->extended_data,
-                af->nb_samples
+                (const uint8_t**)audio_frame->extended_data,
+                audio_frame->nb_samples
                 );
 
             int bytes = samples * 2 * av_get_bytes_per_sample(out_format);
@@ -649,9 +638,7 @@ void nvgpudecode::get_decode_audio(AVPacket* pkt){
                 }
             }
         }
-        av_frame_free(&af);
     }
-    av_packet_unref(pkt);
 }
 
 //CUDAで映像フレームを処理
