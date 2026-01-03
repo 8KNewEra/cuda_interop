@@ -6,6 +6,7 @@ save_encode::save_encode(int h,int w) {
     height_=h;
     frame_index = 0;
     int ret = 0;
+    packet = av_packet_alloc();
 
     //CUDAデバイスコンテキスト
     QString gpuId = QString::number(g_cudaDeviceID);
@@ -63,24 +64,23 @@ save_encode::~save_encode() {
         // flush
         avcodec_send_frame(ve[i].codec_ctx, nullptr);
         while (true) {
-            AVPacket* pkt = av_packet_alloc();
-            int ret = avcodec_receive_packet(ve[i].codec_ctx, pkt);
+            int ret = avcodec_receive_packet(ve[i].codec_ctx, packet);
 
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                av_packet_free(&pkt);
+                av_packet_unref(packet);
                 break;
             }
 
             av_packet_rescale_ts(
-                pkt,
+                 packet,
                 ve[i].codec_ctx->time_base,
                 ve[i].stream->time_base
                 );
 
-            pkt->stream_index = ve[i].stream->index;
+            packet->stream_index = ve[i].stream->index;
             // ★ ソートしない ★
-            av_interleaved_write_frame(fmt_ctx, pkt);
-            av_packet_free(&pkt);
+            av_interleaved_write_frame(fmt_ctx, packet);
+            av_packet_unref(packet);
         }
     }
 
@@ -117,6 +117,12 @@ save_encode::~save_encode() {
         }
         avformat_free_context(fmt_ctx);
         fmt_ctx = nullptr;
+    }
+
+    //パケット開放
+    if(packet){
+        av_packet_free(&packet);
+        packet = nullptr;
     }
 
     //Stream削除
@@ -322,24 +328,23 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
     // ---- mux（順序保証）----
     for (int i = 0; i < ve.size(); i++) {
         while (true) {
-            AVPacket* pkt = av_packet_alloc();
-            int ret = avcodec_receive_packet(ve[i].codec_ctx, pkt);
+            int ret = avcodec_receive_packet(ve[i].codec_ctx, packet);
 
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                av_packet_free(&pkt);
+                av_packet_unref(packet);
                 break;
             }
 
             av_packet_rescale_ts(
-                pkt,
+                packet,
                 ve[i].codec_ctx->time_base,
                 ve[i].stream->time_base
                 );
 
-            pkt->stream_index = ve[i].stream->index;
+            packet->stream_index = ve[i].stream->index;
 
-            av_interleaved_write_frame(fmt_ctx, pkt);
-            av_packet_free(&pkt);
+            av_interleaved_write_frame(fmt_ctx, packet);
+            av_packet_unref(packet);
         }
     }
 

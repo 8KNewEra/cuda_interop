@@ -46,6 +46,7 @@ private:
     int height_,width_;
 
     // --- FFmpeg 関連 ---
+    AVPacket* packet = nullptr;
     std::vector<VideoEncoder> ve;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;          // 出力ファイルのフォーマットコンテキスト
     AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
