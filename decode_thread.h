@@ -109,8 +109,8 @@ protected:
     cudaEvent_t events=nullptr;
 
     //CPUデコード用
-    uint8_t *d_y=nullptr,*d_u=nullptr,*d_v=nullptr;
-    size_t pitch_y,pitch_u,pitch_v,y_size,uv_size;
+    uint8_t *d_y=nullptr,*d_u=nullptr,*d_v=nullptr,*d_r=nullptr,*d_g=nullptr,*d_b=nullptr,*d_yuv=nullptr,*d_rgb=nullptr;
+    size_t pitch_y,pitch_u,pitch_v,pitch_r,pitch_g,pitch_b,pitch_yuv,pitch_rgb;
 
     //音声
     int audio_stream_index = -1;

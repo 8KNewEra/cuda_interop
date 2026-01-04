@@ -1,11 +1,12 @@
-#include "cpudecode.h"
+#include "avidecode.h"
+
 
 // ===============================
-// mp4 CPUデコード
+// avi CPUデコード
 // ===============================
 
 // ffmpeg初期化（CPU）
-bool cpudecode::initialized_ffmpeg()
+bool avidecode::initialized_ffmpeg()
 {
     packet = av_packet_alloc();
     int ret;
@@ -47,29 +48,10 @@ bool cpudecode::initialized_ffmpeg()
     }
 
     // ------------------------
-    // bit depth 判定（CPU）
-    // ------------------------
-    AVCodecParameters* par = fmt_ctx->streams[video_stream_index]->codecpar;
-
-    if (par->codec_id == AV_CODEC_ID_HEVC ||
-        par->codec_id == AV_CODEC_ID_H264 ||
-        par->codec_id == AV_CODEC_ID_AV1) {
-
-        if (par->format == AV_PIX_FMT_YUV420P10 ||
-            par->format == AV_PIX_FMT_P010) {
-            VideoInfo.bitdepth = 10;
-        } else {
-            VideoInfo.bitdepth = 8;
-        }
-    }
-
-    qDebug() << "bitdepth:" << VideoInfo.bitdepth;
-
-    // ------------------------
     // デコーダ作成（CPU）
     // ------------------------
     {
-        VideoDecorder dec;
+        VideoDecorder dec{};
         dec.stream_index = video_stream_index;
 
         dec.Frame = av_frame_alloc();
@@ -78,23 +60,14 @@ bool cpudecode::initialized_ffmpeg()
             return false;
         }
 
-        AVCodecParameters* codecpar =
-            fmt_ctx->streams[video_stream_index]->codecpar;
+        AVCodecParameters* codecpar = fmt_ctx->streams[video_stream_index]->codecpar;
 
-        const char* codec_name =
-            avcodec_get_name(codecpar->codec_id);
+        qDebug()<<codecpar->codec_id;
 
-        const char* decoder_name = selectDecoder(codec_name);
-        if (!decoder_name) {
-            Error_String = QString("Unsupported codec: %1")
-            .arg(codec_name);
-            return false;
-        }
-
-        dec.decoder = avcodec_find_decoder_by_name(decoder_name);
+        // ★ decoder を必ず取得する
+        dec.decoder = avcodec_find_decoder(codecpar->codec_id);
         if (!dec.decoder) {
-            Error_String = QString("Decoder not found: %1")
-            .arg(decoder_name);
+            Error_String = "rawvideo decoder not found";
             return false;
         }
 
@@ -111,27 +84,24 @@ bool cpudecode::initialized_ffmpeg()
             return false;
         }
 
-        // CPU デコード
-        dec.codec_ctx->hw_device_ctx = nullptr;
-        dec.codec_ctx->pkt_timebase =
-            fmt_ctx->streams[video_stream_index]->time_base;
+        // ---- rawvideo は上書きしすぎない ----
+        // pix_fmt は container の値を尊重する
+        // dec.codec_ctx->pix_fmt = (AVPixelFormat)codecpar->format;
 
-        // H.264 のみ並列デコード
-        if (codecpar->codec_id == AV_CODEC_ID_H264) {
-            dec.codec_ctx->thread_count = 0;          // auto
-            dec.codec_ctx->thread_type  = FF_THREAD_FRAME;
-        }
+        dec.codec_ctx->thread_count = 0;          // auto
+        dec.codec_ctx->thread_type  = FF_THREAD_FRAME;
+        dec.codec_ctx->pkt_timebase =fmt_ctx->streams[video_stream_index]->time_base;
 
         ret = avcodec_open2(dec.codec_ctx, dec.decoder, nullptr);
         if (ret < 0) {
-            Error_String = QString("avcodec_open2 failed (%1): %2")
-            .arg(decoder_name)
-                .arg(ffmpegErrStr(ret));
+            Error_String = QString("avcodec_open2 failed: %1")
+            .arg(ffmpegErrStr(ret));
             return false;
         }
 
         vd.push_back(dec);
     }
+
 
     // ------------------------
     // 動画情報取得
@@ -161,13 +131,45 @@ bool cpudecode::initialized_ffmpeg()
     // ------------------------
     // CUDA メモリ確保（CPU decode + GPU upload）
     // ------------------------
-    int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
-
-    size_t y_size{},uv_size{};
-    y_size  = VideoInfo.width * VideoInfo.height * bytesPerSample;
-    uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2) * bytesPerSample;
-
     cudaError_t err;
+    size_t y_size{},uv_size{};
+
+    AVCodecParameters* par = fmt_ctx->streams[video_stream_index]->codecpar;
+    if(par->format==AV_PIX_FMT_UYVY422){
+        VideoInfo.bitdepth = 8;
+        cudaMallocPitch(&d_yuv, &pitch_yuv, VideoInfo.width * 2, VideoInfo.height);
+        y_size  = VideoInfo.width * VideoInfo.height * 2;
+        uv_size = (VideoInfo.width) * (VideoInfo.height) * 2;
+    }else if(par->format==AV_PIX_FMT_YUV420P10){
+        VideoInfo.bitdepth = 10;
+        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width * 2, VideoInfo.height);
+        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2) * 2, VideoInfo.height / 2);
+        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2) * 2, VideoInfo.height / 2);
+        y_size  = VideoInfo.width * VideoInfo.height * 2;
+        uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2) * 2;
+    }else if(par->format==AV_PIX_FMT_YUV422P10){
+        VideoInfo.bitdepth = 10;
+        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width * 2, VideoInfo.height);
+        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2) * 2, VideoInfo.height);
+        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2) * 2, VideoInfo.height);
+        y_size  = VideoInfo.width * VideoInfo.height * 2;
+        uv_size = (VideoInfo.width / 2) * VideoInfo.height * 2;
+    }else if(par->format==AV_PIX_FMT_GBRP10){
+        VideoInfo.bitdepth = 10;
+        cudaMallocPitch(&d_r, &pitch_r, VideoInfo.width * 2, VideoInfo.height); // G
+        cudaMallocPitch(&d_g, &pitch_g, VideoInfo.width * 2, VideoInfo.height); // B
+        cudaMallocPitch(&d_b, &pitch_b, VideoInfo.width * 2, VideoInfo.height); // R
+        y_size  = VideoInfo.width * VideoInfo.height * 2;
+        uv_size = VideoInfo.width * VideoInfo.height * 2;
+    }else{
+        Error_String="非対応フォーマット";
+        return false;
+    }
+
+    // pinned 登録
+    // cudaHostRegister(vd[0].Frame->data[0], y_size,  cudaHostRegisterDefault);
+    // cudaHostRegister(vd[0].Frame->data[1], uv_size, cudaHostRegisterDefault);
+    // cudaHostRegister(vd[0].Frame->data[2], uv_size, cudaHostRegisterDefault);
 
     err = cudaMallocPitch(&d_rgba, &pitch_rgba,
                           VideoInfo.width * 4,
@@ -177,38 +179,6 @@ bool cpudecode::initialized_ffmpeg()
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
         return false;
     }
-
-    err = cudaMallocPitch(&d_y, &pitch_y,
-                          VideoInfo.width * bytesPerSample,
-                          VideoInfo.height);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch(d_y) failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
-    err = cudaMallocPitch(&d_u, &pitch_u,
-                          (VideoInfo.width / 2) * bytesPerSample,
-                          VideoInfo.height / 2);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch(d_u) failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
-    err = cudaMallocPitch(&d_v, &pitch_v,
-                          (VideoInfo.width / 2) * bytesPerSample,
-                          VideoInfo.height / 2);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch(d_v) failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
-    // pinned 登録
-    cudaHostRegister(vd[0].Frame->data[0], y_size,  cudaHostRegisterDefault);
-    cudaHostRegister(vd[0].Frame->data[1], uv_size, cudaHostRegisterDefault);
-    cudaHostRegister(vd[0].Frame->data[2], uv_size, cudaHostRegisterDefault);
 
     // CUDA Stream
     cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
@@ -315,24 +285,22 @@ bool cpudecode::initialized_ffmpeg()
 }
 
 //デコーダ設定
-const char*cpudecode::selectDecoder(const char* codec_name) {
-    const char*codec="";
-    if (strcmp(codec_name, "h264") == 0) {
-        codec="h264";
-        qDebug()<<codec;
-    } else if (strcmp(codec_name, "hevc") == 0) {
-        codec="hevc";
-        qDebug()<<codec;
-    }else if (strcmp(codec_name, "av1") == 0){
-        codec="av1";
-        qDebug()<<codec;
+const char* avidecode::selectDecoder(const char* codec_name)
+{
+    if (strcmp(codec_name, "rawvideo") == 0) {
+        VideoInfo.Codec = "rawvideo";
+        qDebug() << "decoder: rawvideo";
+        return "rawvideo";
     }
-    VideoInfo.Codec=codec;
-    return codec;
+
+    VideoInfo.Codec.clear();
+    qDebug() << "decoder: unsupported";
+    return nullptr;   // ★重要
 }
 
+
 //フレームレートを取得する関数
-double cpudecode::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index) {
+double avidecode::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index) {
     if (video_stream_index < 0 || video_stream_index >= fmt_ctx->nb_streams) {
         qDebug() << "Invalid video stream index";
         return 0.0;
@@ -355,7 +323,7 @@ double cpudecode::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index)
 }
 
 //テストでコード、最終フレームpts取得
-bool cpudecode::get_last_frame_pts() {
+bool avidecode::get_last_frame_pts() {
     avcodec_flush_buffers(vd[0].codec_ctx);
 
     int64_t duration_pts = fmt_ctx->streams[vd[0].stream_index]->duration;
@@ -419,7 +387,7 @@ bool cpudecode::get_last_frame_pts() {
 }
 
 //映像ストリーム取得
-void cpudecode::get_decode_image(){
+void avidecode::get_decode_image(){
     // ----------- シーク処理 -----------
     if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
         if (video_reverse_flag) {
@@ -496,7 +464,7 @@ void cpudecode::get_decode_image(){
 }
 
 //オーディオ
-void cpudecode::get_decode_audio(){
+void avidecode::get_decode_audio(){
     if (avcodec_send_packet(audio_ctx, packet) >= 0) {
         while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
 
@@ -557,66 +525,35 @@ void cpudecode::get_decode_audio(){
 }
 
 //GPUへアップロード
-void cpudecode::gpu_upload(){
-    int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
-    //GPUアップロード
-    cudaMemcpy2D(d_y, pitch_y,
-                 vd[0].Frame->data[0], vd[0].Frame->linesize[0],
-                 VideoInfo.width * bytesPerSample,
-                 VideoInfo.height,
-                 cudaMemcpyHostToDevice);
-
-    cudaMemcpy2D(d_u, pitch_u,
-                 vd[0].Frame->data[1], vd[0].Frame->linesize[1],
-                 (VideoInfo.width / 2) * bytesPerSample,
-                 VideoInfo.height / 2,
-                 cudaMemcpyHostToDevice);
-
-    cudaMemcpy2D(d_v, pitch_v,
-                 vd[0].Frame->data[2], vd[0].Frame->linesize[2],
-                 (VideoInfo.width / 2) * bytesPerSample,
-                 VideoInfo.height / 2,
-                 cudaMemcpyHostToDevice);
-
+void avidecode::gpu_upload(){
     //ダミーカーネルで完全な同期
     CUDA_IMG_Proc->Dummy(stream);
     cudaEventRecord(events, stream);
     cudaEventSynchronize(events);
 
-    // yuv420p → RGBA
-    if(VideoInfo.bitdepth == 8){
-        CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(
-            d_rgba,
-            pitch_rgba,
-            d_y,
-            pitch_y,
-            d_u,
-            pitch_u,
-            d_v,
-            pitch_v,
-            VideoInfo.width,
-            VideoInfo.height,
-            stream
-            );
-    }else if(VideoInfo.bitdepth == 10){
-        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(
-            d_rgba,
-            pitch_rgba,
-            d_y,
-            pitch_y,
-            d_u,
-            pitch_u,
-            d_v,
-            pitch_v,
-            VideoInfo.width,
-            VideoInfo.height,
-            stream
-            );
-    }
 
     //CUDAカーネル同期
     cudaEventRecord(events, stream);
     cudaEventSynchronize(events);
+    if(vd[0].Frame->format==AV_PIX_FMT_UYVY422){
+        cudaMemcpy2D(d_yuv, pitch_yuv,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+        CUDA_IMG_Proc->uyvy422_to_RGBA_8bit(d_rgba,pitch_rgba,d_yuv, pitch_yuv,VideoInfo.width, VideoInfo.height,stream);
+    }else if(vd[0].Frame->format==AV_PIX_FMT_YUV420P10){
+        cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height/2,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height/2,cudaMemcpyHostToDevice);
+        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
+    }else if(vd[0].Frame->format==AV_PIX_FMT_YUV422P10){
+        cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
+        CUDA_IMG_Proc->yuv422p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
+    }else if(vd[0].Frame->format==AV_PIX_FMT_GBRP10){
+        cudaMemcpy2D(d_g, pitch_g,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_b, pitch_b,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_r, pitch_r,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
+        CUDA_IMG_Proc->rgb_to_RGBA_10bit(d_rgba,pitch_rgba,d_r, pitch_r,d_g,pitch_g, d_b,pitch_b,VideoInfo.width, VideoInfo.height,stream);
+    }
 
     //ダミーカーネルで完全な同期
     CUDA_IMG_Proc->Dummy(stream);

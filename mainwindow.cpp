@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "avidecode.h"
 #include "cpudecode.h"
 #include "decode_thread.h"
 #include "nvgpudecode.h"
@@ -249,7 +250,7 @@ void MainWindow::Open_Video_File()
         tr("動画ファイルを開く"), // ダイアログのタイトル
         QDir::homePath(),       // 初期ディレクトリ
         // フィルタをMP4のみに限定する
-        tr("MP4動画ファイル (*.mp4)")
+        tr("MP4動画ファイル (*.avi)","AVI動画ファイル (*.avi)")
         );
 
     // ファイルが選択されたかどうかを確認
@@ -378,9 +379,9 @@ void MainWindow::slider_set_range(){
 void MainWindow::start_decode_thread(QString filePath) {
     if (!run_decode_thread) {
         if(canUseGpuDecode(filePath)){
-            decodestream = new nvgpudecode(filePath,audio_mode);
+            decodestream = new avidecode(filePath,audio_mode);
         }else{
-            decodestream = new cpudecode(filePath,audio_mode);
+            decodestream = new avidecode(filePath,audio_mode);
         }
 
         decode__thread = new QThread;

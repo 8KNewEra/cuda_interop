@@ -145,6 +145,26 @@ decode_thread::~decode_thread() {
         safe_cuda_free((void*&)d_v, "d_v");
     }
 
+    if(d_r){
+        safe_cuda_free((void*&)d_r, "d_r");
+    }
+
+    if(d_g){
+        safe_cuda_free((void*&)d_g, "d_g");
+    }
+
+    if(d_b){
+        safe_cuda_free((void*&)d_b, "d_b");
+    }
+
+    if(d_yuv){
+        safe_cuda_free((void*&)d_yuv, "d_yuv");
+    }
+
+    if(d_rgb){
+        safe_cuda_free((void*&)d_rgb, "d_rgb");
+    }
+
     delete CUDA_IMG_Proc;
     CUDA_IMG_Proc=nullptr;
 

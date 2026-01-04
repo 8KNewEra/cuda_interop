@@ -18,6 +18,7 @@ CONFIG += c++17
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+    avidecode.cpp \
     cpudecode.cpp \
     cuda_imageprocess.cpp \
     decode_thread.cpp \
@@ -32,6 +33,7 @@ SOURCES += \
 
 HEADERS += \
     __global__.h \
+    avidecode.h \
     cpudecode.h \
     cuda_imageprocess.h \
     decode_thread.h \

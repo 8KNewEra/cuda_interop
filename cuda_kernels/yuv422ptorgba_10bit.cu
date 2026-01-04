@@ -5,7 +5,7 @@ __device__ __forceinline__ uint8_t clamp_u8(float v)
 }
 
 extern "C"
-__global__ void yuv420p_to_rgba_10bit_kernel(
+__global__ void yuv422p_to_rgba_10bit_kernel(
     uint8_t* rgba, size_t rgba_pitch,
 
     const uint8_t* y_plane, size_t y_pitch,
@@ -18,19 +18,20 @@ __global__ void yuv420p_to_rgba_10bit_kernel(
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x >= width || y >= height) return;
+    if (x >= width || y >= height)
+        return;
 
-    const uint16_t* y_row = (const uint16_t*)((const uint8_t*)y_plane + y * y_pitch);
-    const uint16_t* u_row = (const uint16_t*)((const uint8_t*)u_plane + (y >> 1) * u_pitch);
-    const uint16_t* v_row = (const uint16_t*)((const uint8_t*)v_plane + (y >> 1) * v_pitch);
+    const uint16_t* y_row = (const uint16_t*)(y_plane + y * y_pitch);
+    const uint16_t* u_row = (const uint16_t*)(u_plane + y * u_pitch);
+    const uint16_t* v_row = (const uint16_t*)(v_plane + y * v_pitch);
 
     uint16_t Y10 = y_row[x];
     uint16_t U10 = u_row[x >> 1];
     uint16_t V10 = v_row[x >> 1];
 
-    float Y = (float)(Y10 - 64)  * (1.0f / (940 - 64));
-    float U = (float)(U10 - 512) * (1.0f / (960 - 64));
-    float V = (float)(V10 - 512) * (1.0f / (960 - 64));
+    float Y = (float)(Y10 - 64)  / (940.0f - 64.0f);
+    float U = (float)(U10 - 512) / (960.0f - 64.0f);
+    float V = (float)(V10 - 512) / (960.0f - 64.0f);
 
     float R = Y + 1.5748f * V;
     float G = Y - 0.1873f * U - 0.4681f * V;
