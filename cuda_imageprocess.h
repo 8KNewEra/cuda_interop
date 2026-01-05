@@ -16,26 +16,27 @@ public:
     //ダミー
     bool Dummy(cudaStream_t stream);
 
-    //GPUエンコード、デコードNV12↔RGBA
+    //NV12↔RGBA
     bool NV12_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream);
     bool NV12_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream);
     bool Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int height, int width,cudaStream_t stream);
 
-    //CPUエンコード、デコードYUV420p↔RGBA
+    //YUV420p→RGBA
     bool yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
-    bool yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
+    bool yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,int is_be,cudaStream_t stream);
 
+    //YUV422P→RGBA
     bool yuv422p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
+    bool yuv422p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,int is_be,cudaStream_t stream);
+
+    //特殊(Davinci Resolve YUV422P 8bit→RGBA)
     bool uyvy422_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_yuv, size_t pitch_yuv,int width, int height,cudaStream_t stream);
 
-    bool yuv422p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
-
-
+    //RGB→RGBA
     bool rgb_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_r, size_t pitch_r,uint8_t* d_g, size_t pitch_g,uint8_t* d_b, size_t pitch_b,int width, int height,cudaStream_t stream);
     bool rgb_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_r, size_t pitch_r,uint8_t* d_g, size_t pitch_g,uint8_t* d_b, size_t pitch_b,int width, int height,cudaStream_t stream);
-
-    bool rgb_to_RGBA_packed_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_rgb, size_t pitch_rgb,int width, int height,cudaStream_t stream);
-    bool rgb_to_RGBA_packed_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_rgb, size_t pitch_rgb,int width, int height,cudaStream_t stream);
+    bool rgb_to_RGBA_8bit_packed(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_rgb, size_t pitch_rgb,int width, int height,int mode,cudaStream_t stream);
+    bool rgb_to_RGBA_10bit_packed(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_rgb, size_t pitch_rgb,int width, int height,int mode,cudaStream_t stream);
 
     //結合及び分割の処理
     bool nv12x2_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,

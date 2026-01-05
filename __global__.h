@@ -156,4 +156,14 @@ struct HistData {
 //デバイス情報
 extern cudaDeviceProp g_prop;
 
+//RGBレイアウト
+enum RGBLayout {
+    RGB = 0,
+    BGR = 1,
+    GBR = 2,
+    RBG = 3,
+    BRG = 4,
+    GRB = 5
+};
+
 #endif // __GLOBAL___H

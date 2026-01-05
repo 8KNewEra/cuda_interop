@@ -140,13 +140,28 @@ bool avidecode::initialized_ffmpeg()
         cudaMallocPitch(&d_yuv, &pitch_yuv, VideoInfo.width * 2, VideoInfo.height);
         y_size  = VideoInfo.width * VideoInfo.height * 2;
         uv_size = (VideoInfo.width) * (VideoInfo.height) * 2;
-    }else if(par->format==AV_PIX_FMT_YUV420P10){
+    }else if(par->format==AV_PIX_FMT_YUV420P){
+        VideoInfo.bitdepth = 8;
+        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width, VideoInfo.height);
+        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2), VideoInfo.height / 2);
+        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2), VideoInfo.height / 2);
+        y_size  = VideoInfo.width * VideoInfo.height;
+        uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2);
+    }
+    else if(par->format==AV_PIX_FMT_YUV420P10){
         VideoInfo.bitdepth = 10;
         cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width * 2, VideoInfo.height);
         cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2) * 2, VideoInfo.height / 2);
         cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2) * 2, VideoInfo.height / 2);
         y_size  = VideoInfo.width * VideoInfo.height * 2;
         uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2) * 2;
+    }else if(par->format==AV_PIX_FMT_YUV422P){
+        VideoInfo.bitdepth = 8;
+        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width, VideoInfo.height);
+        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2), VideoInfo.height);
+        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2), VideoInfo.height);
+        y_size  = VideoInfo.width * VideoInfo.height;
+        uv_size = (VideoInfo.width / 2) * VideoInfo.height;
     }else if(par->format==AV_PIX_FMT_YUV422P10){
         VideoInfo.bitdepth = 10;
         cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width * 2, VideoInfo.height);
@@ -538,16 +553,28 @@ void avidecode::gpu_upload(){
     if(vd[0].Frame->format==AV_PIX_FMT_UYVY422){
         cudaMemcpy2D(d_yuv, pitch_yuv,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         CUDA_IMG_Proc->uyvy422_to_RGBA_8bit(d_rgba,pitch_rgba,d_yuv, pitch_yuv,VideoInfo.width, VideoInfo.height,stream);
+    }else if(vd[0].Frame->format==AV_PIX_FMT_YUV420P){
+        cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2), VideoInfo.height/2,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2),VideoInfo.height/2,cudaMemcpyHostToDevice);
+        CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
     }else if(vd[0].Frame->format==AV_PIX_FMT_YUV420P10){
+        int is_be = (vd[0].Frame->format == AV_PIX_FMT_YUV420P10BE);
         cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height/2,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height/2,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
+        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
+    }else if(vd[0].Frame->format==AV_PIX_FMT_YUV422P){
+        cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2), VideoInfo.height,cudaMemcpyHostToDevice);
+        cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2),VideoInfo.height,cudaMemcpyHostToDevice);
+        CUDA_IMG_Proc->yuv422p_to_RGBA_8bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
     }else if(vd[0].Frame->format==AV_PIX_FMT_YUV422P10){
+        int is_be = (vd[0].Frame->format == AV_PIX_FMT_YUV422P10BE);
         cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv422p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
+        CUDA_IMG_Proc->yuv422p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
     }else if(vd[0].Frame->format==AV_PIX_FMT_GBRP10){
         cudaMemcpy2D(d_g, pitch_g,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_b, pitch_b,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width) * 2, VideoInfo.height,cudaMemcpyHostToDevice);

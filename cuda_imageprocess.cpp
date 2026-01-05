@@ -5,22 +5,24 @@ extern "C"{
     //ダミー
     __global__ void dummy_kernel();
 
-    //GPUエンコード、デコードNV12↔RGBA
+    //NV12↔RGBA
     __global__ void nv12_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
     __global__ void nv12_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
     __global__ void flip_rgba_to_nv12_kernel(uint8_t* y_plane, size_t y_step,uint8_t* uv_plane,size_t uv_step,const uint8_t* rgba, size_t rgba_step,int width, int height);
 
-    //CPUエンコード、デコードYUV420p、YUV422p↔RGBA
+    //YUV420P→RGBA
     __global__ void yuv420p_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
-    __global__ void yuv420p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
+    __global__ void yuv420p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height,int is_be);
 
+    //YUV422P→RGBA
     __global__ void yuv422p_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
-    __global__ void yuv422p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
+    __global__ void yuv422p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height,int is_be);
 
+    //RGB→RGBA
     __global__ void rgb_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* r_plane, size_t r_pitch,const uint8_t* g_plane, size_t g_pitch,const uint8_t* b_plane, size_t b_pitch,int width, int height);
-    __global__ void rgb_to_rgba_8bit_packed_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* src, size_t src_pitch,int width, int height);
+    __global__ void rgb_to_rgba_8bit_packed_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* src, size_t src_pitch,int width, int height,int mode);
     __global__ void rgb_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* r_plane, size_t r_pitch,const uint8_t* g_plane, size_t g_pitch,const uint8_t* b_plane, size_t b_pitch,int width, int height);
-    __global__ void rgb_to_rgba_10bit_packed_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* src, size_t src_pitch,int width, int height);
+    __global__ void rgb_to_rgba_10bit_packed_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* src, size_t src_pitch,int width, int height,int mode);
 
     //特殊(Davinci Resolve YUV8bit)
     __global__ void uyvy422_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* yuv, size_t yuv_pitch,int width, int height);
@@ -170,6 +172,34 @@ bool CUDA_ImageProcess::NV12_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,ui
     return true;
 }
 
+//反転→RGBA→NV12 シングルストリームエンコード
+bool CUDA_ImageProcess::Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int width,int height, cudaStream_t stream)
+{
+    void* args[] = {&d_y, &pitch_y,
+                    &d_uv, &pitch_uv,
+                    &d_rgba, &pitch_rgba,
+                    &width, &height };
+
+    dim3 block(16,16);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)flip_rgba_to_nv12_kernel,
+                                       grid, block, args, 0, stream);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
 //YUV420p→RGBA 8bit
 bool CUDA_ImageProcess::yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream){
     void* args[] = {&d_rgba, &pitch_rgba,
@@ -200,41 +230,13 @@ bool CUDA_ImageProcess::yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,
     return true;
 }
 
-//YUV422→RGBA 8bit
-bool CUDA_ImageProcess::uyvy422_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_yuv, size_t pitch_yuv,int width, int height,cudaStream_t stream){
-    void* args[] = {&d_rgba, &pitch_rgba,
-                    &d_yuv, &pitch_yuv,
-                    &width, &height };
-
-    dim3 block(32,32);
-    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
-
-    cudaError_t err = cudaLaunchKernel((const void*)uyvy422_to_rgba_8bit_kernel,
-                                       grid, block, args, 0, stream);
-
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
-}
-
 //YUV420p→RGBA 10bit
-bool CUDA_ImageProcess::yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream){
+bool CUDA_ImageProcess::yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,int is_be,cudaStream_t stream){
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_y, &pitch_y,
                     &d_u, &pitch_u,
                     &d_v, &pitch_v,
-                    &width, &height };
+                    &width, &height,&is_be };
 
     dim3 block(32,32);
     dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
@@ -289,12 +291,12 @@ bool CUDA_ImageProcess::yuv422p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,
 }
 
 //YUV422p→RGBA 10bit
-bool CUDA_ImageProcess::yuv422p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream){
+bool CUDA_ImageProcess::yuv422p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,int is_be,cudaStream_t stream){
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_y, &pitch_y,
                     &d_u, &pitch_u,
                     &d_v, &pitch_v,
-                    &width, &height };
+                    &width, &height,&is_be };
 
     dim3 block(32,32);
     dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
@@ -318,7 +320,7 @@ bool CUDA_ImageProcess::yuv422p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba
     return true;
 }
 
-//RGB→RGBA 8bit
+//RGB→RGBA 8bit planner
 bool CUDA_ImageProcess::rgb_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_r, size_t pitch_r,uint8_t* d_g, size_t pitch_g,uint8_t* d_b, size_t pitch_b,int width, int height,cudaStream_t stream){
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_r, &pitch_r,
@@ -348,11 +350,11 @@ bool CUDA_ImageProcess::rgb_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint
     return true;
 }
 
-//RGB→RGBA 8bit R210
-bool CUDA_ImageProcess::rgb_to_RGBA_packed_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_rgb, size_t pitch_rgb,int width, int height,cudaStream_t stream){
+//RGB→RGBA 8bit packed
+bool CUDA_ImageProcess::rgb_to_RGBA_8bit_packed(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_rgb, size_t pitch_rgb,int width, int height,int mode,cudaStream_t stream){
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_rgb, &pitch_rgb,
-                    &width, &height };
+                    &width, &height,&mode };
 
     dim3 block(32,32);
     dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
@@ -376,7 +378,7 @@ bool CUDA_ImageProcess::rgb_to_RGBA_packed_8bit(uint8_t* d_rgba, size_t pitch_rg
     return true;
 }
 
-//RGB→RGBA 8bit
+//RGB→RGBA 10bit planner
 bool CUDA_ImageProcess::rgb_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_r, size_t pitch_r,uint8_t* d_g, size_t pitch_g,uint8_t* d_b, size_t pitch_b,int width, int height,cudaStream_t stream){
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_r, &pitch_r,
@@ -406,11 +408,11 @@ bool CUDA_ImageProcess::rgb_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uin
     return true;
 }
 
-//RGB→RGBA 10bit R210
-bool CUDA_ImageProcess::rgb_to_RGBA_packed_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_rgb, size_t pitch_rgb,int width, int height,cudaStream_t stream){
+//RGB→RGBA 10bit Packed
+bool CUDA_ImageProcess::rgb_to_RGBA_10bit_packed(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_rgb, size_t pitch_rgb,int width, int height,int mode,cudaStream_t stream){
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_rgb, &pitch_rgb,
-                    &width, &height };
+                    &width, &height ,&mode };
 
     dim3 block(32,32);
     dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
@@ -434,19 +436,19 @@ bool CUDA_ImageProcess::rgb_to_RGBA_packed_10bit(uint8_t* d_rgba, size_t pitch_r
     return true;
 }
 
-//反転→RGBA→NV12 シングルストリームエンコード
-bool CUDA_ImageProcess::Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int width,int height, cudaStream_t stream)
-{
-    void* args[] = {&d_y, &pitch_y,
-                    &d_uv, &pitch_uv,
-                    &d_rgba, &pitch_rgba,
+//特殊(Davinci Resolve YUV422P 8bit→RGBA)
+bool CUDA_ImageProcess::uyvy422_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_yuv, size_t pitch_yuv,int width, int height,cudaStream_t stream){
+    void* args[] = {&d_rgba, &pitch_rgba,
+                    &d_yuv, &pitch_yuv,
                     &width, &height };
 
-    dim3 block(16,16);
+    dim3 block(32,32);
     dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
 
-    cudaError_t err = cudaLaunchKernel((const void*)flip_rgba_to_nv12_kernel,
-                     grid, block, args, 0, stream);
+    cudaError_t err = cudaLaunchKernel((const void*)uyvy422_to_rgba_8bit_kernel,
+                                       grid, block, args, 0, stream);
+
+    cudaGetLastError();   // ← 必ずチェック
 
     if (err != cudaSuccess) {
         qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);

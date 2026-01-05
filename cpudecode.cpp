@@ -601,6 +601,7 @@ void cpudecode::gpu_upload(){
             stream
             );
     }else if(VideoInfo.bitdepth == 10){
+        int is_be = (vd[0].Frame->format == AV_PIX_FMT_YUV420P10BE);
         CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(
             d_rgba,
             pitch_rgba,
@@ -612,6 +613,7 @@ void cpudecode::gpu_upload(){
             pitch_v,
             VideoInfo.width,
             VideoInfo.height,
+            is_be,
             stream
             );
     }
