@@ -20,7 +20,8 @@ extern "C" {
 decode_thread::decode_thread(QString FilePath,bool audio_m,QObject *parent)
     : QObject(parent), video_play_flag(true), timer(new QTimer(this))  {
     QFileInfo fileInfo(FilePath);
-    VideoInfo.Name = fileInfo.completeBaseName().toStdString()+".mp4";
+    QString ext = QFileInfo(fileInfo).suffix().toLower();
+    VideoInfo.Name = fileInfo.completeBaseName().toStdString() + "." + ext.toStdString();
 
     VideoInfo.Path = FilePath.toStdString();
     File_byteArray = FilePath.toUtf8();

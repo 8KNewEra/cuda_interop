@@ -15,8 +15,6 @@ extern "C"{
     __global__ void yuv420p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
 
     __global__ void yuv422p_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
-    __global__ void uyvy422_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* yuv, size_t yuv_pitch,int width, int height);
-
     __global__ void yuv422p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
 
     __global__ void rgb_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* r_plane, size_t r_pitch,const uint8_t* g_plane, size_t g_pitch,const uint8_t* b_plane, size_t b_pitch,int width, int height);
@@ -24,6 +22,8 @@ extern "C"{
     __global__ void rgb_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* r_plane, size_t r_pitch,const uint8_t* g_plane, size_t g_pitch,const uint8_t* b_plane, size_t b_pitch,int width, int height);
     __global__ void rgb_to_rgba_10bit_packed_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* src, size_t src_pitch,int width, int height);
 
+    //特殊(Davinci Resolve YUV8bit)
+    __global__ void uyvy422_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* yuv, size_t yuv_pitch,int width, int height);
 
     //結合及び分割の処理
     __global__ void nv12x2_to_rgba_merge_kernel(

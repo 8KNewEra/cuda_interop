@@ -247,10 +247,9 @@ void MainWindow::Open_Video_File()
     // ファイルダイアログを開く
     QString filePath = QFileDialog::getOpenFileName(
         this,
-        tr("動画ファイルを開く"), // ダイアログのタイトル
-        QDir::homePath(),       // 初期ディレクトリ
-        // フィルタをMP4のみに限定する
-        tr("MP4動画ファイル (*.avi)","AVI動画ファイル (*.avi)")
+        tr("動画ファイルを開く"),
+        QDir::homePath(),
+        tr("動画ファイル (*.mp4 *.avi)")
         );
 
     // ファイルが選択されたかどうかを確認
@@ -379,9 +378,21 @@ void MainWindow::slider_set_range(){
 void MainWindow::start_decode_thread(QString filePath) {
     if (!run_decode_thread) {
         if(canUseGpuDecode(filePath)){
-            decodestream = new avidecode(filePath,audio_mode);
+            decodestream = new nvgpudecode(filePath,audio_mode);
         }else{
-            decodestream = new avidecode(filePath,audio_mode);
+            QString ext = QFileInfo(filePath).suffix().toLower();
+            if (ext == "mp4") {
+                decodestream = new cpudecode(filePath, audio_mode);
+            }
+            else if (ext == "avi") {
+                decodestream = new avidecode(filePath, audio_mode);
+            }else{
+                QMessageBox::warning(this,
+                                     tr("ファイルを開けません"),
+                                     tr("非対応の動画です"),
+                                     QMessageBox::Ok);
+                return;
+            }
         }
 
         decode__thread = new QThread;

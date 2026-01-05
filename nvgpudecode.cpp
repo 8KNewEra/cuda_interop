@@ -301,7 +301,7 @@ bool nvgpudecode::initialized_ffmpeg()
 
 //デコーダ設定
 const char*nvgpudecode::selectDecoder(const char* codec_name) {
-    const char*codec="";
+    const char*codec{};
     if (strcmp(codec_name, "h264") == 0) {
         codec="h264_cuvid";
         qDebug()<<codec;
@@ -312,7 +312,7 @@ const char*nvgpudecode::selectDecoder(const char* codec_name) {
         codec="av1_cuvid";
         qDebug()<<codec;
     }else{
-        codec="";
+        codec=nullptr;
     }
     VideoInfo.Codec=codec;
     return codec;
