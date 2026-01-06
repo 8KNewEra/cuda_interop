@@ -28,17 +28,17 @@ __global__ void rgba_to_nv12x4_flip_split_kernel(
 
     uchar4 rgba = ((uchar4*)((uint8_t*)In + fy * pitchIn))[sx];
 
-    int R = rgba.x;
-    int G = rgba.y;
-    int B = rgba.z;
+    float R = rgba.x;
+    float G = rgba.y;
+    float B = rgba.z;
 
-    int Y = ( 66 * R + 129 * G + 25 * B + 128) >> 8;
-    int U = (-38 * R - 74 * G +112 * B + 128) >> 8;
-    int V = (112 * R - 94 * G - 18 * B + 128) >> 8;
+    float yf = 0.257f * R + 0.504f * G + 0.098f * B + 16.0f;
+    float uf = -0.148f * R - 0.291f * G + 0.439f * B + 128.0f;
+    float vf = 0.439f * R - 0.368f * G - 0.071f * B + 128.0f;
 
-    Y = min(max(Y + 16,  0), 255);
-    U = min(max(U + 128, 0), 255);
-    V = min(max(V + 128, 0), 255);
+    uint8_t Y = (uint8_t)fminf(fmaxf(yf, 0.0f), 255.0f);
+    uint8_t U = (uint8_t)fminf(fmaxf(uf, 0.0f), 255.0f);
+    uint8_t V = (uint8_t)fminf(fmaxf(vf, 0.0f), 255.0f);
 
     int quadX = (sx >= outW);
     int quadY = (sy >= outH);

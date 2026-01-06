@@ -38,18 +38,27 @@ __global__ void nv12x2_to_rgba_merge_kernel(
     int uv_x = sx & ~1;
     int uv_y = sy >> 1;
 
-    int U = (int)UVp[uv_y * pitchUV + uv_x + 0] - 128;
-    int V = (int)UVp[uv_y * pitchUV + uv_x + 1] - 128;
+    int U = (int)UVp[uv_y * pitchUV + uv_x + 0];
+    int V = (int)UVp[uv_y * pitchUV + uv_x + 1];
 
-    int C = Y - 16;
-    int R = (298 * C + 409 * V + 128) >> 8;
-    int G = (298 * C - 100 * U - 208 * V + 128) >> 8;
-    int B = (298 * C + 516 * U + 128) >> 8;
+    float fY = (float)Y - 16.0f;
+    float fU = (float)U - 128.0f;
+    float fV = (float)V - 128.0f;
 
-    R = R < 0 ? 0 : (R > 255 ? 255 : R);
-    G = G < 0 ? 0 : (G > 255 ? 255 : G);
-    B = B < 0 ? 0 : (B > 255 ? 255 : B);
+    float R = 1.164f * fY + 1.596f * fV;
+    float G = 1.164f * fY - 0.392f * fU - 0.813f * fV;
+    float B = 1.164f * fY + 2.017f * fU;
 
-    ((uchar4*)((uint8_t*)out + oy * pitchOut))[ox] =
-        make_uchar4(R, G, B, 255);
+    uint8_t r = (uint8_t)fminf(fmaxf(R, 0.0f), 255.0f);
+    uint8_t g = (uint8_t)fminf(fmaxf(G, 0.0f), 255.0f);
+    uint8_t b = (uint8_t)fminf(fmaxf(B, 0.0f), 255.0f);
+
+    uchar4 pixel;
+    pixel.x = r;
+    pixel.y = g;
+    pixel.z = b;
+    pixel.w = 255;
+
+    uchar4* row = (uchar4*)((uint8_t*)out + oy * pitchOut);
+    row[ox] = pixel;
 }
