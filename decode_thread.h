@@ -41,7 +41,7 @@ public:
     bool audio_mode=false;
 
 signals:
-    void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,int slider);
+    void send_decode_image(uint8_t* d_rgba_8,uint16_t *d_rgba_16, size_t pitch_rgba,int slider);
     void send_audio(QByteArray pcm);
     void send_slider_info();
     void finished();
@@ -103,7 +103,8 @@ protected:
 
     //CUDA
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
-    uint8_t* d_rgba=nullptr;
+    uint8_t* d_rgba_8=nullptr;
+    uint16_t* d_rgba_16=nullptr;
     size_t pitch_rgba;
     cudaStream_t stream=nullptr;
     cudaEvent_t events=nullptr;

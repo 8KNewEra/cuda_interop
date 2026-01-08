@@ -130,8 +130,12 @@ decode_thread::~decode_thread() {
         events = nullptr;
     }
 
-    if(d_rgba){
-        safe_cuda_free((void*&)d_rgba, "d_rgba");
+    if(d_rgba_8){
+        safe_cuda_free((void*&)d_rgba_8, "d_rgba_8");
+    }
+
+    if(d_rgba_16){
+        safe_cuda_free((void*&)d_rgba_16, "d_rgba_16");
     }
 
     if(d_y){
@@ -245,7 +249,7 @@ void decode_thread::processFrame() {
     if (!video_play_flag && slider_No == VideoInfo.current_frameNo){
         if(decode_state==STATE_DECODE_READY){
             decode_state=STATE_DECODING;
-            emit send_decode_image(nullptr,0,VideoInfo.current_frameNo);
+            emit send_decode_image(nullptr,nullptr,0,VideoInfo.current_frameNo);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
         return;

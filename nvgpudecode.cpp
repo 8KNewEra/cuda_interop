@@ -185,12 +185,23 @@ bool nvgpudecode::initialized_ffmpeg()
     // ------------------------
     // CUDA メモリ確保
     // ------------------------
-    cudaError_t err = cudaMallocPitch(
-        &d_rgba,
-        &pitch_rgba,
-        VideoInfo.width * VideoInfo.width_scale * 4,
-        VideoInfo.height * VideoInfo.height_scale
-        );
+    cudaError_t err{};
+    if(VideoInfo.bitdepth==8){
+        err = cudaMallocPitch(
+            &d_rgba_8,
+            &pitch_rgba,
+            VideoInfo.width * VideoInfo.width_scale * 4 *2,
+            VideoInfo.height * VideoInfo.height_scale
+            );
+    }else if(VideoInfo.bitdepth==10){
+        err = cudaMallocPitch(
+            &d_rgba_16,
+            &pitch_rgba,
+            VideoInfo.width * VideoInfo.width_scale * 4 *2,
+            VideoInfo.height * VideoInfo.height_scale
+            );
+    }
+
     if (err != cudaSuccess) {
         Error_String = QString("cudaMallocPitch failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -654,7 +665,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
         CUDA_IMG_Proc->nv12x2_to_rgba_merge(
             vd[0].Frame->data[0],vd[0].Frame->linesize[0], vd[0].Frame->data[1],vd[0].Frame->linesize[1],
             vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
-            d_rgba, pitch_rgba,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
+            d_rgba_8, pitch_rgba,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
     }else if (vd.size() == 4) {
         //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x4_to_rgba_merge(
@@ -662,7 +673,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
             vd[2].Frame->data[0],vd[2].Frame->linesize[0], vd[2].Frame->data[1],vd[2].Frame->linesize[1],
             vd[3].Frame->data[0],vd[3].Frame->linesize[0], vd[3].Frame->data[1],vd[3].Frame->linesize[1],
-            d_rgba, pitch_rgba,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
+            d_rgba_8, pitch_rgba,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
     }else if(vd.size() == 8){
         //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x8_to_rgba_merge(
@@ -674,12 +685,12 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             vd[5].Frame->data[0],vd[5].Frame->linesize[0], vd[5].Frame->data[1],vd[5].Frame->linesize[1],
             vd[6].Frame->data[0],vd[6].Frame->linesize[0], vd[6].Frame->data[1],vd[6].Frame->linesize[1],
             vd[7].Frame->data[0],vd[7].Frame->linesize[0], vd[7].Frame->data[1],vd[7].Frame->linesize[1],
-            d_rgba, pitch_rgba,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
+            d_rgba_8, pitch_rgba,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
     }else{
         // NV12 → RGBA
         if(VideoInfo.bitdepth == 8){
             CUDA_IMG_Proc->NV12_to_RGBA_8bit(
-                d_rgba,
+                d_rgba_8,
                 pitch_rgba,
                 vd[0].Frame->data[0],
                 vd[0].Frame->linesize[0],
@@ -691,7 +702,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
                 );
         }else if(VideoInfo.bitdepth == 10){
             CUDA_IMG_Proc->NV12_to_RGBA_10bit(
-                d_rgba,
+                d_rgba_16,
                 pitch_rgba,
                 vd[0].Frame->data[0],
                 vd[0].Frame->linesize[0],
@@ -717,5 +728,5 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
     slider_No = VideoInfo.current_frameNo;
 
-    emit send_decode_image(d_rgba,  pitch_rgba, VideoInfo.current_frameNo);
+    emit send_decode_image(d_rgba_8,d_rgba_16, pitch_rgba, VideoInfo.current_frameNo);
 }

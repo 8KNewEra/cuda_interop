@@ -167,11 +167,22 @@ bool cpudecode::initialized_ffmpeg()
     y_size  = VideoInfo.width * VideoInfo.height * bytesPerSample;
     uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2) * bytesPerSample;
 
-    cudaError_t err;
-
-    err = cudaMallocPitch(&d_rgba, &pitch_rgba,
-                          VideoInfo.width * 4,
-                          VideoInfo.height);
+    cudaError_t err{};
+    if(VideoInfo.bitdepth==8){
+        err = cudaMallocPitch(
+            &d_rgba_8,
+            &pitch_rgba,
+            VideoInfo.width * 4 *2,
+            VideoInfo.height
+            );
+    }else if(VideoInfo.bitdepth==10){
+        err = cudaMallocPitch(
+            &d_rgba_16,
+            &pitch_rgba,
+            VideoInfo.width * 4 *2,
+            VideoInfo.height
+            );
+    }
     if (err != cudaSuccess) {
         Error_String = QString("cudaMallocPitch(d_rgba) failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -588,7 +599,7 @@ void cpudecode::gpu_upload(){
     // yuv420p → RGBA
     if(VideoInfo.bitdepth == 8){
         CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(
-            d_rgba,
+            d_rgba_8,
             pitch_rgba,
             d_y,
             pitch_y,
@@ -603,7 +614,7 @@ void cpudecode::gpu_upload(){
     }else if(VideoInfo.bitdepth == 10){
         int is_be = (vd[0].Frame->format == AV_PIX_FMT_YUV420P10BE);
         CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(
-            d_rgba,
+            d_rgba_16,
             pitch_rgba,
             d_y,
             pitch_y,
@@ -631,5 +642,5 @@ void cpudecode::gpu_upload(){
     VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
     slider_No = VideoInfo.current_frameNo;
 
-    emit send_decode_image(d_rgba, pitch_rgba, VideoInfo.current_frameNo);
+    emit send_decode_image(d_rgba_8,d_rgba_16, pitch_rgba, VideoInfo.current_frameNo);
 }
