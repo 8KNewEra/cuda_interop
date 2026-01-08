@@ -2,6 +2,7 @@
 #define NVGPUDECODE_H
 
 #include "decode_thread.h"
+#include <cuda_fp16.h>
 
 class nvgpudecode:public decode_thread
 {

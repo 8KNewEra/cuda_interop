@@ -60,9 +60,13 @@ GLWidget::~GLWidget() {
     }
 
     //CUDA Mallocされたやつ
-    if (d_rgba) {
-        cudaFree(d_rgba);
-        d_rgba = nullptr;
+    if (d_rgba_8) {
+        cudaFree(d_rgba_8);
+        d_rgba_8 = nullptr;
+    }
+    if (d_rgba_16) {
+        cudaFree(d_rgba_16);
+        d_rgba_16 = nullptr;
     }
     if (d_hist_stats) {
         cudaFree(d_hist_stats);
@@ -235,6 +239,10 @@ void GLWidget::FBO_Rendering(){
 
     glBindVertexArray(0);
     glUseProgram(0);
+
+    // GLboolean srgb;
+    // glGetBooleanv(GL_FRAMEBUFFER_SRGB, &srgb);
+    // qDebug() << "FRAMEBUFFER_SRGB =" << srgb;
 
     if (encode_state==STATE_ENCODING) {
         // GPUエンコード用処理
@@ -510,8 +518,9 @@ void GLWidget::setShaderUniform(int width,int height){
     glUseProgram(0);
 }
 
-//CUDA→OpenGLの初期化、登録など
-void GLWidget::initCudaTexture(int width,int height) {
+//OpenGLとCUDAの初期化、登録など 8bit
+void GLWidget::init_GL_and_CUDA(int width,int height) {
+
     //古いリソースを破棄
     if (cudaResource1) {
         cudaGraphicsUnregisterResource(cudaResource1);
@@ -522,10 +531,40 @@ void GLWidget::initCudaTexture(int width,int height) {
         inputTextureID = 0;
     }
 
-    //新しい解像度で作り直し
+    if (cudaResource2) {
+        cudaGraphicsUnregisterResource(cudaResource2);
+        cudaResource2 = nullptr;
+    }
+    if (fboTextureID) {
+        glDeleteTextures(1, &fboTextureID);
+        fboTextureID = 0;
+    }
+    if (fbo) {
+        glDeleteFramebuffers(1, &fbo);
+        fbo = 0;
+    }
+    if (tempTextureID) {
+        glDeleteTextures(1, &tempTextureID);
+        tempTextureID = 0;
+    }
+    if (tempfbo) {
+        glDeleteFramebuffers(1, &tempfbo);
+        tempfbo = 0;
+    }
+
+    if (d_rgba_8) {
+        cudaFree(d_rgba_8);
+        d_rgba_8 = nullptr;
+    }
+    if (d_rgba_16) {
+        cudaFree(d_rgba_16);
+        d_rgba_16 = nullptr;
+    }
+
+    //入力テクスチャ
     glGenTextures(1, &inputTextureID);
     glBindTexture(GL_TEXTURE_2D, inputTextureID);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
@@ -536,78 +575,42 @@ void GLWidget::initCudaTexture(int width,int height) {
         cudaResource1 = nullptr;
         inputTextureID = 0;
     }
-}
 
-//OpenGL→CUDAの初期化、登録など
-void GLWidget::initTextureCuda(int width,int height) {
-        //既存リソースの破棄
-        if (cudaResource2) {
-            cudaGraphicsUnregisterResource(cudaResource2);
-            cudaResource2 = nullptr;
-        }
-        if (fboTextureID) {
-            glDeleteTextures(1, &fboTextureID);
-            fboTextureID = 0;
-        }
-        if (fbo) {
-            glDeleteFramebuffers(1, &fbo);
-            fbo = 0;
-        }
-        if (tempTextureID) {
-            glDeleteTextures(1, &tempTextureID);
-            tempTextureID = 0;
-        }
-        if (tempfbo) {
-            glDeleteFramebuffers(1, &tempfbo);
-            tempfbo = 0;
-        }
+    //fbo
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenTextures(1, &fboTextureID);
+    glBindTexture(GL_TEXTURE_2D, fboTextureID);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTextureID, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        //新しいサイズで再作成
-        //fbo
-        glGenFramebuffers(1, &fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glGenTextures(1, &fboTextureID);
-        glBindTexture(GL_TEXTURE_2D, fboTextureID);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTextureID, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    //tempfbo
+    glGenFramebuffers(1, &tempfbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, tempfbo);
+    glGenTextures(1, &tempTextureID);
+    glBindTexture(GL_TEXTURE_2D, tempTextureID);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tempTextureID, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        //tempfbo
-        glGenFramebuffers(1, &tempfbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, tempfbo);
-        glGenTextures(1, &tempTextureID);
-        glBindTexture(GL_TEXTURE_2D, tempTextureID);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tempTextureID, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        //fbo登録
-        cudaError_t err = cudaGraphicsGLRegisterImage(&cudaResource2, fboTextureID, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsReadOnly);
-        if (err != cudaSuccess) {
-            qDebug() << "cudaGraphicsGLRegisterImage (fbo) error:" << cudaGetErrorString(err);
-            cudaResource2 = nullptr;
-        }
-}
-
-//初回、解像度が変わった場合再Malloc
-void GLWidget::initCudaMalloc(int width, int height)
-{
-    //すでに確保済みなら一度解放
-    if (d_rgba) {
-        cudaFree(d_rgba);
-        d_rgba = nullptr;
+    //fbo登録
+    err = cudaGraphicsGLRegisterImage(&cudaResource2, fboTextureID, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsReadOnly);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaGraphicsGLRegisterImage (fbo) error:" << cudaGetErrorString(err);
+        cudaResource2 = nullptr;
     }
 
     //再確保
-    cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
+    cudaMallocPitch(&d_rgba_8, &pitch_rgba, width * 4, height);
 }
 
 //CUDAからOpenGLへ転送
-void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No) {
+void GLWidget::uploadToGLTexture(float4* d_rgba, size_t pitch_rgba,int No) {
     // QElapsedTimer timer;
     // timer.start();
 
@@ -619,9 +622,7 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No) {
 
     //解像度の変更に対応
     if (VideoInfo.width*VideoInfo.width_scale != width_ || VideoInfo.height*VideoInfo.height_scale != height_) {
-        initCudaMalloc(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
-        initCudaTexture(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
-        initTextureCuda(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
+        init_GL_and_CUDA(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         setShaderUniform(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         initCudaHist();
         width_=VideoInfo.width*VideoInfo.width_scale;
@@ -653,7 +654,7 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No) {
     }
 
     //OpenGL用テクスチャに変換してOpenGL転送
-    size_t widthBytes = width_ * 4;
+      size_t widthBytes = width_ * sizeof(float4);
     if (widthBytes <= pitch_rgba) {
         cudaMemcpy2DToArray(
             array,
@@ -708,7 +709,7 @@ void GLWidget::downloadToGLTexture_and_Encode() {
     //OpenGL用テクスチャに変換してOpenGL転送
     size_t widthBytes = width_ * 4;
     if (widthBytes <= pitch_rgba) {
-        cudaMemcpy2DFromArray(d_rgba, pitch_rgba, array, 0, 0, widthBytes, height_, cudaMemcpyDeviceToDevice);
+        cudaMemcpy2DFromArray(d_rgba_8, pitch_rgba, array, 0, 0, widthBytes, height_, cudaMemcpyDeviceToDevice);
     } else {
         qDebug() << "Invalid pitch: widthBytes > pitch!";
         return;
@@ -725,7 +726,7 @@ void GLWidget::downloadToGLTexture_and_Encode() {
     // qDebug()<<encode_FrameCount<<":"<<MaxFrame;
 
     if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
-        save_encoder->encode(d_rgba,pitch_rgba);
+        save_encoder->encode(d_rgba_8,pitch_rgba);
         encode_FrameCount++;
     }else{
         delete save_encoder;
@@ -846,7 +847,7 @@ void GLWidget::histgram_Analysys(){
         texDesc.addressMode[0] = cudaAddressModeClamp;
         texDesc.addressMode[1] = cudaAddressModeClamp;
         texDesc.filterMode = cudaFilterModePoint; // 点サンプリング
-        texDesc.readMode = cudaReadModeElementType; // 生の要素（uchar4）を取りたい
+        texDesc.readMode = cudaReadModeElementType;
         texDesc.normalizedCoords = 0;
 
         cudaTextureObject_t texObj = 0;

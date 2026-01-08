@@ -4,6 +4,7 @@
 #include "qobject.h"
 #include <string>
 #include <cuda_runtime.h>
+
 #define STATE_NOT_ENCODE 0
 #define STATE_ENCODE_READY 1
 #define STATE_ENCODING 2
@@ -145,9 +146,9 @@ struct HistStats {
 
 //GPU内で保持する
 struct HistData {
-    unsigned int hist_r[256];
-    unsigned int hist_g[256];
-    unsigned int hist_b[256];
+    unsigned int hist_r[1024];
+    unsigned int hist_g[1024];
+    unsigned int hist_b[1024];
     unsigned int max_r;
     unsigned int max_g;
     unsigned int max_b;

@@ -249,7 +249,7 @@ void decode_thread::processFrame() {
     if (!video_play_flag && slider_No == VideoInfo.current_frameNo){
         if(decode_state==STATE_DECODE_READY){
             decode_state=STATE_DECODING;
-            emit send_decode_image(nullptr,nullptr,0,VideoInfo.current_frameNo);
+            emit send_decode_image(nullptr,0,VideoInfo.current_frameNo);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
         return;

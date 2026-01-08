@@ -1,7 +1,7 @@
 struct HistData {
-    unsigned int hist_r[256];
-    unsigned int hist_g[256];
-    unsigned int hist_b[256];
+    unsigned int hist_r[1024];
+    unsigned int hist_g[1024];
+    unsigned int hist_b[1024];
     unsigned int max_r;
     unsigned int max_g;
     unsigned int max_b;

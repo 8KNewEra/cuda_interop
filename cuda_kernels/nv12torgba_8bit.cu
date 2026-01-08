@@ -1,42 +1,37 @@
 extern "C"
 __global__ void nv12_to_rgba_8bit_kernel(
-    uint8_t* rgba, size_t rgba_step,
-    const uint8_t* y_plane, size_t y_step,
-    const uint8_t* uv_plane, size_t uv_step,
+    float4* rgba, size_t rgba_pitch,
+    const uint8_t* y_plane, size_t y_pitch,
+    const uint8_t* uv_plane, size_t uv_pitch,
     int width, int height)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-
     if (x >= width || y >= height) return;
 
-    uint8_t Y = y_plane[y * y_step + x];
+    float Y = float(y_plane[y * y_pitch + x]);
 
-    int uv_index = (y / 2) * uv_step + (x / 2) * 2;
-    uint8_t U = uv_plane[uv_index];
-    uint8_t V = uv_plane[uv_index + 1];
+    int uv_x = x & ~1;
+    int uv_y = y >> 1;
+    int uv_idx = uv_y * uv_pitch + uv_x;
 
-    float fY = (float)Y - 16.0f;
-    float fU = (float)U - 128.0f;
-    float fV = (float)V - 128.0f;
+    float U = float(uv_plane[uv_idx + 0]);
+    float V = float(uv_plane[uv_idx + 1]);
 
-    float R = 1.164f * fY + 1.596f * fV;
-    float G = 1.164f * fY - 0.392f * fU - 0.813f * fV;
-    float B = 1.164f * fY + 2.017f * fU;
+    float Yf = (Y - 16.0f)  / 219.0f;
+    float Uf = (U - 128.0f) / 224.0f;
+    float Vf = (V - 128.0f) / 224.0f;
 
-    uint8_t r = (uint8_t)fminf(fmaxf(R, 0.0f), 255.0f);
-    uint8_t g = (uint8_t)fminf(fmaxf(G, 0.0f), 255.0f);
-    uint8_t b = (uint8_t)fminf(fmaxf(B, 0.0f), 255.0f);
+    Yf = fminf(fmaxf(Yf, 0.0f), 1.0f);
 
-    uchar4 pixel;
-    pixel.x = r;
-    pixel.y = g;
-    pixel.z = b;
-    pixel.w = 255;
+    float R = Yf + 1.5748f * Vf;
+    float G = Yf - 0.1873f * Uf - 0.4681f * Vf;
+    float B = Yf + 1.8556f * Uf;
 
-    uchar4* row = (uchar4*)((uint8_t*)rgba + y * rgba_step);
-    row[x] = pixel;
+    R = fminf(fmaxf(R, 0.0f), 1.0f);
+    G = fminf(fmaxf(G, 0.0f), 1.0f);
+    B = fminf(fmaxf(B, 0.0f), 1.0f);
+
+    float4* row = (float4*)((uint8_t*)rgba + y * rgba_pitch);
+    row[x] = make_float4(R, G, B, 1.0f);
 }
-
-
-

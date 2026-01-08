@@ -6,8 +6,8 @@ extern "C"{
     __global__ void dummy_kernel();
 
     //NV12↔RGBA
-    __global__ void nv12_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
-    __global__ void nv12_to_rgba_10bit_kernel(uint16_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
+    __global__ void nv12_to_rgba_8bit_kernel(float4* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
+    __global__ void nv12_to_rgba_10bit_kernel(float4* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
     __global__ void flip_rgba_to_nv12_kernel(uint8_t* y_plane, size_t y_step,uint8_t* uv_plane,size_t uv_step,const uint8_t* rgba, size_t rgba_step,int width, int height);
 
     //YUV420P→RGBA
@@ -42,7 +42,7 @@ extern "C"{
         const uint8_t* y1,  size_t pitchY1,const uint8_t* uv1, size_t pitchUV1,
         const uint8_t* y2,  size_t pitchY2,const uint8_t* uv2, size_t pitchUV2,
         const uint8_t* y3,  size_t pitchY3,const uint8_t* uv3, size_t pitchUV3,
-        uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH);
+        float4* out, size_t pitchOut,int outW, int outH,int srcW, int srcH);
     __global__ void rgba_to_nv12x4_flip_split_kernel(
         const uint8_t* In, size_t pitchIn,
         uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
@@ -117,7 +117,7 @@ bool CUDA_ImageProcess::Dummy(cudaStream_t stream){
 }
 
 //NV12→RGBA 8bit
-bool CUDA_ImageProcess::NV12_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int width,int height, cudaStream_t stream)
+bool CUDA_ImageProcess::NV12_to_RGBA_8bit(float4* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int width,int height, cudaStream_t stream)
 {
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_y, &pitch_y,
@@ -145,7 +145,7 @@ bool CUDA_ImageProcess::NV12_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uin
 }
 
 //NV12→RGBA 10bit
-bool CUDA_ImageProcess::NV12_to_RGBA_10bit(uint16_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int width,int height, cudaStream_t stream)
+bool CUDA_ImageProcess::NV12_to_RGBA_10bit(float4* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int width,int height, cudaStream_t stream)
 {
     void* args[] = {&d_rgba, &pitch_rgba,
                     &d_y, &pitch_y,
@@ -537,7 +537,7 @@ bool CUDA_ImageProcess::nv12x4_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_
                                              uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
                                              uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
                                              uint8_t* y3,  size_t pitchY3,uint8_t* uv3, size_t pitchUV3,
-                                             uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH,cudaStream_t stream){
+                                             float4* out, size_t pitchOut,int outW, int outH,int srcW, int srcH,cudaStream_t stream){
 
     void* args[] = {&y0, &pitchY0,&uv0,&pitchUV0,
                     &y1, &pitchY1,&uv1,&pitchUV1,
@@ -741,7 +741,7 @@ bool CUDA_ImageProcess::histogram_status(HistData* Histdata,HistStats* out_stats
         &out_stats,
     };
 
-    dim3 block(256);
+    dim3 block(1024);
     dim3 grid(1);
 
     cudaError_t err = cudaLaunchKernel(
@@ -773,7 +773,7 @@ bool CUDA_ImageProcess::histgram_normalize(float* vbo,int num_bins,HistData* His
         &input_stats
     };
 
-    dim3 block(256);
+    dim3 block(1024);
     dim3 grid(1);
 
     cudaError_t err = cudaLaunchKernel(

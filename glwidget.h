@@ -29,7 +29,7 @@ signals:
 public:
     explicit GLWidget(QWindow *parent = nullptr);
     ~GLWidget();
-    void uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No);
+    void uploadToGLTexture(float4* d_rgba, size_t pitch_rgba,int No);
     void encode_mode(int flag);
     void GLresize();
     void GLreset();
@@ -50,9 +50,7 @@ protected:
     void initializeGL() override;
 
 private:
-    void initTextureCuda(int width,int height);
-    void initCudaTexture(int width,int height);
-    void initCudaMalloc(int width,int height);
+    void init_GL_and_CUDA(int width,int height);
     void setShaderUniform(int width,int height);
     void Monitor_Rendering();
     void initCudaHist();
@@ -95,7 +93,8 @@ private:
     shader Averaging_shader;
 
     //動画データ
-    uint8_t *d_rgba=nullptr;
+    uint8_t *d_rgba_8=nullptr;
+    uint16_t *d_rgba_16=nullptr;
     size_t pitch_rgba=0;
 
     // 描画領域を計算
@@ -127,7 +126,7 @@ private:
     HistStats* d_hist_stats = nullptr;
     HistData h_hist_data;
     HistStats h_hist_stats;
-    int num_bins = 256;
+    int num_bins = 1024;
     int line_y1,line_y2,line_y3,line_y4;
 };
 
