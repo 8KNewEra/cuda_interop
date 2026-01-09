@@ -18,6 +18,7 @@ CONFIG += c++17
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+    avi_directstorage.cpp \
     avidecode.cpp \
     cpudecode.cpp \
     cuda_imageprocess.cpp \
@@ -33,6 +34,7 @@ SOURCES += \
 
 HEADERS += \
     __global__.h \
+    avi_directstorage.h \
     avidecode.h \
     cpudecode.h \
     cuda_imageprocess.h \
@@ -99,6 +101,15 @@ LIBS += -lswresample
 LIBS += -lswscale
 LIBS += -lavutil
 
+# DirectStorage
+DStorage_DIR = $$PWD/directstorage/native  # Windowsでもスラッシュを推奨（バックスラッシュでのパス崩れ防止）
+
+INCLUDEPATH += $$DStorage_DIR/include
+LIBS += -L$$DStorage_DIR/lib/x64
+LIBS += -ldstorage
+
+# D3D12 必要な追加ライブラリ
+LIBS += -ld3d12 -ldxgi -lpathcch
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
