@@ -298,28 +298,68 @@ bool avi_directstorage::initialized_ffmpeg()
     return true;
 }
 
+bool avi_directstorage::initialized_dx_storage() {
+
+    HRESULT hr;
+
+    // Factory
+    hr = DStorageGetFactory(
+        IID_PPV_ARGS(&dsFactory));
+    if (FAILED(hr)) return false;
+
+    // File open
+    hr = dsFactory->OpenFile(
+        input_filename.toStdWString().c_str(),
+        IID_PPV_ARGS(&dsFile));
+    if (FAILED(hr)) return false;
+
+    // Queue
+    DSTORAGE_QUEUE_DESC qdesc = {};
+    qdesc.Capacity = DSTORAGE_MAX_QUEUE_CAPACITY;
+    qdesc.Priority = DSTORAGE_PRIORITY_NORMAL;
+    qdesc.SourceType = DSTORAGE_REQUEST_SOURCE_FILE;
+    qdesc.Device = d3d12Device.Get();
+
+    hr = dsFactory->CreateQueue(
+        &qdesc,
+        IID_PPV_ARGS(&dsQueue));
+    if (FAILED(hr)) return false;
+
+    return true;
+}
 
 
+bool avi_directstorage::read_frame_to_gpu(int frame_index,ID3D12Resource* dst)
+{
+    if (frame_index >= frame_offsets.size())
+        return false;
 
+    DSTORAGE_REQUEST req = {};
+    req.Options.SourceType = DSTORAGE_REQUEST_SOURCE_FILE;
+    req.Source.File.Source = dsFile.Get();
+    req.Source.File.Offset = frame_offsets[frame_index];
+    req.Source.File.Size   = bytes_per_frame;
 
+    req.Options.DestinationType =
+        DSTORAGE_REQUEST_DESTINATION_BUFFER;
+    req.Destination.Buffer.Resource = dst;
+    req.Destination.Buffer.Offset   = 0;
+    req.Destination.Buffer.Size     = bytes_per_frame;
 
+    dsQueue->EnqueueRequest(&req);
+    dsQueue->Submit();
 
+    return true;
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+void avi_directstorage::wait_for_ds_complete()
+{
+    DSTORAGE_STATUS status = {};
+    do {
+        dsQueue->GetStatus(&status);
+        Sleep(0);
+    } while (status.NumPendingRequests > 0);
+}
 
 //デコーダ設定
 const char* avi_directstorage::selectDecoder(const char* codec_name)

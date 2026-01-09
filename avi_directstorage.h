@@ -1,6 +1,8 @@
 #ifndef AVI_DIRECTSTORAGE_H
 #define AVI_DIRECTSTORAGE_H
 #include "decode_thread.h"
+#include "dstorage.h"
+#include <wrl/client.h>
 
 class avi_directstorage:public decode_thread
 {
@@ -16,6 +18,18 @@ protected:
     bool get_last_frame_pts();
     void get_decode_audio();
     void gpu_upload();
+
+    bool initialized_dx_storage();
+    void wait_for_ds_complete();
+    bool read_frame_to_gpu(int frame_index,ID3D12Resource* dst);
+
+    // ---------- DirectStorage ----------
+    std::vector<int64_t> frame_offsets;
+    int bytes_per_frame = 0;
+    Microsoft::WRL::ComPtr<IDStorageFactory> dsFactory;
+    Microsoft::WRL::ComPtr<IDStorageFile>    dsFile;
+    Microsoft::WRL::ComPtr<IDStorageQueue>   dsQueue;
+    Microsoft::WRL::ComPtr<ID3D12Device>     d3d12Device;
 };
 
 #endif // AVI_DIRECTSTORAGE_H

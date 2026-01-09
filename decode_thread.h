@@ -12,9 +12,6 @@
 #include "cuda_imageprocess.h"
 #include "qaudiosink.h"
 
-#include "dstorage.h"
-#include <wrl/client.h>
-
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
