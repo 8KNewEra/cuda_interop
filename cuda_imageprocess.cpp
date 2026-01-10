@@ -27,6 +27,9 @@ extern "C"{
     //特殊(Davinci Resolve YUV8bit)
     __global__ void uyvy422_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* yuv, size_t yuv_pitch,int width, int height);
 
+    //directstorage確認用
+    __global__ void dump_kernel(uint8_t* p);
+
     //結合及び分割の処理
     __global__ void nv12x2_to_rgba_merge_kernel(
         const uint8_t* y0,  size_t pitchY0,const uint8_t* uv0, size_t pitchUV0,
@@ -101,6 +104,31 @@ bool CUDA_ImageProcess::Dummy(cudaStream_t stream){
 
     cudaError_t err = cudaLaunchKernel((const void*)dummy_kernel,
                                        grid, block, 0, 0, stream);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+bool CUDA_ImageProcess::dump(uint8_t *cudaptr,cudaStream_t stream){
+    dim3 block(1);
+    dim3 grid(1);
+
+    void* args[] = {&cudaptr};
+
+    cudaError_t err = cudaLaunchKernel((const void*)dump_kernel,
+                                       grid, block, args, 0, stream);
+
+    cudaDeviceSynchronize();
 
     if (err != cudaSuccess) {
         qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);

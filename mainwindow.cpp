@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "avi_directstorage.h"
 #include "avidecode.h"
 #include "cpudecode.h"
 #include "decode_thread.h"
@@ -377,23 +378,24 @@ void MainWindow::slider_set_range(){
 //デコードスレッド開始
 void MainWindow::start_decode_thread(QString filePath) {
     if (!run_decode_thread) {
-        if(canUseGpuDecode(filePath)){
-            decodestream = new nvgpudecode(filePath,audio_mode);
-        }else{
-            QString ext = QFileInfo(filePath).suffix().toLower();
-            if (ext == "mp4") {
-                decodestream = new cpudecode(filePath, audio_mode);
-            }
-            else if (ext == "avi") {
-                decodestream = new avidecode(filePath, audio_mode);
-            }else{
-                QMessageBox::warning(this,
-                                     tr("ファイルを開けません"),
-                                     tr("非対応の動画です"),
-                                     QMessageBox::Ok);
-                return;
-            }
-        }
+        decodestream = new avi_directstorage(filePath,audio_mode);
+        // if(canUseGpuDecode(filePath)){
+        //     decodestream = new nvgpudecode(filePath,audio_mode);
+        // }else{
+        //     QString ext = QFileInfo(filePath).suffix().toLower();
+        //     if (ext == "mp4") {
+        //         decodestream = new cpudecode(filePath, audio_mode);
+        //     }
+        //     else if (ext == "avi") {
+        //         decodestream = new avidecode(filePath, audio_mode);
+        //     }else{
+        //         QMessageBox::warning(this,
+        //                              tr("ファイルを開けません"),
+        //                              tr("非対応の動画です"),
+        //                              QMessageBox::Ok);
+        //         return;
+        //     }
+        // }
 
         decode__thread = new QThread;
 

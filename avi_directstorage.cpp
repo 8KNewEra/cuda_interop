@@ -1,4 +1,5 @@
 #include "avi_directstorage.h"
+#include <codecvt>
 
 // ===============================
 // avi CPUデコード
@@ -45,6 +46,23 @@ bool avi_directstorage::initialized_ffmpeg()
         Error_String = "No video streams found";
         return false;
     }
+
+    //オフセット取得
+    frame_offsets.clear();
+    AVPacket* pkt = av_packet_alloc();
+    while (av_read_frame(fmt_ctx, pkt) >= 0) {
+        if (pkt->stream_index == video_stream_index) {
+
+            // ファイル内オフセット
+            int64_t pos = pkt->pos;
+
+            if (pos >= 0) {
+                frame_offsets.push_back(pos);
+            }
+        }
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
 
     // ------------------------
     // デコーダ作成（CPU）
@@ -180,6 +198,56 @@ bool avi_directstorage::initialized_ffmpeg()
         return false;
     }
 
+    // ------------------------
+    // Direct Storage向けデータ取得
+    // ------------------------
+    bytes_per_frame = av_image_get_buffer_size(
+                      (AVPixelFormat)par->format,
+                      VideoInfo.width,
+                      VideoInfo.height,
+                      1   // alignment
+                      );
+
+    if (!create_device()){
+        Error_String="create_device";
+        return false;
+    }
+    if(!init_graph_que()){
+        Error_String="init_graph_que";
+        return false;
+    }
+    if (!initialized_dx_storage()){
+        Error_String="nitialized_dx_storage";
+        return false;
+    }
+    if (!create_D3D12_resource()){
+        Error_String="create_D3D12_resource";
+        return false;
+    }
+    if (!init_fence()){
+        Error_String="init_fencee";
+        return false;
+    }
+    if (!init_cuda_D3D12_interop(d3d12Device.Get(),dstBuffer.Get(),bytes_per_frame)){
+        Error_String="cinit_cuda_D3D12_interop";
+        return false;
+    }
+    if(!init_cuda_fence_interop(fence.Get())){
+        Error_String="init_cuda_fence_interop";
+        return false;
+    }
+
+    Q_ASSERT(dstBuffer.Get());
+    Q_ASSERT(bytes_per_frame > 0);
+    Q_ASSERT(frame_offsets[0] >= 0);
+
+    qDebug()<<"frame_offsets.size"<<frame_offsets.size();
+    qDebug()<<"frame_offsets"<<frame_offsets[0];
+    qDebug() << "offset =" << frame_offsets[4]
+             << "bytes_per_frame =" << bytes_per_frame;
+
+
+
     // pinned 登録
     // cudaHostRegister(vd[0].Frame->data[0], y_size,  cudaHostRegisterDefault);
     // cudaHostRegister(vd[0].Frame->data[1], uv_size, cudaHostRegisterDefault);
@@ -298,6 +366,46 @@ bool avi_directstorage::initialized_ffmpeg()
     return true;
 }
 
+bool avi_directstorage::create_device()
+{
+    HRESULT hr;
+
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        qDebug() << "CreateDXGIFactory failed";
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    hr = factory->EnumAdapters1(0, &adapter);
+    if (FAILED(hr)) {
+        qDebug() << "EnumAdapters1 failed";
+        return false;
+    }
+
+    hr = D3D12CreateDevice(
+        adapter.Get(),
+        D3D_FEATURE_LEVEL_12_0,
+        IID_PPV_ARGS(&d3d12Device)
+        );
+    if (FAILED(hr)) {
+        qDebug() << "D3D12CreateDevice failed";
+        return false;
+    }
+
+    DXGI_ADAPTER_DESC1 desc;
+    adapter->GetDesc1(&desc);
+    qDebug() << "Adapter:" << QString::fromWCharArray(desc.Description);
+
+    Q_ASSERT(d3d12Device);
+    HRESULT test = d3d12Device->GetDeviceRemovedReason();
+    qDebug() << "DeviceRemovedReason =" << QString::number(test, 16);
+
+    qDebug() << "D3D12 device created";
+    return true;
+}
+
 bool avi_directstorage::initialized_dx_storage() {
 
     HRESULT hr;
@@ -308,9 +416,15 @@ bool avi_directstorage::initialized_dx_storage() {
     if (FAILED(hr)) return false;
 
     // File open
+    std::wstring wpath =
+        std::wstring_convert<
+            std::codecvt_utf8_utf16<wchar_t>
+            >{}.from_bytes(input_filename);
+
     hr = dsFactory->OpenFile(
-        input_filename.toStdWString().c_str(),
+        wpath.c_str(),
         IID_PPV_ARGS(&dsFile));
+
     if (FAILED(hr)) return false;
 
     // Queue
@@ -328,8 +442,248 @@ bool avi_directstorage::initialized_dx_storage() {
     return true;
 }
 
+bool avi_directstorage::init_fence()
+{
+    HRESULT hr = d3d12Device->CreateFence(
+        0,
+        D3D12_FENCE_FLAG_SHARED,   // ★ 絶対に必要
+        IID_PPV_ARGS(&fence)
+        );
+    if (FAILED(hr)) {
+        qDebug() << "CreateFence failed";
+        return false;
+    }
 
-bool avi_directstorage::read_frame_to_gpu(int frame_index,ID3D12Resource* dst)
+    fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!fenceEvent) {
+        qDebug() << "CreateEvent failed";
+        return false;
+    }
+
+    fenceValue = 1;
+    return true;
+}
+
+
+bool avi_directstorage::wait_for_ds_complete()
+{
+    fenceValue++;
+
+    dsQueue->EnqueueSignal(fence.Get(), fenceValue);
+    dsQueue->Submit();
+
+    if (fence->GetCompletedValue() < fenceValue) {
+        fence->SetEventOnCompletion(fenceValue, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
+    return true;
+}
+
+bool avi_directstorage::create_D3D12_resource(){
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT; // GPUローカル
+    heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC resDesc = {};
+    resDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resDesc.Width = bytes_per_frame;
+    resDesc.Height = 1;
+    resDesc.DepthOrArraySize = 1;
+    resDesc.MipLevels = 1;
+    resDesc.Format = DXGI_FORMAT_UNKNOWN;
+    resDesc.SampleDesc.Count = 1;
+    resDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HRESULT hr = d3d12Device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_SHARED,
+        &resDesc,
+        D3D12_RESOURCE_STATE_COMMON,   // ★DirectStorage 用
+        nullptr,
+        IID_PPV_ARGS(&dstBuffer)
+        );
+
+    qDebug() << "Create";
+
+    if (FAILED(hr)) {
+        qDebug() << "CreateCommittedResource failed hr="
+                 << QString::number(hr, 16);
+        return false;
+    }
+
+    return true;
+}
+
+bool avi_directstorage::init_cuda_D3D12_interop(
+    ID3D12Device* device,
+    ID3D12Resource* dst,
+    size_t bufferSize)
+{
+    cudaError_t cuerr;
+    HRESULT hr;
+
+    cudaBufferSize = bufferSize;
+
+    // -----------------------------
+    // 1. D3D12 Resource を共有 HANDLE 化
+    // -----------------------------
+    hr = device->CreateSharedHandle(
+        dst,
+        nullptr,
+        GENERIC_ALL,
+        nullptr,
+        &sharedHandle
+        );
+    if (FAILED(hr)) {
+        qDebug() << "CreateSharedHandle failed";
+        return false;
+    }
+
+    // -----------------------------
+    // 2. CUDA External Memory 登録
+    // -----------------------------
+    cudaExternalMemoryHandleDesc memDesc = {};
+    memDesc.type = cudaExternalMemoryHandleTypeD3D12Resource;
+    memDesc.handle.win32.handle = sharedHandle;
+    memDesc.size = cudaBufferSize;
+    memDesc.flags = cudaExternalMemoryDedicated;  // ★これが必須
+
+
+    cuerr = cudaImportExternalMemory(&extMem, &memDesc);
+    if (cuerr != cudaSuccess) {
+        qDebug() << "cudaImportExternalMemory failed:"
+                 << cudaGetErrorString(cuerr);
+        return false;
+    }
+
+    // -----------------------------
+    // 3. CUDA アドレス取得
+    // -----------------------------
+    cudaExternalMemoryBufferDesc bufDesc = {};
+    bufDesc.offset = 0;
+    bufDesc.size   = cudaBufferSize;
+
+    cuerr = cudaExternalMemoryGetMappedBuffer(
+        &cudaPtr,
+        extMem,
+        &bufDesc
+        );
+    if (cuerr != cudaSuccess) {
+        qDebug() << "cudaExternalMemoryGetMappedBuffer failed:"
+                 << cudaGetErrorString(cuerr);
+        return false;
+    }
+
+    qDebug() << "CUDA-D3D12 interop initialized:"
+             << "cudaPtr =" << cudaPtr
+             << "size =" << cudaBufferSize;
+
+    return true;
+}
+
+bool avi_directstorage::init_cuda_fence_interop(ID3D12Fence* fence)
+{
+    HANDLE fenceHandle = nullptr;
+    HANDLE gfxFenceHandle = nullptr;
+
+    // -----------------------
+    // DS Fence
+    // -----------------------
+    HRESULT hr = d3d12Device->CreateSharedHandle(
+        fence,
+        nullptr,
+        GENERIC_ALL,
+        nullptr,
+        &fenceHandle
+        );
+    if (FAILED(hr)) {
+        qDebug() << "CreateSharedHandle(fence) failed";
+        return false;
+    }
+
+    cudaExternalSemaphoreHandleDesc dsDesc = {};
+    dsDesc.type = cudaExternalSemaphoreHandleTypeD3D12Fence;
+    dsDesc.handle.win32.handle = fenceHandle;
+    dsDesc.flags = 0;
+
+    cudaError_t err =
+        cudaImportExternalSemaphore(&cudaFence, &dsDesc);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaImportExternalSemaphore(ds) failed:"
+                 << cudaGetErrorString(err);
+        return false;
+    }
+
+    // -----------------------
+    // Graphics Fence
+    // -----------------------
+    hr = d3d12Device->CreateSharedHandle(
+        gfxFence.Get(),
+        nullptr,
+        GENERIC_ALL,
+        nullptr,
+        &gfxFenceHandle
+        );
+    if (FAILED(hr)) {
+        qDebug() << "CreateSharedHandle(gfxFence) failed";
+        return false;
+    }
+
+    cudaExternalSemaphoreHandleDesc gfxDesc = {};
+    gfxDesc.type = cudaExternalSemaphoreHandleTypeD3D12Fence;
+    gfxDesc.handle.win32.handle = gfxFenceHandle;
+    gfxDesc.flags = 0;
+
+    err =
+        cudaImportExternalSemaphore(&cudaGfxFence, &gfxDesc);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaImportExternalSemaphore(gfx) failed:"
+                 << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+
+bool avi_directstorage::init_graph_que(){
+    // Graphics Queue
+    D3D12_COMMAND_QUEUE_DESC qdesc = {};
+    qdesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    d3d12Device.Get()->CreateCommandQueue(&qdesc, IID_PPV_ARGS(&gfxQueue));
+
+    // Alloc / List
+    d3d12Device.Get()->CreateCommandAllocator(
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        IID_PPV_ARGS(&cmdAlloc));
+
+    d3d12Device.Get()->CreateCommandList(
+        0,
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        cmdAlloc.Get(),
+        nullptr,
+        IID_PPV_ARGS(&cmdList));
+
+    cmdList->Close();
+
+    // Fence
+    d3d12Device.Get()->CreateFence(
+        0,
+        D3D12_FENCE_FLAG_SHARED,
+        IID_PPV_ARGS(&gfxFence));
+
+    gfxFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+    return true;
+
+}
+
+
+bool avi_directstorage::read_frame_to_gpu(
+    int frame_index,
+    ID3D12Resource* dst)
 {
     if (frame_index >= frame_offsets.size())
         return false;
@@ -346,20 +700,82 @@ bool avi_directstorage::read_frame_to_gpu(int frame_index,ID3D12Resource* dst)
     req.Destination.Buffer.Offset   = 0;
     req.Destination.Buffer.Size     = bytes_per_frame;
 
+    // リクエスト投入
     dsQueue->EnqueueRequest(&req);
+
+    // ★ フェンスをキューに積む（ここが正解）
+    dsQueue->EnqueueSignal(fence.Get(), fenceValue);
+
+    // 実行
     dsQueue->Submit();
+
+    // CPU 側で完了待ち（動作確認用）
+    if (fence->GetCompletedValue() < fenceValue) {
+        fence->SetEventOnCompletion(fenceValue, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
+
+    // ----------------------------
+    // ★ ここに ResourceBarrier
+    // ----------------------------
+    cmdAlloc->Reset();
+    cmdList->Reset(cmdAlloc.Get(), nullptr);
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = dst;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_GENERIC_READ;
+    barrier.Transition.Subresource =
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    cmdList->ResourceBarrier(1, &barrier);
+    cmdList->Close();
+
+    ID3D12CommandList* lists[] = { cmdList.Get() };
+    gfxQueue->ExecuteCommandLists(1, lists);
+
+    // GPU 完了待ち
+    gfxQueue->Signal(gfxFence.Get(), gfxFenceValue);
+    if (gfxFence->GetCompletedValue() < gfxFenceValue) {
+        gfxFence->SetEventOnCompletion(
+            gfxFenceValue, gfxFenceEvent);
+        WaitForSingleObject(gfxFenceEvent, INFINITE);
+    }
+    gfxFenceValue++;
+
+    fenceValue++;
+
+    // ---- DS Fence wait ----
+    cudaExternalSemaphoreWaitParams dsWait = {};
+    dsWait.params.fence.value = fenceValue - 1;
+
+    cudaWaitExternalSemaphoresAsync(
+        &cudaFence,
+        &dsWait,
+        1,
+        0
+        );
+
+    // ---- GFX Fence wait ----
+    cudaExternalSemaphoreWaitParams gfxWait = {};
+    gfxWait.params.fence.value = gfxFenceValue - 1;
+
+    cudaWaitExternalSemaphoresAsync(
+        &cudaGfxFence,
+        &gfxWait,
+        1,
+        0
+        );
+
+    cudaStreamSynchronize(0);
+
+    //カーネル実行
+    CUDA_IMG_Proc->dump(static_cast<uint8_t*>(cudaPtr),nullptr);
 
     return true;
 }
 
-void avi_directstorage::wait_for_ds_complete()
-{
-    DSTORAGE_STATUS status = {};
-    do {
-        dsQueue->GetStatus(&status);
-        Sleep(0);
-    } while (status.NumPendingRequests > 0);
-}
 
 //デコーダ設定
 const char* avi_directstorage::selectDecoder(const char* codec_name)
@@ -464,79 +880,105 @@ bool avi_directstorage::get_last_frame_pts() {
 
 //映像ストリーム取得
 void avi_directstorage::get_decode_image(){
-    // ----------- シーク処理 -----------
-    if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
-        if (video_reverse_flag) {
-            slider_No--;
-            if (slider_No < 0)
-                slider_No = VideoInfo.max_framesNo;
-        }
+    count+=1;
+    qDebug()<<frame_offsets[count];
+    bool ok = read_frame_to_gpu(count, dstBuffer.Get());
+    if (!ok) return;
 
-        avcodec_flush_buffers(vd[0].codec_ctx);
-        if (audio_ctx)
-            avcodec_flush_buffers(audio_ctx);
 
-        av_seek_frame(fmt_ctx, vd[0].stream_index,
-                      slider_No * VideoInfo.pts_per_frame,
-                      AVSEEK_FLAG_BACKWARD);
+    QFile f(input_filename);
+    f.open(QIODevice::ReadOnly);
+    f.seek(frame_offsets[count]);
 
-        VideoInfo.current_frameNo = slider_No;
-    }
+    QByteArray buf = f.read(16);
+    qDebug() << "CPU data:" << buf.toHex();
 
-    // ----------- パケット読み込みループ -----------
-    while (true) {
-        int ret = av_read_frame(fmt_ctx, packet);
-        // ---------- EOF ----------
-        if (ret < 0) {
-            avcodec_send_packet(vd[0].codec_ctx, nullptr);
+    void* cpuPtr = nullptr;
+    dstBuffer->Map(0, nullptr, &cpuPtr);
 
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                gpu_upload();
-                av_packet_unref(packet);
-                break;
-            }
+    qDebug() << "DST first 16 bytes ="
+             << QByteArray((char*)cpuPtr, 16).toHex();
 
-            // 終端→先頭に戻ってループ
-            uint64_t seek_frame;
-            if (VideoInfo.current_frameNo < VideoInfo.max_framesNo - 1) {
-                seek_frame = VideoInfo.current_frameNo + 1;
-            } else {
-                emit decode_end();
-                seek_frame = 0;
-            }
+    dstBuffer->Unmap(0, nullptr);
 
-            avcodec_flush_buffers(vd[0].codec_ctx);
-            if (audio_ctx)
-                avcodec_flush_buffers(audio_ctx);
 
-            av_seek_frame(fmt_ctx, vd[0].stream_index,
-                          seek_frame * VideoInfo.pts_per_frame,
-                          AVSEEK_FLAG_ANY);
 
-            av_packet_unref(packet);
-            continue;
-        }
+    gpu_upload();
+    // // ----------- シーク処理 -----------
+    // if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
+    //     if (video_reverse_flag) {
+    //         slider_No--;
+    //         if (slider_No < 0)
+    //             slider_No = VideoInfo.max_framesNo;
+    //     }
 
-        // ----------- AUDIO PACKET -----------
-        if (packet->stream_index == audio_stream_index) {
-            get_decode_audio();
-            av_packet_unref(packet);
-            continue;
-        }
+    //     avcodec_flush_buffers(vd[0].codec_ctx);
+    //     if (audio_ctx)
+    //         avcodec_flush_buffers(audio_ctx);
 
-        // ----------- VIDEO PACKET -----------
-        if (packet->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
-                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                    gpu_upload();
-                    av_packet_unref(packet);
-                    break;
-                }
-            }
-        }
+    //     av_seek_frame(fmt_ctx, vd[0].stream_index,
+    //                   slider_No * VideoInfo.pts_per_frame,
+    //                   AVSEEK_FLAG_BACKWARD);
 
-        av_packet_unref(packet);
-    }
+    //     VideoInfo.current_frameNo = slider_No;
+    // }
+
+    // // ----------- パケット読み込みループ -----------
+    // while (true) {
+    //     int ret = av_read_frame(fmt_ctx, packet);
+    //     // ---------- EOF ----------
+    //     if (ret < 0) {
+    //         avcodec_send_packet(vd[0].codec_ctx, nullptr);
+
+    //         if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+    //             gpu_upload();
+    //             av_packet_unref(packet);
+    //             break;
+    //         }
+
+    //         // 終端→先頭に戻ってループ
+    //         uint64_t seek_frame;
+    //         if (VideoInfo.current_frameNo < VideoInfo.max_framesNo - 1) {
+    //             seek_frame = VideoInfo.current_frameNo + 1;
+    //         } else {
+    //             emit decode_end();
+    //             seek_frame = 0;
+    //         }
+
+    //         avcodec_flush_buffers(vd[0].codec_ctx);
+    //         if (audio_ctx)
+    //             avcodec_flush_buffers(audio_ctx);
+
+    //         av_seek_frame(fmt_ctx, vd[0].stream_index,
+    //                       seek_frame * VideoInfo.pts_per_frame,
+    //                       AVSEEK_FLAG_ANY);
+
+    //         av_packet_unref(packet);
+    //         continue;
+    //     }
+
+    //     // ----------- AUDIO PACKET -----------
+    //     if (packet->stream_index == audio_stream_index) {
+    //         get_decode_audio();
+    //         av_packet_unref(packet);
+    //         continue;
+    //     }
+
+    //     // ----------- VIDEO PACKET -----------
+    //     if (packet->stream_index == vd[0].stream_index) {
+    //         if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
+    //             if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+    //                 gpu_upload();
+    //                 av_packet_unref(packet);
+    //                 break;
+    //             }
+    //         }
+    //     }
+
+    //     av_packet_unref(packet);
+    // }
+
+
 }
 
 //オーディオ
@@ -602,56 +1044,58 @@ void avi_directstorage::get_decode_audio(){
 
 //GPUへアップロード
 void avi_directstorage::gpu_upload(){
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    // //ダミーカーネルで完全な同期
+    // CUDA_IMG_Proc->Dummy(stream);
+    // cudaEventRecord(events, stream);
+    // cudaEventSynchronize(events);
 
 
-    //CUDAカーネル同期
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
-    if(vd[0].Frame->format==AV_PIX_FMT_UYVY422){
-        cudaMemcpy2D(d_yuv, pitch_yuv,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->uyvy422_to_RGBA_8bit(d_rgba,pitch_rgba,d_yuv, pitch_yuv,VideoInfo.width, VideoInfo.height,stream);
-    }else if(vd[0].Frame->format==AV_PIX_FMT_YUV420P){
-        cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2), VideoInfo.height/2,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2),VideoInfo.height/2,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
-    }else if(vd[0].Frame->format==AV_PIX_FMT_YUV420P10){
-        int is_be = (vd[0].Frame->format == AV_PIX_FMT_YUV420P10BE);
-        cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height/2,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height/2,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
-    }else if(vd[0].Frame->format==AV_PIX_FMT_YUV422P){
-        cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2), VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2),VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv422p_to_RGBA_8bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
-    }else if(vd[0].Frame->format==AV_PIX_FMT_YUV422P10){
-        int is_be = (vd[0].Frame->format == AV_PIX_FMT_YUV422P10BE);
-        cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv422p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
-    }else if(vd[0].Frame->format==AV_PIX_FMT_GBRP10){
-        cudaMemcpy2D(d_g, pitch_g,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_b, pitch_b,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_r, pitch_r,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->rgb_to_RGBA_10bit(d_rgba,pitch_rgba,d_r, pitch_r,d_g,pitch_g, d_b,pitch_b,VideoInfo.width, VideoInfo.height,stream);
-    }
+    // //CUDAカーネル同期
+    // cudaEventRecord(events, stream);
+    // cudaEventSynchronize(events);
+    // if(vd[0].Frame->format==AV_PIX_FMT_UYVY422){
+    //     cudaMemcpy2D(d_yuv, pitch_yuv,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+    //     CUDA_IMG_Proc->uyvy422_to_RGBA_8bit(d_rgba,pitch_rgba,d_yuv, pitch_yuv,VideoInfo.width, VideoInfo.height,stream);
+    // }else if(vd[0].Frame->format==AV_PIX_FMT_YUV420P){
+    //     cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2), VideoInfo.height/2,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2),VideoInfo.height/2,cudaMemcpyHostToDevice);
+    //     CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
+    // }else if(vd[0].Frame->format==AV_PIX_FMT_YUV420P10){
+    //     int is_be = (vd[0].Frame->format == AV_PIX_FMT_YUV420P10BE);
+    //     cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height/2,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height/2,cudaMemcpyHostToDevice);
+    //     CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
+    // }else if(vd[0].Frame->format==AV_PIX_FMT_YUV422P){
+    //     cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2), VideoInfo.height,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2),VideoInfo.height,cudaMemcpyHostToDevice);
+    //     CUDA_IMG_Proc->yuv422p_to_RGBA_8bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
+    // }else if(vd[0].Frame->format==AV_PIX_FMT_YUV422P10){
+    //     int is_be = (vd[0].Frame->format == AV_PIX_FMT_YUV422P10BE);
+    //     cudaMemcpy2D(d_y, pitch_y,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_u, pitch_u,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_v, pitch_v,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
+    //     CUDA_IMG_Proc->yuv422p_to_RGBA_10bit(d_rgba,pitch_rgba,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
+    // }else if(vd[0].Frame->format==AV_PIX_FMT_GBRP10){
+    //     cudaMemcpy2D(d_g, pitch_g,vd[0].Frame->data[0], vd[0].Frame->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_b, pitch_b,vd[0].Frame->data[1], vd[0].Frame->linesize[1],(VideoInfo.width) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
+    //     cudaMemcpy2D(d_r, pitch_r,vd[0].Frame->data[2], vd[0].Frame->linesize[2], (VideoInfo.width) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
+    //     CUDA_IMG_Proc->rgb_to_RGBA_10bit(d_rgba,pitch_rgba,d_r, pitch_r,d_g,pitch_g, d_b,pitch_b,VideoInfo.width, VideoInfo.height,stream);
+    // }
 
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    // //ダミーカーネルで完全な同期
+    // CUDA_IMG_Proc->Dummy(stream);
+    // cudaEventRecord(events, stream);
+    // cudaEventSynchronize(events);
 
-    //フレーム番号取得
-    VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-    slider_No = VideoInfo.current_frameNo;
+    // //フレーム番号取得
+    // VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+    // slider_No = VideoInfo.current_frameNo;
 
-    emit send_decode_image(d_rgba, pitch_rgba, VideoInfo.current_frameNo);
+    //CUDA_IMG_Proc->uyvy422_to_RGBA_8bit(d_rgba,pitch_rgba,d_yuv, pitch_yuv,VideoInfo.width, VideoInfo.height,stream);
+
+    emit send_decode_image(static_cast<uint8_t*>(cudaPtr), pitch_rgba, count);
 }
 
