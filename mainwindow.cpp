@@ -283,7 +283,7 @@ void MainWindow::Close_Video_File()
 }
 
 //動画表示
-void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
+void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider,AVFrame* audio_frame_copy){
     if(run_decode_thread){
         //シグナルセット
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
@@ -303,7 +303,7 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
 
         //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
         if(d_rgba&&pitch_rgba>0&&encode_state!=STATE_ENCODE_READY){
-            glWidget->uploadToGLTexture(d_rgba,pitch_rgba,slider);
+            glWidget->uploadToGLTexture(d_rgba,pitch_rgba,slider,audio_frame_copy);
         }else if(encode_state==STATE_NOT_ENCODE){
             glWidget->FBO_Rendering();
         }

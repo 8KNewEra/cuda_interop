@@ -584,6 +584,7 @@ void nvgpudecode::get_multidecode_image() {
 void nvgpudecode::get_decode_audio(){
     if (avcodec_send_packet(audio_ctx, packet) >= 0) {
         while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
+            audio_frame_copy = av_frame_clone(audio_frame);
 
             int out_channels = out_ch_layout.nb_channels;
             int bps         = av_get_bytes_per_sample(out_format);
@@ -717,5 +718,5 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
     slider_No = VideoInfo.current_frameNo;
 
-    emit send_decode_image(d_rgba,  pitch_rgba, VideoInfo.current_frameNo);
+    emit send_decode_image(d_rgba,  pitch_rgba, VideoInfo.current_frameNo,audio_frame_copy);
 }

@@ -607,7 +607,8 @@ void GLWidget::initCudaMalloc(int width, int height)
 }
 
 //CUDAからOpenGLへ転送
-void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No) {
+void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No,AVFrame* audio_frame_copy) {
+    audio_frame=audio_frame_copy;
     // QElapsedTimer timer;
     // timer.start();
 
@@ -725,7 +726,7 @@ void GLWidget::downloadToGLTexture_and_Encode() {
     // qDebug()<<encode_FrameCount<<":"<<MaxFrame;
 
     if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
-        save_encoder->encode(d_rgba,pitch_rgba);
+        save_encoder->encode(d_rgba,pitch_rgba,audio_frame);
         encode_FrameCount++;
     }else{
         delete save_encoder;

@@ -41,7 +41,7 @@ public:
     bool audio_mode=false;
 
 signals:
-    void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,int slider);
+    void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,int slider,AVFrame* audio_frame_copy);
     void send_audio(QByteArray pcm);
     void send_slider_info();
     void finished();
@@ -88,6 +88,7 @@ protected:
     //FFmpeg関連
     AVPacket* packet = nullptr;
     AVFrame* audio_frame = nullptr;
+    AVFrame* audio_frame_copy = nullptr;
     QByteArray File_byteArray;
     const char* input_filename;
     std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成

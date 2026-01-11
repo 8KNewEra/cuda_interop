@@ -29,7 +29,7 @@ signals:
 public:
     explicit GLWidget(QWindow *parent = nullptr);
     ~GLWidget();
-    void uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No);
+    void uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No,AVFrame* audio_frame_copy);
     void encode_mode(int flag);
     void GLresize();
     void GLreset();
@@ -129,6 +129,9 @@ private:
     HistStats h_hist_stats;
     int num_bins = 256;
     int line_y1,line_y2,line_y3,line_y4;
+
+    //音声
+    AVFrame* audio_frame = nullptr;
 };
 
 

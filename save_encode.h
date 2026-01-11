@@ -14,6 +14,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/audio_fifo.h>
 #include <libswscale/swscale.h>
 #include <libavutil/hwcontext.h>
 }
@@ -33,7 +34,7 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    void encode(uint8_t* d_rgba, size_t pitch_rgba);
+    void encode(uint8_t* d_rgba, size_t pitch_rgba,AVFrame* audio_frame);
 
     struct QueuedPacket {
         AVPacket* pkt;
@@ -63,6 +64,15 @@ private:
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
     cudaStream_t stream = nullptr;
     cudaEvent_t event = nullptr;
+
+    //音声
+    void init_audio_encoder();
+    void encode_audio(AVFrame* frame);
+    void encode_audio_from_fifo();
+    AVCodecContext* audio_enc_ctx = nullptr;
+    AVStream*       audio_stream  = nullptr;
+    int64_t         audio_pts     = 0;
+    AVAudioFifo* audio_fifo = nullptr;
 };
 
 #endif // SAVE_ENCODE_H

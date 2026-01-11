@@ -83,6 +83,11 @@ decode_thread::~decode_thread() {
             av_frame_free(&audio_frame);
             audio_frame = nullptr;
         }
+
+        if (audio_frame_copy) {
+            av_frame_free(&audio_frame_copy);
+            audio_frame_copy = nullptr;
+        }
     };
 
     auto safe_free_hwctx = [&]() {
@@ -245,7 +250,7 @@ void decode_thread::processFrame() {
     if (!video_play_flag && slider_No == VideoInfo.current_frameNo){
         if(decode_state==STATE_DECODE_READY){
             decode_state=STATE_DECODING;
-            emit send_decode_image(nullptr,0,VideoInfo.current_frameNo);
+            emit send_decode_image(nullptr,0,VideoInfo.current_frameNo,nullptr);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
         return;

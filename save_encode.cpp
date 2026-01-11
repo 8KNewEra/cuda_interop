@@ -38,6 +38,8 @@ save_encode::save_encode(int h,int w) {
         this->ve[i].stream = ve[i].stream;
     }
 
+    init_audio_encoder();
+
     // ③ ファイルオープンは1回
     ret = avio_open(&fmt_ctx->pb, encode_settings.Save_Path.c_str(), AVIO_FLAG_WRITE);
     if (ret < 0) throw std::runtime_error("Failed to open output file");
@@ -60,6 +62,9 @@ save_encode::save_encode(int h,int w) {
 }
 
 save_encode::~save_encode() {
+    // ==========================
+    // Video flush（NVENC）
+    // ==========================
     for (int i = 0; i < ve.size(); i++) {
         // flush
         avcodec_send_frame(ve[i].codec_ctx, nullptr);
@@ -82,6 +87,73 @@ save_encode::~save_encode() {
             av_interleaved_write_frame(fmt_ctx, packet);
             av_packet_unref(packet);
         }
+    }
+
+    // ==========================
+    // Audio flush（AAC）
+    // ==========================
+    if (!audio_enc_ctx || !audio_stream || !audio_fifo) return;
+
+    const int fs = audio_enc_ctx->frame_size;
+
+    // ==========================
+    // 1. FIFO に残っている audio を出し切る
+    // ==========================
+    int remain = av_audio_fifo_size(audio_fifo);
+
+    if (remain > 0) {
+
+        AVFrame* f = av_frame_alloc();
+        if (!f) return;
+
+        f->nb_samples  = fs;
+        f->format      = audio_enc_ctx->sample_fmt;
+        f->sample_rate = audio_enc_ctx->sample_rate;
+        av_channel_layout_copy(&f->ch_layout, &audio_enc_ctx->ch_layout);
+
+        if (av_frame_get_buffer(f, 0) < 0) {
+            av_frame_free(&f);
+            return;
+        }
+
+        // FIFO → frame（残り分だけ）
+        av_audio_fifo_read(audio_fifo, (void**)f->data, remain);
+
+        // 足りない分を無音で埋める
+        av_samples_set_silence(
+            f->data,
+            remain,
+            fs - remain,
+            audio_enc_ctx->ch_layout.nb_channels,
+            audio_enc_ctx->sample_fmt
+            );
+
+        f->pts = audio_pts;
+        audio_pts += fs;
+
+        avcodec_send_frame(audio_enc_ctx, f);
+        av_frame_free(&f);
+    }
+
+    // ==========================
+    // 2. AAC encoder 内部を完全 flush
+    // ==========================
+    avcodec_send_frame(audio_enc_ctx, nullptr);
+
+    AVPacket pkt;
+    av_init_packet(&pkt);
+
+    while (avcodec_receive_packet(audio_enc_ctx, &pkt) == 0) {
+
+        av_packet_rescale_ts(
+            &pkt,
+            audio_enc_ctx->time_base,
+            audio_stream->time_base
+            );
+
+        pkt.stream_index = audio_stream->index;
+        av_interleaved_write_frame(fmt_ctx, &pkt);
+        av_packet_unref(&pkt);
     }
 
     // ---- 各メモリ解放 ----
@@ -123,6 +195,10 @@ save_encode::~save_encode() {
     if(packet){
         av_packet_free(&packet);
         packet = nullptr;
+    }
+
+    if (audio_enc_ctx){
+        avcodec_free_context(&audio_enc_ctx);
     }
 
     //Stream削除
@@ -264,7 +340,52 @@ void save_encode::initialized_ffmpeg_hardware_context(int i) {
     if (ret < 0) throw std::runtime_error("Failed to alloc hw_frame");
 }
 
-void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
+void save_encode::init_audio_encoder()
+{
+    const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    if (!codec) throw std::runtime_error("AAC encoder not found");
+
+    audio_enc_ctx = avcodec_alloc_context3(codec);
+
+    audio_enc_ctx->sample_rate = 48000;
+    audio_enc_ctx->bit_rate    = 192000;
+    audio_enc_ctx->time_base   = AVRational{1, audio_enc_ctx->sample_rate};
+
+    av_channel_layout_default(&audio_enc_ctx->ch_layout, 2);
+
+    audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_FLTP; // ★固定
+
+    if (fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
+        audio_enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+    if (avcodec_open2(audio_enc_ctx, codec, nullptr) < 0)
+        throw std::runtime_error("avcodec_open2(audio) failed");
+
+    if (audio_enc_ctx->frame_size != 1024)
+        throw std::runtime_error("Unexpected AAC frame_size");
+
+    audio_stream = avformat_new_stream(fmt_ctx, nullptr);
+    if (!audio_stream)
+        throw std::runtime_error("avformat_new_stream(audio) failed");
+
+    audio_stream->time_base = audio_enc_ctx->time_base;
+
+    if (avcodec_parameters_from_context(
+            audio_stream->codecpar,
+            audio_enc_ctx) < 0)
+        throw std::runtime_error("copy audio params failed");
+
+    audio_fifo = av_audio_fifo_alloc(
+        audio_enc_ctx->sample_fmt,
+        audio_enc_ctx->ch_layout.nb_channels,
+        4096
+        );
+    if (!audio_fifo)
+        throw std::runtime_error("av_audio_fifo_alloc failed");
+}
+
+
+void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,AVFrame* audio_frame){
     // ------------------------
     // CUDA NV12変換
     // ------------------------
@@ -348,5 +469,77 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba){
         }
     }
 
+    // ========================
+    // Audio encode（★ここ）
+    // ========================
+    if (audio_frame) {
+        encode_audio(audio_frame);
+    }
+
     frame_index+=1;
+
+
 }
+
+void save_encode::encode_audio(AVFrame* frame)
+{
+    av_audio_fifo_write(
+        audio_fifo,
+        (void**)frame->data,
+        frame->nb_samples
+        );
+
+    encode_audio_from_fifo();
+}
+
+void save_encode::encode_audio_from_fifo()
+{
+    if (!audio_fifo || !audio_enc_ctx || !audio_stream) return;
+
+    const int fs = audio_enc_ctx->frame_size;
+
+    while (av_audio_fifo_size(audio_fifo) >= fs) {
+
+        AVFrame* f = av_frame_alloc();
+        if (!f) return;
+
+        f->nb_samples  = fs;
+        f->format      = audio_enc_ctx->sample_fmt;
+        f->sample_rate = audio_enc_ctx->sample_rate;
+        av_channel_layout_copy(&f->ch_layout, &audio_enc_ctx->ch_layout);
+
+        if (av_frame_get_buffer(f, 0) < 0) {
+            av_frame_free(&f);
+            return;
+        }
+
+        av_audio_fifo_read(audio_fifo, (void**)f->data, fs);
+
+        f->pts = audio_pts;
+        audio_pts += fs;
+
+        int ret = avcodec_send_frame(audio_enc_ctx, f);
+        av_frame_free(&f);
+        if (ret < 0) return;
+
+        AVPacket* pkt = av_packet_alloc();
+
+        while (avcodec_receive_packet(audio_enc_ctx, pkt) == 0) {
+            av_packet_rescale_ts(
+                pkt,
+                audio_enc_ctx->time_base,
+                audio_stream->time_base
+                );
+            pkt->stream_index = audio_stream->index;
+            av_interleaved_write_frame(fmt_ctx, pkt);
+            av_packet_unref(pkt);
+        }
+
+        av_packet_free(&pkt);
+    }
+}
+
+
+
+
+
