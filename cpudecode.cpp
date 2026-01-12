@@ -498,61 +498,49 @@ void cpudecode::get_decode_image(){
 }
 
 //オーディオ
-void cpudecode::get_decode_audio(){
-    if (avcodec_send_packet(audio_ctx, packet) >= 0) {
-        while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
+void cpudecode::get_decode_audio()
+{
+    if (avcodec_send_packet(audio_ctx, packet) < 0)
+        return;
 
-            int out_channels = out_ch_layout.nb_channels;
-            int bps         = av_get_bytes_per_sample(out_format);
+    while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
+        int out_channels = out_ch_layout.nb_channels;
+        int bps = av_get_bytes_per_sample(out_format);
 
-            int max_out_samples = av_rescale_rnd(
-                swr_get_delay(swr, in_sample_rate) + audio_frame->nb_samples,
-                out_sample_rate,
-                in_sample_rate,
-                AV_ROUND_UP
-                );
+        int max_out_samples = av_rescale_rnd(
+            swr_get_delay(swr, in_sample_rate) + audio_frame->nb_samples,
+            out_sample_rate,
+            in_sample_rate,
+            AV_ROUND_UP
+            );
 
-            QByteArray pcm;
-            VideoInfo.audio_channels=out_channels;
-            pcm.resize(max_out_samples * out_channels * bps);
+        QByteArray pcm;
+        pcm.resize(max_out_samples * out_channels * bps);
 
-            uint8_t* out_planes[1];
-            out_planes[0] = (uint8_t*)pcm.data();
+        uint8_t* out_planes[] = {
+            reinterpret_cast<uint8_t*>(pcm.data())
+        };
 
-            int out_samples = swr_convert(
-                swr,
-                out_planes,
-                max_out_samples,
-                (const uint8_t**)audio_frame->extended_data,
-                audio_frame->nb_samples
-                );
+        int out_samples = swr_convert(
+            swr,
+            out_planes,
+            max_out_samples,
+            (const uint8_t**)audio_frame->extended_data,
+            audio_frame->nb_samples
+            );
 
-            if (audio_buffer_size < out_samples * 4 * 2) {
-                audio_buffer_size = out_samples * 4 * 2;
-                audio_buffer = (uint8_t*)realloc(audio_buffer, audio_buffer_size);
-            }
+        if (out_samples <= 0)
+            continue;
 
-            int samples = swr_convert(
-                swr,
-                &audio_buffer,
-                out_samples,
-                (const uint8_t**)audio_frame->extended_data,
-                audio_frame->nb_samples
-                );
+        pcm.resize(out_samples * out_channels * bps);
+        VideoInfo.audio_channels = out_channels;
 
-            int bytes = samples * 2 * av_get_bytes_per_sample(out_format);
-
-            if(encode_state==STATE_NOT_ENCODE){
-                if (audio_mode) {
-                    if (audioOutput && bytes > 0){
-                        audioOutput->write((char*)audio_buffer, bytes);
-                    }
-                }else{
-                    if (out_samples > 0) {
-                        pcm.resize(out_samples * out_channels * bps);
-                        emit send_audio(pcm);
-                    }
-                }
+        if (encode_state == STATE_NOT_ENCODE) {
+            if (audio_mode) {
+                if (audioOutput)
+                    audioOutput->write(pcm);
+            } else {
+                emit send_audio(pcm);
             }
         }
     }

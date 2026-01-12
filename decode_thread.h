@@ -126,7 +126,6 @@ protected:
     int out_sample_rate = 0;
     AVSampleFormat in_format  = AV_SAMPLE_FMT_NONE;
     AVSampleFormat out_format = AV_SAMPLE_FMT_S16;  // S16 にリサンプルする
-    QByteArray pcm;
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
 };
