@@ -516,14 +516,16 @@ void avidecode::get_decode_audio()
         pcm.resize(out_samples * out_channels * bps);
         VideoInfo.audio_channels = out_channels;
 
+        //低遅延モード
         if (encode_state == STATE_NOT_ENCODE) {
             if (audio_mode) {
                 if (audioOutput)
                     audioOutput->write(pcm);
-            } else {
-                emit send_audio(pcm);
             }
         }
+
+        pcm.resize(out_samples * out_channels * bps);
+        emit send_audio(pcm);
     }
 }
 
@@ -579,5 +581,5 @@ void avidecode::gpu_upload(){
     VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
     slider_No = VideoInfo.current_frameNo;
 
-    emit send_decode_image(d_rgba, pitch_rgba, VideoInfo.current_frameNo,audio_frame_copy);
+    emit send_decode_image(d_rgba, pitch_rgba, VideoInfo.current_frameNo);
 }

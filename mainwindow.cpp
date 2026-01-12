@@ -88,8 +88,10 @@ MainWindow::MainWindow(QWidget *parent)
     QObject::connect(ui->action_audio_low_laytency, &QAction::triggered,this, [&](bool flag) {
         if(run_decode_thread){
             if(flag){
+                audio_mode=true;
                 decodestream->audio_mode=true;
             }else{
+                audio_mode=false;
                 decodestream->audio_mode=false;
             }
         }
@@ -283,7 +285,7 @@ void MainWindow::Close_Video_File()
 }
 
 //動画表示
-void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider,AVFrame* audio_frame_copy){
+void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
     if(run_decode_thread){
         //シグナルセット
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
@@ -303,7 +305,7 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider,AVFra
 
         //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
         if(d_rgba&&pitch_rgba>0&&encode_state!=STATE_ENCODE_READY){
-            glWidget->uploadToGLTexture(d_rgba,pitch_rgba,slider,audio_frame_copy);
+            glWidget->uploadToGLTexture(d_rgba,pitch_rgba,slider);
         }else if(encode_state==STATE_NOT_ENCODE){
             glWidget->FBO_Rendering();
         }
@@ -322,8 +324,16 @@ void MainWindow::play_audio(QByteArray pcm){
     // if (audioSink->bytesFree() > 0)
     //     qDebug() << "AUDIO UNDERFLOW !!" << audioSink->bytesFree();
 
-    if (audioOutput)
-        audioOutput->write(pcm);
+    glWidget->pcm={};
+    glWidget->pcm=pcm;
+
+    //通常モード
+    if (encode_state == STATE_NOT_ENCODE) {
+        if (!audio_mode) {
+            if (audioOutput)
+                audioOutput->write(glWidget->pcm);
+        }
+    }
 }
 
 //fps表示

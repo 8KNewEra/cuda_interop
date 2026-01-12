@@ -17,6 +17,7 @@ extern "C" {
 #include <libavutil/audio_fifo.h>
 #include <libswscale/swscale.h>
 #include <libavutil/hwcontext.h>
+#include "libswresample/swresample.h"
 }
 
 extern int g_cudaDeviceID;
@@ -34,7 +35,7 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    void encode(uint8_t* d_rgba, size_t pitch_rgba,AVFrame* audio_frame);
+    void encode(uint8_t* d_rgba, size_t pitch_rgba,QByteArray pcm);
 
     struct QueuedPacket {
         AVPacket* pkt;
@@ -63,8 +64,8 @@ private:
 
     //音声
     void init_audio_encoder();
-    void encode_audio(AVFrame* frame);
-    void encode_audio_from_fifo();
+    void encode_audio(const QByteArray& pcm);
+    SwrContext* swr_enc = nullptr;
     AVCodecContext* audio_enc_ctx = nullptr;
     AVStream*       audio_stream  = nullptr;
     int64_t         audio_pts     = 0;
