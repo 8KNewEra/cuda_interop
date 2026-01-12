@@ -29,11 +29,9 @@ save_encode::save_encode(int h,int w) {
         if (!ve[i].stream) throw std::runtime_error("Failed to create stream");
 
         ve[i].stream->time_base = ve[i].codec_ctx->time_base;
+        ve[i].stream->avg_frame_rate = ve[i].codec_ctx->framerate;
         ret = avcodec_parameters_from_context(ve[i].stream->codecpar, ve[i].codec_ctx);
         if (ret < 0) throw std::runtime_error("Failed to copy codec parameters");
-
-        ve[i].stream->time_base = tb;
-        ve[i].stream->avg_frame_rate = fr;
 
         this->ve[i].stream = ve[i].stream;
     }
@@ -244,16 +242,12 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
         fprintf(stderr, "No suitable hardware pixel format found for encoder %s.\n", codec->name);
     }
 
+    //メタデータ設定
     ve[i].codec_ctx->width = width_/encode_settings.width_tile;
     ve[i].codec_ctx->height = height_/encode_settings.height_tile;
     ve[i].codec_ctx->pix_fmt = hw_pix_fmt;
-
-    fps = encode_settings.save_fps;
-    pts_step = 15000 / 60;
-    fr = { fps, 1 };
-    tb = { 1, fps * pts_step };
-    ve[i].codec_ctx->time_base = tb;
-    ve[i].codec_ctx->framerate = fr;
+    ve[i].codec_ctx->time_base = AVRational{1, encode_settings.save_fps};
+    ve[i].codec_ctx->framerate = AVRational{encode_settings.save_fps, 1};
 
     //初期化された hw_* を参照
     ve[i].codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
@@ -442,7 +436,7 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,AVFrame* audio_frame
     // ------------------------
     // 1. 全 encoder に frame を送る
     for (int i = 0; i < ve.size(); i++) {
-        ve[i].hw_frame->pts = frame_index * pts_step;
+        ve[i].hw_frame->pts = frame_index;
         avcodec_send_frame(ve[i].codec_ctx, ve[i].hw_frame);
     }
 
@@ -477,8 +471,6 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,AVFrame* audio_frame
     }
 
     frame_index+=1;
-
-
 }
 
 void save_encode::encode_audio(AVFrame* frame)

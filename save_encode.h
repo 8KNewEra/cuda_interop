@@ -51,10 +51,6 @@ private:
     std::vector<VideoEncoder> ve;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;          // 出力ファイルのフォーマットコンテキスト
     AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
-    AVRational tb;
-    AVRational fr;
-    int fps;  // 可変FPSでもOK
-    int pts_step;  // 1フレームあたりの刻み
     int64_t frame_index = 0;                         // PTS 管理用
 
     //エンコード設定
