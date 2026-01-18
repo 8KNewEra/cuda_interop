@@ -415,6 +415,10 @@ void nvgpudecode::get_decode_image(){
 
 //映像シングルストリーム
 void nvgpudecode::get_singledecode_image() {
+    QByteArray pcm{};
+    int a=0;
+    qDebug()<<"reset";
+
     // ----------- シーク処理 -----------
     if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
 
@@ -437,6 +441,7 @@ void nvgpudecode::get_singledecode_image() {
 
     // ----------- パケット読み込みループ -----------
     while (true) {
+        a+=1;
         int ret = av_read_frame(fmt_ctx, packet);
 
         // ---------- EOF ----------
@@ -445,7 +450,7 @@ void nvgpudecode::get_singledecode_image() {
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
             if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                CUDA_RGBA_to_merge();
+                CUDA_RGBA_to_merge(pcm);
                 av_packet_unref(packet);
                 break;
             }
@@ -473,7 +478,18 @@ void nvgpudecode::get_singledecode_image() {
 
         // ----------- AUDIO PACKET -----------
         if (packet->stream_index == audio_stream_index) {
-            get_decode_audio();
+            //低遅延モード
+            get_decode_audio(pcm);
+
+            if (encode_state == STATE_NOT_ENCODE) {
+                if (audio_mode) {
+                    if (audioOutput)
+                        audioOutput->write(pcm);
+                }
+            }
+            emit send_audio(pcm);
+            qDebug()<<"audio"<<a;
+
             av_packet_unref(packet);
             continue;
         }
@@ -482,7 +498,8 @@ void nvgpudecode::get_singledecode_image() {
         if (packet->stream_index == vd[0].stream_index) {
             if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                    CUDA_RGBA_to_merge();
+                    qDebug()<<"video"<<a;
+                    CUDA_RGBA_to_merge(pcm);
                     av_packet_unref(packet);
                     break;
                 }
@@ -497,6 +514,7 @@ void nvgpudecode::get_singledecode_image() {
 void nvgpudecode::get_multidecode_image() {
     std::vector<bool> got_frame(vd.size(), false);
     int got_count = 0;
+    QByteArray pcm{};
 
     //----------- シーク処理 -----------
     if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
@@ -546,15 +564,17 @@ void nvgpudecode::get_multidecode_image() {
             }
 
             if (got_count == vd.size()) {
-                CUDA_RGBA_to_merge();
+                CUDA_RGBA_to_merge(pcm);
             }
 
             av_packet_unref(packet);
             break;
         }
 
+        //音声
         if (packet->stream_index == audio_stream_index) {
-            get_decode_audio();
+            //低遅延モード
+            get_decode_audio(pcm);
             av_packet_unref(packet);
             continue;
         }
@@ -577,14 +597,15 @@ void nvgpudecode::get_multidecode_image() {
     cudaEventRecord(events, stream);
     cudaEventSynchronize(events);
 
-    CUDA_RGBA_to_merge();
+    CUDA_RGBA_to_merge(pcm);
 }
 
 //オーディオ
-void nvgpudecode::get_decode_audio()
+void nvgpudecode::get_decode_audio(QByteArray &pcm)
 {
     if (avcodec_send_packet(audio_ctx, packet) < 0)
         return;
+
 
     while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
         int out_channels = out_ch_layout.nb_channels;
@@ -597,7 +618,6 @@ void nvgpudecode::get_decode_audio()
             AV_ROUND_UP
             );
 
-        QByteArray pcm;
         pcm.resize(max_out_samples * out_channels * bps);
 
         uint8_t* out_planes[] = {
@@ -617,23 +637,12 @@ void nvgpudecode::get_decode_audio()
 
         pcm.resize(out_samples * out_channels * bps);
         VideoInfo.audio_channels = out_channels;
-
-        //低遅延モード
-        if (encode_state == STATE_NOT_ENCODE) {
-            if (audio_mode) {
-                if (audioOutput)
-                    audioOutput->write(pcm);
-            }
-        }
-
-        pcm.resize(out_samples * out_channels * bps);
-        emit send_audio(pcm);
     }
 }
 
 
 //CUDAで映像フレームを処理
-void nvgpudecode::CUDA_RGBA_to_merge(){
+void nvgpudecode::CUDA_RGBA_to_merge(QByteArray &pcm){
     //ダミーカーネルで完全な同期
     CUDA_IMG_Proc->Dummy(stream);
     cudaEventRecord(events, stream);

@@ -47,6 +47,8 @@ public:
     int gaussianfilterEnabled=0;
     int averagingfilterEnabled=0;
 
+    void test_audio(QByteArray pcm);
+
 protected:
     void initializeGL() override;
 
@@ -130,6 +132,15 @@ private:
     HistStats h_hist_stats;
     int num_bins = 256;
     int line_y1,line_y2,line_y3,line_y4;
+
+    //オーディオ
+    void play_audio(QByteArray pcm);
+    QAudioSink* audioSink = nullptr;
+    QIODevice* audioOutput = nullptr;
+    int out_sample_rate = 48000;
+    bool audio_mode=false;
+
+
 };
 
 

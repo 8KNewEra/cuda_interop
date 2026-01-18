@@ -8,6 +8,7 @@
 #include <QFile>
 #include "cuda_imageprocess.h"
 #include "__global__.h"
+#include "qaudiosink.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -70,6 +71,13 @@ private:
     AVStream*       audio_stream  = nullptr;
     int64_t         audio_pts     = 0;
     AVAudioFifo* audio_fifo = nullptr;
+
+    //オーディオ
+    void play_audio(QByteArray pcm);
+    QAudioSink* audioSink = nullptr;
+    QIODevice* audioOutput = nullptr;
+    int out_sample_rate = 48000;
+    bool audio_mode=false;
 };
 
 #endif // SAVE_ENCODE_H

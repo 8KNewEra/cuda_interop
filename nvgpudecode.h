@@ -17,8 +17,8 @@ protected:
     bool get_last_frame_pts();
     void get_singledecode_image();
     void get_multidecode_image();
-    void get_decode_audio();
-    void CUDA_RGBA_to_merge();
+    void get_decode_audio(QByteArray &pcm);
+    void CUDA_RGBA_to_merge(QByteArray &pcm);
 };
 
 #endif // NVGPUDECODE_H

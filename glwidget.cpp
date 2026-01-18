@@ -184,6 +184,15 @@ void GLWidget::initializeGL()
     fpsTimer.start();
     initialize_completed_flag = true;
     emit initialized();
+
+    QAudioFormat fmt;
+    fmt.setSampleRate(out_sample_rate);
+    fmt.setChannelCount(2);
+    fmt.setSampleFormat(QAudioFormat::Int16);
+
+    audioSink = new QAudioSink(fmt);
+    audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
+    audioOutput = audioSink->start();
 }
 
 //FBOレンダリング
@@ -606,10 +615,18 @@ void GLWidget::initCudaMalloc(int width, int height)
     cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
 }
 
+void GLWidget::test_audio(QByteArray pcm){
+    if (audioOutput)
+        audioOutput->write(pcm);
+}
+
 //CUDAからOpenGLへ転送
 void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No) {
     // QElapsedTimer timer;
     // timer.start();
+
+    // if (audioOutput)
+    //     audioOutput->write(pcm);
 
     FrameNo = No;
     //initialized完了チェック

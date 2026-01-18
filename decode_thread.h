@@ -127,6 +127,7 @@ protected:
     AVSampleFormat out_format = AV_SAMPLE_FMT_S16;  // S16 にリサンプルする
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
+    QByteArray audio_pcm{};
 };
 
 #endif // DECODE_THREAD_H

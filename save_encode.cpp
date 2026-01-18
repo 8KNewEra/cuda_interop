@@ -1,4 +1,6 @@
 #include "save_encode.h"
+#include "qaudioformat.h"
+#include "qaudiosink.h"
 #include "qdebug.h"
 
 save_encode::save_encode(int h,int w) {
@@ -57,6 +59,16 @@ save_encode::save_encode(int h,int w) {
         &event,
         cudaEventDisableTiming
         );
+
+
+    QAudioFormat fmt;
+    fmt.setSampleRate(out_sample_rate);
+    fmt.setChannelCount(2);
+    fmt.setSampleFormat(QAudioFormat::Int16);
+
+    audioSink = new QAudioSink(fmt);
+    audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
+    audioOutput = audioSink->start();
 }
 
 save_encode::~save_encode() {
@@ -102,12 +114,14 @@ save_encode::~save_encode() {
 
         av_frame_get_buffer(f, 0);
 
+        // FIFO から remain 分だけ読む
         av_audio_fifo_read(audio_fifo, (void**)f->data, remain);
 
+        // 足りない分を silence で埋める
         av_samples_set_silence(
             f->data,
-            remain,
-            fs - remain,
+            remain,                 // start sample
+            fs - remain,             // number of samples
             audio_enc_ctx->ch_layout.nb_channels,
             audio_enc_ctx->sample_fmt
             );
@@ -119,7 +133,9 @@ save_encode::~save_encode() {
         av_frame_free(&f);
     }
 
+    // ★ encoder 内部バッファ flush
     avcodec_send_frame(audio_enc_ctx, nullptr);
+
 
     // ---- 各メモリ解放 ----
     for(int i=0;i<ve.size();i++){
@@ -384,6 +400,8 @@ void save_encode::init_audio_encoder()
 
 
 void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,QByteArray pcm){
+
+
     // ------------------------
     // CUDA NV12変換
     // ------------------------
@@ -476,36 +494,27 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,QByteArray pcm){
 
 void save_encode::encode_audio(const QByteArray& pcm)
 {
-    if (!audio_enc_ctx || !audio_fifo)
-        return;
-
-    const int in_channels = audio_enc_ctx->ch_layout.nb_channels;
-    const int in_bps = 2; // S16
-    const int samples = pcm.size() / (in_channels * in_bps);
+    const int ch = audio_enc_ctx->ch_layout.nb_channels;
+    const int samples = pcm.size() / (ch * 2);
 
     const uint8_t* in_data[1] = {
         reinterpret_cast<const uint8_t*>(pcm.constData())
     };
 
-    // ----------------------------
-    // S16 → FLTP 変換
-    // ----------------------------
-    int max_out_samples = samples;
-
     uint8_t** converted = nullptr;
     av_samples_alloc_array_and_samples(
         &converted,
         nullptr,
-        in_channels,
-        max_out_samples,
-        audio_enc_ctx->sample_fmt, // FLTP
+        ch,
+        samples,
+        AV_SAMPLE_FMT_FLTP,
         0
         );
 
     int out_samples = swr_convert(
-        swr_enc,                 // ★ encoder用 swr
+        swr_enc,
         converted,
-        max_out_samples,
+        samples,
         in_data,
         samples
         );
@@ -516,38 +525,23 @@ void save_encode::encode_audio(const QByteArray& pcm)
         return;
     }
 
-    // ----------------------------
-    // FIFO に積む
-    // ----------------------------
-    av_audio_fifo_write(
-        audio_fifo,
-        (void**)converted,
-        out_samples
-        );
+    av_audio_fifo_write(audio_fifo, (void**)converted, out_samples);
 
     av_freep(&converted[0]);
     av_freep(&converted);
 
-    // ----------------------------
-    // AAC frame_size 分ずつ encode
-    // ----------------------------
     const int fs = audio_enc_ctx->frame_size;
 
     while (av_audio_fifo_size(audio_fifo) >= fs) {
 
         AVFrame* frame = av_frame_alloc();
         frame->nb_samples = fs;
-        frame->format = audio_enc_ctx->sample_fmt;
+        frame->format = AV_SAMPLE_FMT_FLTP;
         frame->sample_rate = audio_enc_ctx->sample_rate;
         av_channel_layout_copy(&frame->ch_layout, &audio_enc_ctx->ch_layout);
-
         av_frame_get_buffer(frame, 0);
 
-        av_audio_fifo_read(
-            audio_fifo,
-            (void**)frame->data,
-            fs
-            );
+        av_audio_fifo_read(audio_fifo, (void**)frame->data, fs);
 
         frame->pts = audio_pts;
         audio_pts += fs;
@@ -570,8 +564,3 @@ void save_encode::encode_audio(const QByteArray& pcm)
         }
     }
 }
-
-
-
-
-
