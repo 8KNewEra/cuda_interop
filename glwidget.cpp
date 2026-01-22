@@ -185,6 +185,7 @@ void GLWidget::initializeGL()
     initialize_completed_flag = true;
     emit initialized();
 
+    // ---------- QAudioSink ----------
     QAudioFormat fmt;
     fmt.setSampleRate(out_sample_rate);
     fmt.setChannelCount(2);
@@ -615,18 +616,13 @@ void GLWidget::initCudaMalloc(int width, int height)
     cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
 }
 
-void GLWidget::test_audio(QByteArray pcm){
-    if (audioOutput)
-        audioOutput->write(pcm);
-}
-
 //CUDAからOpenGLへ転送
-void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No) {
+void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> &pcm,int No) {
     // QElapsedTimer timer;
     // timer.start();
 
-    // if (audioOutput)
-    //     audioOutput->write(pcm);
+    //音声コピー
+    audio_pcm = pcm;
 
     FrameNo = No;
     //initialized完了チェック
@@ -706,6 +702,12 @@ void GLWidget::downloadToGLTexture_and_Encode() {
         return;
     }
 
+    for(int i=0;i<audio_pcm.size();i++){
+        //低遅延モード
+        if (audioOutput)
+            audioOutput->write(audio_pcm[i]);
+    }
+
     //マッピング
     cudaArray_t array;
     cudaError_t err;
@@ -742,7 +744,7 @@ void GLWidget::downloadToGLTexture_and_Encode() {
     // qDebug()<<encode_FrameCount<<":"<<MaxFrame;
 
     if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
-        save_encoder->encode(d_rgba,pitch_rgba,pcm);
+        save_encoder->encode(d_rgba,pitch_rgba,audio_pcm);
         encode_FrameCount++;
     }else{
         delete save_encoder;

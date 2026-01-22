@@ -39,9 +39,11 @@ public:
     ~decode_thread() override;
     int encode_state=STATE_NOT_ENCODE;
     bool audio_mode=false;
+    QMutex audioMutex;
+    QVector<QByteArray> audio_pcm{};
 
 signals:
-    void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,int slider);
+    void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> audio_pcm,int slider);
     void send_audio(QByteArray pcm);
     void send_slider_info();
     void finished();
@@ -127,7 +129,8 @@ protected:
     AVSampleFormat out_format = AV_SAMPLE_FMT_S16;  // S16 にリサンプルする
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
-    QByteArray audio_pcm{};
+    AVFrame* audio_Frame=nullptr;
+    int seq=0;
 };
 
 #endif // DECODE_THREAD_H

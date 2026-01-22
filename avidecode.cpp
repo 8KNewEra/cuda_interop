@@ -581,5 +581,5 @@ void avidecode::gpu_upload(){
     VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
     slider_No = VideoInfo.current_frameNo;
 
-    emit send_decode_image(d_rgba, pitch_rgba, VideoInfo.current_frameNo);
+    emit send_decode_image(d_rgba, pitch_rgba,audio_pcm, VideoInfo.current_frameNo);
 }

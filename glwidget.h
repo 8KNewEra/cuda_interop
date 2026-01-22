@@ -1,6 +1,7 @@
 #ifndef GLWIDGET_H
 #define GLWIDGET_H
 
+#include "qaudiosink.h"
 #include "save_encode.h"
 #include "cuda_imageprocess.h"
 #include "__global__.h"
@@ -29,7 +30,7 @@ signals:
 public:
     explicit GLWidget(QWindow *parent = nullptr);
     ~GLWidget();
-    void uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,int No);
+    void uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> &pcm,int No);
     void encode_mode(int flag);
     void GLresize();
     void GLreset();
@@ -38,7 +39,6 @@ public:
 
     bool videoInfo_flag=false;
     bool histgram_flag=false;
-    QByteArray pcm{};
     int MaxFrame=0;
 
     //画像処理
@@ -46,8 +46,6 @@ public:
     int sobelfilterEnabled=0;
     int gaussianfilterEnabled=0;
     int averagingfilterEnabled=0;
-
-    void test_audio(QByteArray pcm);
 
 protected:
     void initializeGL() override;
@@ -133,14 +131,11 @@ private:
     int num_bins = 256;
     int line_y1,line_y2,line_y3,line_y4;
 
-    //オーディオ
-    void play_audio(QByteArray pcm);
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
     int out_sample_rate = 48000;
     bool audio_mode=false;
-
-
+    QVector<QByteArray> audio_pcm{};
 };
 
 

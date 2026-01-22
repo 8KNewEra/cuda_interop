@@ -240,12 +240,13 @@ void decode_thread::reversePlayback(){
 //デコードループ
 void decode_thread::processFrame() {
     QMutexLocker locker(&mutex);
+    audio_pcm.clear();
 
     //停止ボタン押下でシークしていない場合は停止
     if (!video_play_flag && slider_No == VideoInfo.current_frameNo){
         if(decode_state==STATE_DECODE_READY){
             decode_state=STATE_DECODING;
-            emit send_decode_image(nullptr,0,VideoInfo.current_frameNo);
+            emit send_decode_image(nullptr,0,audio_pcm,VideoInfo.current_frameNo);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
         return;

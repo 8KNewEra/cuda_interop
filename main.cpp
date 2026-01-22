@@ -13,6 +13,8 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
 
+    qRegisterMetaType<QByteArray>();
+    qRegisterMetaType<QByteArray>("QByteArray");
     app.setStyle(QStyleFactory::create("Fusion"));
 
     QTranslator translator;

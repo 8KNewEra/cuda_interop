@@ -285,7 +285,7 @@ void MainWindow::Close_Video_File()
 }
 
 //動画表示
-void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
+void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> pcm,int slider){
     if(run_decode_thread){
         //シグナルセット
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
@@ -305,7 +305,7 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
 
         //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
         if(d_rgba&&pitch_rgba>0&&encode_state!=STATE_ENCODE_READY){
-            glWidget->uploadToGLTexture(d_rgba,pitch_rgba,slider);
+            glWidget->uploadToGLTexture(d_rgba,pitch_rgba,decodestream->audio_pcm,slider);
         }else if(encode_state==STATE_NOT_ENCODE){
             glWidget->FBO_Rendering();
         }
@@ -320,21 +320,17 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,int slider){
     }
 }
 
-void MainWindow::play_audio(QByteArray pcm){
-    // if (audioSink->bytesFree() > 0)
-    //     qDebug() << "AUDIO UNDERFLOW !!" << audioSink->bytesFree();
-
-    glWidget->pcm={};
-    glWidget->pcm=pcm;
-
-    //通常モード
-    if (encode_state == STATE_NOT_ENCODE) {
-        if (!audio_mode) {
-            if (audioOutput)
-                audioOutput->write(glWidget->pcm);
+void MainWindow::play_audio(QByteArray pcm)
+{
+    if (encode_state == STATE_NOT_ENCODE && !audio_mode) {
+        if (audioOutput && audioSink) {
+            if (audioSink->bytesFree() >= pcm.size()) {
+                audioOutput->write(pcm);
+            }
         }
     }
 }
+
 
 //fps表示
 void MainWindow::fps_view(){
@@ -408,8 +404,8 @@ void MainWindow::start_decode_thread(QString filePath) {
         decode__thread = new QThread;
 
         decodestream->moveToThread(decode__thread);
-        QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
-        QObject::connect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio);
+        QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view,Qt::QueuedConnection);
+        QObject::connect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio, Qt::QueuedConnection);
 
         QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
         QObject::connect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::slider_set_range);

@@ -8,7 +8,6 @@
 #include <QFile>
 #include "cuda_imageprocess.h"
 #include "__global__.h"
-#include "qaudiosink.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -36,7 +35,7 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    void encode(uint8_t* d_rgba, size_t pitch_rgba,QByteArray pcm);
+    void encode(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> &audio_pcm);
 
     struct QueuedPacket {
         AVPacket* pkt;
@@ -65,19 +64,12 @@ private:
 
     //音声
     void init_audio_encoder();
-    void encode_audio(const QByteArray& pcm);
+    void encode_audio(QVector<QByteArray> &audio_pcm);
     SwrContext* swr_enc = nullptr;
     AVCodecContext* audio_enc_ctx = nullptr;
     AVStream*       audio_stream  = nullptr;
     int64_t         audio_pts     = 0;
     AVAudioFifo* audio_fifo = nullptr;
-
-    //オーディオ
-    void play_audio(QByteArray pcm);
-    QAudioSink* audioSink = nullptr;
-    QIODevice* audioOutput = nullptr;
-    int out_sample_rate = 48000;
-    bool audio_mode=false;
 };
 
 #endif // SAVE_ENCODE_H
