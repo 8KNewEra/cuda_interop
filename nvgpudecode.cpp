@@ -246,12 +246,12 @@ bool nvgpudecode::initialized_ffmpeg()
             return false;
         }
 
-        in_sample_rate = audio_ctx->sample_rate;
-        in_format      = audio_ctx->sample_fmt;
+        VideoInfo.in_sample_rate = audio_ctx->sample_rate;
+        VideoInfo.in_format      = audio_ctx->sample_fmt;
         av_channel_layout_copy(&in_ch_layout, &audio_ctx->ch_layout);
 
-        out_sample_rate = audio_ctx->sample_rate;
-        out_format      = AV_SAMPLE_FMT_S16;
+        VideoInfo.out_sample_rate = audio_ctx->sample_rate;
+        VideoInfo.out_format      = AV_SAMPLE_FMT_S16;
         av_channel_layout_default(&out_ch_layout, 2);
 
         if (swr) {
@@ -261,11 +261,11 @@ bool nvgpudecode::initialized_ffmpeg()
         ret = swr_alloc_set_opts2(
             &swr,
             &out_ch_layout,
-            out_format,
-            out_sample_rate,
+            VideoInfo.out_format,
+            VideoInfo.out_sample_rate,
             &in_ch_layout,
-            in_format,
-            in_sample_rate,
+            VideoInfo.in_format,
+            VideoInfo.in_sample_rate,
             0,
             nullptr
             );
@@ -276,7 +276,7 @@ bool nvgpudecode::initialized_ffmpeg()
         }
 
         QAudioFormat fmt;
-        fmt.setSampleRate(out_sample_rate);
+        fmt.setSampleRate(VideoInfo.out_sample_rate);
         fmt.setChannelCount(2);
         fmt.setSampleFormat(QAudioFormat::Int16);
 
@@ -589,12 +589,12 @@ void nvgpudecode::get_decode_audio()
     while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
 
         const int out_channels = out_ch_layout.nb_channels;
-        const int bps = av_get_bytes_per_sample(out_format);
+        const int bps = av_get_bytes_per_sample(VideoInfo.out_format);
 
         int max_out_samples = av_rescale_rnd(
-            swr_get_delay(swr, in_sample_rate) + audio_frame->nb_samples,
-            out_sample_rate,
-            in_sample_rate,
+            swr_get_delay(swr, VideoInfo.in_sample_rate) + audio_frame->nb_samples,
+            VideoInfo.out_sample_rate,
+            VideoInfo.in_sample_rate,
             AV_ROUND_UP
             );
 

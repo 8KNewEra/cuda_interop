@@ -1,7 +1,6 @@
 #ifndef GLWIDGET_H
 #define GLWIDGET_H
 
-#include "qaudiosink.h"
 #include "save_encode.h"
 #include "cuda_imageprocess.h"
 #include "__global__.h"
@@ -131,9 +130,7 @@ private:
     int num_bins = 256;
     int line_y1,line_y2,line_y3,line_y4;
 
-    QAudioSink* audioSink = nullptr;
-    QIODevice* audioOutput = nullptr;
-    int out_sample_rate = 48000;
+    // 音声
     bool audio_mode=false;
     QVector<QByteArray> audio_pcm{};
 };

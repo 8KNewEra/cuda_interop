@@ -309,15 +309,12 @@ void save_encode::init_audio_encoder()
 
     audio_enc_ctx = avcodec_alloc_context3(codec);
 
-    // -----------------------
-    // encoder 設定
-    // -----------------------
-    audio_enc_ctx->sample_rate = 48000;
+    // ---- encoder 設定 ----
+    audio_enc_ctx->sample_rate = VideoInfo.in_sample_rate;              // ★ decode 側もこれに合わせる
     audio_enc_ctx->bit_rate    = 192000;
     audio_enc_ctx->time_base   = AVRational{1, audio_enc_ctx->sample_rate};
 
     av_channel_layout_default(&audio_enc_ctx->ch_layout, 2);
-
     audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_FLTP; // AAC native
 
     if (fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
@@ -329,9 +326,7 @@ void save_encode::init_audio_encoder()
     if (audio_enc_ctx->frame_size != 1024)
         throw std::runtime_error("Unexpected AAC frame_size");
 
-    // -----------------------
-    // stream 作成
-    // -----------------------
+    // ---- stream ----
     audio_stream = avformat_new_stream(fmt_ctx, nullptr);
     if (!audio_stream)
         throw std::runtime_error("avformat_new_stream(audio) failed");
@@ -343,9 +338,7 @@ void save_encode::init_audio_encoder()
             audio_enc_ctx) < 0)
         throw std::runtime_error("copy audio params failed");
 
-    // -----------------------
-    // FIFO（FLTP）
-    // -----------------------
+    // ---- FIFO ----
     audio_fifo = av_audio_fifo_alloc(
         audio_enc_ctx->sample_fmt,
         audio_enc_ctx->ch_layout.nb_channels,
@@ -354,16 +347,14 @@ void save_encode::init_audio_encoder()
     if (!audio_fifo)
         throw std::runtime_error("av_audio_fifo_alloc failed");
 
-    // -----------------------
-    // encoder 用 swr（S16 → FLTP）
-    // -----------------------
+    // ---- swr_enc (S16 → FLTP) ----
     int ret = swr_alloc_set_opts2(
         &swr_enc,
         &audio_enc_ctx->ch_layout,
         audio_enc_ctx->sample_fmt,   // FLTP
         audio_enc_ctx->sample_rate,
         &audio_enc_ctx->ch_layout,
-        AV_SAMPLE_FMT_S16,            // decode pcm
+        VideoInfo.out_format,            // decode PCM
         audio_enc_ctx->sample_rate,
         0,
         nullptr
@@ -375,11 +366,10 @@ void save_encode::init_audio_encoder()
     if (swr_init(swr_enc) < 0)
         throw std::runtime_error("swr_init (encoder) failed");
 
-    // -----------------------
-    // ★ audio pts 初期化
-    // -----------------------
+    // ---- pts 初期化 ----
     audio_pts = 0;
 }
+
 
 void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> &audio_pcm){
     // ------------------------
@@ -472,58 +462,59 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> 
     frame_index+=1;
 }
 
-void save_encode::encode_audio(QVector<QByteArray> &audio_pcm_list)
+void save_encode::encode_audio(QVector<QByteArray>& audio_pcm_list)
 {
     if (!audio_enc_ctx || !audio_fifo || !swr_enc) return;
 
-    const int ch = audio_enc_ctx->ch_layout.nb_channels;
-    const int in_bps = 2; // S16前提（必要なら動的取得）
+    const int ch     = audio_enc_ctx->ch_layout.nb_channels;
+    const int in_bps = 2; // S16
 
-    for (const QByteArray &pcm : audio_pcm_list) {
+    qDebug()<<audio_enc_ctx->sample_rate;
+
+    for (const QByteArray& pcm : audio_pcm_list) {
 
         int in_samples = pcm.size() / (ch * in_bps);
         if (in_samples <= 0) continue;
 
         const uint8_t* in_data[1] = {
             reinterpret_cast<const uint8_t*>(pcm.constData())
-    };
+        };
 
-    int max_out_samples = av_rescale_rnd(
-        swr_get_delay(swr_enc, audio_enc_ctx->sample_rate) + in_samples,
-        audio_enc_ctx->sample_rate,
-        audio_enc_ctx->sample_rate,
-        AV_ROUND_UP
-        );
+        // ★ 正しい delay 計算
+        int max_out_samples = av_rescale_rnd(
+            swr_get_delay(swr_enc, VideoInfo.in_sample_rate) + in_samples,
+            audio_enc_ctx->sample_rate,
+            VideoInfo.in_sample_rate,
+            AV_ROUND_UP
+            );
 
-    uint8_t** converted = nullptr;
-    av_samples_alloc_array_and_samples(
-        &converted,
-        nullptr,
-        ch,
-        max_out_samples,
-        audio_enc_ctx->sample_fmt,
-        0
-        );
+        uint8_t** converted = nullptr;
+        av_samples_alloc_array_and_samples(
+            &converted,
+            nullptr,
+            ch,
+            max_out_samples,
+            audio_enc_ctx->sample_fmt,
+            0
+            );
 
-    int out_samples = swr_convert(
-        swr_enc,
-        converted,
-        max_out_samples,
-        in_data,
-        in_samples
-        );
+        int out_samples = swr_convert(
+            swr_enc,
+            converted,
+            max_out_samples,
+            in_data,
+            in_samples
+            );
 
-    if (out_samples > 0) {
-        av_audio_fifo_write(audio_fifo, (void**)converted, out_samples);
+        if (out_samples > 0) {
+            av_audio_fifo_write(audio_fifo, (void**)converted, out_samples);
+        }
+
+        av_freep(&converted[0]);
+        av_freep(&converted);
     }
 
-    av_freep(&converted[0]);
-    av_freep(&converted);
-    }
-
-    // ==========================
-    // AAC frame単位で取り出してエンコード
-    // ==========================
+    // ---- AAC frame 単位で吐き出し ----
     const int fs = audio_enc_ctx->frame_size;
 
     while (av_audio_fifo_size(audio_fifo) >= fs) {
@@ -536,10 +527,14 @@ void save_encode::encode_audio(QVector<QByteArray> &audio_pcm_list)
 
         av_frame_get_buffer(frame, 0);
 
-        av_audio_fifo_read(audio_fifo, (void**)frame->data, fs);
+        // ★ PTS は「取り出したサンプル数」基準
+        int read_samples = av_audio_fifo_read(audio_fifo,
+                                              (void**)frame->data,
+                                              fs);
 
         frame->pts = audio_pts;
-        audio_pts += fs;
+        audio_pts += read_samples;   // ★ 必ず read_samples で進める
+
 
         avcodec_send_frame(audio_enc_ctx, frame);
         av_frame_free(&frame);

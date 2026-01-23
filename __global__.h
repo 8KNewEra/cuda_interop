@@ -8,6 +8,11 @@
 #define STATE_ENCODE_READY 1
 #define STATE_ENCODING 2
 
+extern "C" {
+    #include <libavutil/samplefmt.h>
+}
+
+
 // エンコード設定の構造体
 struct EncodeSettings {
     std::string Save_Path = "D:/test1.mp4";
@@ -90,6 +95,11 @@ struct DecodeInfo {
     QString decode_mode="";
     bool audio = false;
     int audio_channels=1;
+
+    int in_sample_rate  = 0;
+    int out_sample_rate = 0;
+    AVSampleFormat in_format  = AV_SAMPLE_FMT_NONE;
+    AVSampleFormat out_format = AV_SAMPLE_FMT_S16;  // S16 にリサンプルする
 };
 
 // ★書き込みを許可したいクラスをここで「前方宣言」

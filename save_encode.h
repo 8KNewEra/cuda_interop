@@ -56,6 +56,7 @@ private:
 
     //エンコード設定
     const EncodeSettings& encode_settings = EncodeSettingsManager::getInstance().getSettings();
+    const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
     //CUDA周り
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;

@@ -123,10 +123,6 @@ protected:
     int audio_buffer_size = 0;
     AVChannelLayout in_ch_layout = {};
     AVChannelLayout out_ch_layout = {};
-    int in_sample_rate  = 0;
-    int out_sample_rate = 0;
-    AVSampleFormat in_format  = AV_SAMPLE_FMT_NONE;
-    AVSampleFormat out_format = AV_SAMPLE_FMT_S16;  // S16 にリサンプルする
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
     AVFrame* audio_Frame=nullptr;

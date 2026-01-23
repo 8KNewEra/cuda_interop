@@ -184,16 +184,6 @@ void GLWidget::initializeGL()
     fpsTimer.start();
     initialize_completed_flag = true;
     emit initialized();
-
-    // ---------- QAudioSink ----------
-    QAudioFormat fmt;
-    fmt.setSampleRate(out_sample_rate);
-    fmt.setChannelCount(2);
-    fmt.setSampleFormat(QAudioFormat::Int16);
-
-    audioSink = new QAudioSink(fmt);
-    audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
-    audioOutput = audioSink->start();
 }
 
 //FBOレンダリング
@@ -700,12 +690,6 @@ void GLWidget::downloadToGLTexture_and_Encode() {
     if (!cudaResource2) {
         qDebug() << "cudaResource2 is nullptr, can't map";
         return;
-    }
-
-    for(int i=0;i<audio_pcm.size();i++){
-        //低遅延モード
-        if (audioOutput)
-            audioOutput->write(audio_pcm[i]);
     }
 
     //マッピング
