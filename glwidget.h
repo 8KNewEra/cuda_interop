@@ -29,11 +29,11 @@ signals:
 public:
     explicit GLWidget(QWindow *parent = nullptr);
     ~GLWidget();
-    void uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> &pcm,int No);
+    void uploadToGLTexture(VideoFrame Frame);
     void encode_mode(int flag);
     void GLresize();
     void GLreset();
-    void FBO_Rendering();
+    void FBO_Rendering(VideoFrame Frame);
     void setShaderUniformEnable();
 
     bool videoInfo_flag=false;
@@ -54,10 +54,10 @@ private:
     void initCudaTexture(int width,int height);
     void initCudaMalloc(int width,int height);
     void setShaderUniform(int width,int height);
-    void Monitor_Rendering();
+    void Monitor_Rendering(VideoFrame Frame);
     void initCudaHist();
     void histgram_Analysys();
-    void downloadToGLTexture_and_Encode();
+    void downloadToGLTexture_and_Encode(VideoFrame Frame);
     std::vector<int> make_nice_y_labels(int max_value);
     void getCudaCapabilityForOpenGLGPU();
 
@@ -93,10 +93,6 @@ private:
     shader Sobel_shader;
     shader Gaussian_shader;
     shader Averaging_shader;
-
-    //動画データ
-    uint8_t *d_rgba=nullptr;
-    size_t pitch_rgba=0;
 
     // 描画領域を計算
     float monitor_scaling=1;

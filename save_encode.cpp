@@ -371,7 +371,7 @@ void save_encode::init_audio_encoder()
 }
 
 
-void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> &audio_pcm){
+void save_encode::encode(VideoFrame Frame){
     // ------------------------
     // CUDA NV12変換
     // ------------------------
@@ -383,17 +383,17 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> 
     //本カーネル
     if(ve.size()==1){
         //RGBAをNV12に変換してffmpegへ転送
-        CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],d_rgba, pitch_rgba,width_,height_,stream);
+        CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],Frame.d_encode_rgba, Frame.encode_pitch,width_,height_,stream);
     }else if(ve.size()==2){
         CUDA_IMG_Proc->rgba_to_nv12x2_flip_split(
-            d_rgba,pitch_rgba,
+            Frame.d_encode_rgba,Frame.encode_pitch,
             ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
             ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
             width_,height_,width_/2,height_,stream);
     }else if(ve.size()==4){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
-            d_rgba,pitch_rgba,
+            Frame.d_encode_rgba,Frame.encode_pitch,
             ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
             ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
             ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
@@ -402,7 +402,7 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> 
     }else if(ve.size()==8){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->rgba_to_nv12x8_flip_split(
-            d_rgba,pitch_rgba,
+            Frame.d_encode_rgba,Frame.encode_pitch,
             ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
             ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
             ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
@@ -458,20 +458,18 @@ void save_encode::encode(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> 
     // ========================
     // Audio encode（★ここ）
     // ========================
-    encode_audio(audio_pcm);
+    encode_audio(Frame);
     frame_index+=1;
 }
 
-void save_encode::encode_audio(QVector<QByteArray>& audio_pcm_list)
+void save_encode::encode_audio(VideoFrame Frame)
 {
     if (!audio_enc_ctx || !audio_fifo || !swr_enc) return;
 
     const int ch     = audio_enc_ctx->ch_layout.nb_channels;
     const int in_bps = 2; // S16
 
-    qDebug()<<audio_enc_ctx->sample_rate;
-
-    for (const QByteArray& pcm : audio_pcm_list) {
+    for (const QByteArray& pcm : Frame.audio_pcm) {
 
         int in_samples = pcm.size() / (ch * in_bps);
         if (in_samples <= 0) continue;
@@ -533,11 +531,12 @@ void save_encode::encode_audio(QVector<QByteArray>& audio_pcm_list)
                                               fs);
 
         frame->pts = audio_pts;
-        audio_pts += read_samples;   // ★ 必ず read_samples で進める
-
+        qDebug()<<"encode"<<frame->pts;
+        audio_pts += 1024;   // ★ 必ず read_samples で進める
 
         avcodec_send_frame(audio_enc_ctx, frame);
         av_frame_free(&frame);
+
 
         AVPacket pkt;
         av_init_packet(&pkt);

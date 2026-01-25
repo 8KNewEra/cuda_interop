@@ -130,8 +130,11 @@ decode_thread::~decode_thread() {
         events = nullptr;
     }
 
-    if(d_rgba){
-        safe_cuda_free((void*&)d_rgba, "d_rgba");
+    if(Frame.d_decode_rgba){
+        safe_cuda_free((void*&)Frame.d_decode_rgba, "d_rgba");
+    }
+    if(Frame.d_encode_rgba){
+        safe_cuda_free((void*&)Frame.d_encode_rgba, "d_rgba");
     }
 
     if(d_y){
@@ -240,13 +243,14 @@ void decode_thread::reversePlayback(){
 //デコードループ
 void decode_thread::processFrame() {
     QMutexLocker locker(&mutex);
-    audio_pcm.clear();
+    Frame.audio_pcm.clear();
+    Frame.audio_pts.clear();
 
     //停止ボタン押下でシークしていない場合は停止
-    if (!video_play_flag && slider_No == VideoInfo.current_frameNo){
+    if (!video_play_flag && slider_No == Frame.FrameNo){
         if(decode_state==STATE_DECODE_READY){
             decode_state=STATE_DECODING;
-            emit send_decode_image(nullptr,0,audio_pcm,VideoInfo.current_frameNo);
+            emit send_decode_image(Frame,true);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
         return;

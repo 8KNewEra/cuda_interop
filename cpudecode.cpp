@@ -169,11 +169,19 @@ bool cpudecode::initialized_ffmpeg()
 
     cudaError_t err;
 
-    err = cudaMallocPitch(&d_rgba, &pitch_rgba,
+    err = cudaMallocPitch(&Frame.d_decode_rgba, &Frame.decode_pitch,
                           VideoInfo.width * 4,
                           VideoInfo.height);
     if (err != cudaSuccess) {
         Error_String = QString("cudaMallocPitch(d_rgba) failed: %1")
+        .arg(QString::fromUtf8(cudaGetErrorString(err)));
+        return false;
+    }
+    err = cudaMallocPitch(&Frame.d_encode_rgba,&Frame.encode_pitch,
+                          VideoInfo.width * VideoInfo.width_scale * 4,
+                          VideoInfo.height * VideoInfo.height_scale);
+    if (err != cudaSuccess) {
+        Error_String = QString("cudaMallocPitch failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
         return false;
     }
@@ -411,7 +419,7 @@ bool cpudecode::get_last_frame_pts() {
         double seconds = last_pts * av_q2d(tb);
         qDebug() << "Last PTS:" << last_pts << " (" << seconds << "sec)";
         VideoInfo.max_framesNo = fmt_ctx->streams[vd[0].stream_index]->duration/VideoInfo.pts_per_frame-1;
-        VideoInfo.current_frameNo = VideoInfo.max_framesNo;
+        Frame.FrameNo = VideoInfo.max_framesNo;
     } else {
         Error_String = "No frame found at end.";
         return false;
@@ -423,7 +431,7 @@ bool cpudecode::get_last_frame_pts() {
 //映像ストリーム取得
 void cpudecode::get_decode_image(){
     // ----------- シーク処理 -----------
-    if (slider_No != VideoInfo.current_frameNo || video_reverse_flag) {
+    if (slider_No != Frame.FrameNo || video_reverse_flag) {
         if (video_reverse_flag) {
             slider_No--;
             if (slider_No < 0)
@@ -438,7 +446,7 @@ void cpudecode::get_decode_image(){
                       slider_No * VideoInfo.pts_per_frame,
                       AVSEEK_FLAG_BACKWARD);
 
-        VideoInfo.current_frameNo = slider_No;
+        Frame.FrameNo = slider_No;
     }
 
     // ----------- パケット読み込みループ -----------
@@ -456,8 +464,8 @@ void cpudecode::get_decode_image(){
 
             // 終端→先頭に戻ってループ
             uint64_t seek_frame;
-            if (VideoInfo.current_frameNo < VideoInfo.max_framesNo - 1) {
-                seek_frame = VideoInfo.current_frameNo + 1;
+            if (Frame.FrameNo < VideoInfo.max_framesNo - 1) {
+                seek_frame = Frame.FrameNo + 1;
             } else {
                 emit decode_end();
                 seek_frame = 0;
@@ -578,8 +586,8 @@ void cpudecode::gpu_upload(){
     // yuv420p → RGBA
     if(VideoInfo.bitdepth == 8){
         CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(
-            d_rgba,
-            pitch_rgba,
+            Frame.d_decode_rgba,
+            Frame.decode_pitch,
             d_y,
             pitch_y,
             d_u,
@@ -593,8 +601,8 @@ void cpudecode::gpu_upload(){
     }else if(VideoInfo.bitdepth == 10){
         int is_be = (vd[0].Frame->format == AV_PIX_FMT_YUV420P10BE);
         CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(
-            d_rgba,
-            pitch_rgba,
+            Frame.d_decode_rgba,
+            Frame.decode_pitch,
             d_y,
             pitch_y,
             d_u,
@@ -618,8 +626,8 @@ void cpudecode::gpu_upload(){
     cudaEventSynchronize(events);
 
     //フレーム番号取得
-    VideoInfo.current_frameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-    slider_No = VideoInfo.current_frameNo;
+    Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+    slider_No = Frame.FrameNo;
 
-    emit send_decode_image(d_rgba, pitch_rgba,audio_pcm, VideoInfo.current_frameNo);
+    emit send_decode_image(Frame,false);
 }

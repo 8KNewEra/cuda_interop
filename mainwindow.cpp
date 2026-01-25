@@ -285,7 +285,7 @@ void MainWindow::Close_Video_File()
 }
 
 //動画表示
-void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> pcm,int slider){
+void MainWindow::decode_view(VideoFrame Frame,bool pause_flag){
     if(run_decode_thread){
         //シグナルセット
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
@@ -295,19 +295,19 @@ void MainWindow::decode_view(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArr
 
         //UIの制御
         if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
-            ui->Live_horizontalSlider->setValue(slider);
+            ui->Live_horizontalSlider->setValue(Frame.FrameNo);
         }
-        slider_No=slider;
+        slider_No=Frame.FrameNo;
 
         //描画を開始
         //コンテキストを作成
         glWidget->makeCurrent();
 
         //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
-        if(d_rgba&&pitch_rgba>0&&encode_state!=STATE_ENCODE_READY){
-            glWidget->uploadToGLTexture(d_rgba,pitch_rgba,decodestream->audio_pcm,slider);
+        if(!pause_flag&&encode_state!=STATE_ENCODE_READY){
+            glWidget->uploadToGLTexture(Frame);
         }else if(encode_state==STATE_NOT_ENCODE){
-            glWidget->FBO_Rendering();
+            glWidget->FBO_Rendering(Frame);
         }
 
         //コンテキストを破棄

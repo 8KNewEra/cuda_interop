@@ -35,7 +35,7 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    void encode(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> &audio_pcm);
+    void encode(VideoFrame Frame);
 
     struct QueuedPacket {
         AVPacket* pkt;
@@ -65,7 +65,7 @@ private:
 
     //音声
     void init_audio_encoder();
-    void encode_audio(QVector<QByteArray> &audio_pcm);
+    void encode_audio(VideoFrame Frame);
     SwrContext* swr_enc = nullptr;
     AVCodecContext* audio_enc_ctx = nullptr;
     AVStream*       audio_stream  = nullptr;

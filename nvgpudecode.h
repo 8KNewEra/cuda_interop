@@ -19,6 +19,7 @@ protected:
     void get_multidecode_image();
     void get_decode_audio();
     void CUDA_RGBA_to_merge();
+    int a=0;
 };
 
 #endif // NVGPUDECODE_H

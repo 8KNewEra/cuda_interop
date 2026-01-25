@@ -65,7 +65,7 @@ private:
     void stop_decode_thread();
     bool canUseGpuDecode(QString filename);
     void set_preview_speed(const QString &text);
-    void decode_view(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> pcm,int slider);
+    void decode_view(VideoFrame Frame,bool pause_flag);
     QThread *decode__thread;
     decode_thread *decodestream;
     bool run_decode_thread=false;

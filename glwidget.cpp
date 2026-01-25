@@ -60,10 +60,6 @@ GLWidget::~GLWidget() {
     }
 
     //CUDA Mallocされたやつ
-    if (d_rgba) {
-        cudaFree(d_rgba);
-        d_rgba = nullptr;
-    }
     if (d_hist_stats) {
         cudaFree(d_hist_stats);
         d_hist_stats = nullptr;
@@ -187,7 +183,7 @@ void GLWidget::initializeGL()
 }
 
 //FBOレンダリング
-void GLWidget::FBO_Rendering(){
+void GLWidget::FBO_Rendering(VideoFrame Frame){
     //エンコードから通常モード移行の場合はスキップ
     if((prev_encode_state==STATE_ENCODING)&&encode_state==STATE_NOT_ENCODE){
         prev_encode_state=encode_state;
@@ -238,15 +234,15 @@ void GLWidget::FBO_Rendering(){
 
     if (encode_state==STATE_ENCODING) {
         // GPUエンコード用処理
-        downloadToGLTexture_and_Encode();
+        downloadToGLTexture_and_Encode(Frame);
     } else if(encode_state==STATE_NOT_ENCODE){
         //画面に描画
-        Monitor_Rendering();
+        Monitor_Rendering(Frame);
     }
 }
 
 //画面描画
-void GLWidget::Monitor_Rendering(){
+void GLWidget::Monitor_Rendering(VideoFrame Frame){
     // QElapsedTimer timer;
     // timer.start();
     painter.begin(this);
@@ -429,7 +425,7 @@ void GLWidget::Monitor_Rendering(){
             painter.drawText(2, 160, "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
             painter.drawText(2, 180, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
             painter.drawText(2, 200, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
-            painter.drawText(2, 220, "Current Frame:" + QString::number(VideoInfo.current_frameNo)+"\n");
+            painter.drawText(2, 220, "Current Frame:" + QString::number(Frame.FrameNo)+"\n");
             if(VideoInfo.audio)
                 painter.drawText(2, 240, "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
         }
@@ -596,25 +592,14 @@ void GLWidget::initTextureCuda(int width,int height) {
 //初回、解像度が変わった場合再Malloc
 void GLWidget::initCudaMalloc(int width, int height)
 {
-    //すでに確保済みなら一度解放
-    if (d_rgba) {
-        cudaFree(d_rgba);
-        d_rgba = nullptr;
-    }
 
-    //再確保
-    cudaMallocPitch(&d_rgba, &pitch_rgba, width * 4, height);
 }
 
 //CUDAからOpenGLへ転送
-void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> &pcm,int No) {
+void GLWidget::uploadToGLTexture(VideoFrame Frame) {
     // QElapsedTimer timer;
     // timer.start();
 
-    //音声コピー
-    audio_pcm = pcm;
-
-    FrameNo = No;
     //initialized完了チェック
     if (!initialize_completed_flag) {
         return;
@@ -634,7 +619,7 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByt
     }
 
     //入力データチェック
-    if (!d_rgba) {
+    if (!Frame.d_decode_rgba) {
         qDebug() << "入力データがNULLです";
         return;
     }
@@ -657,12 +642,12 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByt
 
     //OpenGL用テクスチャに変換してOpenGL転送
     size_t widthBytes = width_ * 4;
-    if (widthBytes <= pitch_rgba) {
+    if (widthBytes <= Frame.decode_pitch) {
         cudaMemcpy2DToArray(
             array,
             0, 0,
-            d_rgba,
-            pitch_rgba,
+            Frame.d_decode_rgba,
+            Frame.decode_pitch,
             widthBytes,
             height_,
             cudaMemcpyDeviceToDevice
@@ -681,12 +666,12 @@ void GLWidget::uploadToGLTexture(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByt
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
 
-    FBO_Rendering();
+    FBO_Rendering(Frame);
     fpsCount++;
 }
 
 //OpenGLからCUDAへ転送+エンコード
-void GLWidget::downloadToGLTexture_and_Encode() {
+void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     if (!cudaResource2) {
         qDebug() << "cudaResource2 is nullptr, can't map";
         return;
@@ -710,8 +695,8 @@ void GLWidget::downloadToGLTexture_and_Encode() {
 
     //OpenGL用テクスチャに変換してOpenGL転送
     size_t widthBytes = width_ * 4;
-    if (widthBytes <= pitch_rgba) {
-        cudaMemcpy2DFromArray(d_rgba, pitch_rgba, array, 0, 0, widthBytes, height_, cudaMemcpyDeviceToDevice);
+    if (widthBytes <= Frame.encode_pitch) {
+        cudaMemcpy2DFromArray(Frame.d_encode_rgba, Frame.encode_pitch, array, 0, 0, widthBytes, height_, cudaMemcpyDeviceToDevice);
     } else {
         qDebug() << "Invalid pitch: widthBytes > pitch!";
         return;
@@ -728,7 +713,7 @@ void GLWidget::downloadToGLTexture_and_Encode() {
     // qDebug()<<encode_FrameCount<<":"<<MaxFrame;
 
     if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
-        save_encoder->encode(d_rgba,pitch_rgba,audio_pcm);
+        save_encoder->encode(Frame);
         encode_FrameCount++;
     }else{
         delete save_encoder;

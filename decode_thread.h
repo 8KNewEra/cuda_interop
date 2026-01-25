@@ -40,10 +40,9 @@ public:
     int encode_state=STATE_NOT_ENCODE;
     bool audio_mode=false;
     QMutex audioMutex;
-    QVector<QByteArray> audio_pcm{};
 
 signals:
-    void send_decode_image(uint8_t* d_rgba, size_t pitch_rgba,QVector<QByteArray> audio_pcm,int slider);
+    void send_decode_image(VideoFrame Frame,bool pause_flag);
     void send_audio(QByteArray pcm);
     void send_slider_info();
     void finished();
@@ -105,10 +104,9 @@ protected:
 
     //CUDA
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
-    uint8_t* d_rgba=nullptr;
-    size_t pitch_rgba;
     cudaStream_t stream=nullptr;
     cudaEvent_t events=nullptr;
+    VideoFrame Frame{};
 
     //CPUデコード用
     uint8_t *d_y=nullptr,*d_u=nullptr,*d_v=nullptr,*d_r=nullptr,*d_g=nullptr,*d_b=nullptr,*d_yuv=nullptr,*d_rgb=nullptr;

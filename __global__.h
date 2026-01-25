@@ -85,7 +85,6 @@ struct DecodeInfo {
     std::string Codec = "av1";
     int max_framesNo=10;
     int pts_per_frame=1000;
-    int current_frameNo=0;
     double fps = 30;
     int bitdepth=8;
     int width=3840;
@@ -174,6 +173,16 @@ enum RGBLayout {
     RBG = 3,
     BRG = 4,
     GRB = 5
+};
+
+struct VideoFrame {
+    uint8_t* d_decode_rgba=nullptr;
+    size_t decode_pitch=0;
+    uint8_t* d_encode_rgba=nullptr;
+    size_t encode_pitch=0;
+    int FrameNo=0;
+    QVector<QByteArray> audio_pcm{};
+    QVector<int> audio_pts{};
 };
 
 #endif // __GLOBAL___H
