@@ -493,21 +493,27 @@ void avidecode::get_decode_audio()
         return;
 
     while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
-        int out_channels = out_ch_layout.nb_channels;
-        int bps = av_get_bytes_per_sample(VideoInfo.out_format);
+
+        const int out_channels = out_ch_layout.nb_channels;
+        const int bps = av_get_bytes_per_sample(VideoInfo.out_format);
+
+        int in_rate = audio_frame->sample_rate > 0
+                          ? audio_frame->sample_rate
+                          : audio_ctx->sample_rate;
 
         int max_out_samples = av_rescale_rnd(
-            swr_get_delay(swr, VideoInfo.in_sample_rate) + audio_frame->nb_samples,
+            swr_get_delay(swr, in_rate) + audio_frame->nb_samples,
             VideoInfo.out_sample_rate,
-            VideoInfo.in_sample_rate,
+            in_rate,
             AV_ROUND_UP
             );
 
-        QByteArray pcm;
-        pcm.resize(max_out_samples * out_channels * bps);
+
+        QByteArray pcm_tmp;
+        pcm_tmp.resize(max_out_samples * out_channels * bps);
 
         uint8_t* out_planes[] = {
-            reinterpret_cast<uint8_t*>(pcm.data())
+            reinterpret_cast<uint8_t*>(pcm_tmp.data())
         };
 
         int out_samples = swr_convert(
@@ -521,18 +527,24 @@ void avidecode::get_decode_audio()
         if (out_samples <= 0)
             continue;
 
-        pcm.resize(out_samples * out_channels * bps);
+        pcm_tmp.resize(out_samples * out_channels * bps);
         VideoInfo.audio_channels = out_channels;
 
-        //低遅延モード
+        // ★ここで確定コピーを作る
+        QByteArray pcm=pcm_tmp;
+
+        // 低遅延再生（同一スレッド）
+        Frame.audio_pcm.push_back(QByteArray(pcm));
+        Frame.audio_pts.push_back(audio_frame->pts);
+        //qDebug()<<"音声"<<Frame.audio_pts;
+
         if (encode_state == STATE_NOT_ENCODE) {
-            if (audio_mode) {
-                if (audioOutput)
-                    audioOutput->write(pcm);
+            if (audio_mode && audioOutput) {
+                audioOutput->write(pcm);
             }
         }
 
-        pcm.resize(out_samples * out_channels * bps);
+        // エンコードスレッドへ（別スレッド）
         emit send_audio(pcm);
     }
 }
