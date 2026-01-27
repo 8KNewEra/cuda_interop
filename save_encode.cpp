@@ -531,12 +531,10 @@ void save_encode::encode_audio(VideoFrame Frame)
                                               fs);
 
         frame->pts = audio_pts;
-        qDebug()<<"encode"<<frame->pts;
-        audio_pts += 1024;   // ★ 必ず read_samples で進める
+        audio_pts += 1024*(VideoInfo.fps/encode_settings.save_fps);   // ★ 必ず read_samples で進める
 
         avcodec_send_frame(audio_enc_ctx, frame);
         av_frame_free(&frame);
-
 
         AVPacket pkt;
         av_init_packet(&pkt);

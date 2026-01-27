@@ -176,13 +176,17 @@ enum RGBLayout {
 };
 
 struct VideoFrame {
+    //映像
     uint8_t* d_decode_rgba=nullptr;
     size_t decode_pitch=0;
     uint8_t* d_encode_rgba=nullptr;
     size_t encode_pitch=0;
     int FrameNo=0;
+
+    //音声
     QVector<QByteArray> audio_pcm{};
     QVector<int> audio_pts{};
+    int out_samples = 1024;
 };
 
 #endif // __GLOBAL___H

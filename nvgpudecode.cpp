@@ -645,7 +645,7 @@ void nvgpudecode::get_decode_audio()
         // 低遅延再生（同一スレッド）
         Frame.audio_pcm.push_back(QByteArray(pcm));
         Frame.audio_pts.push_back(audio_frame->pts);
-        //qDebug()<<"音声"<<Frame.audio_pts;
+        //qDebug()<<"音声"<<Frame.audio_pts.size();
 
         if (encode_state == STATE_NOT_ENCODE) {
             if (audio_mode && audioOutput) {
