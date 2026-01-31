@@ -1,26 +1,37 @@
 #include "fps_thread.h"
+#include "qdebug.h"
 #include "qtimer.h"
 
-fps_thread::fps_thread(QObject *parent) : QThread(parent), timer(nullptr) {}
+fps_thread::fps_thread(QObject *parent) : QThread(parent){}
 
 fps_thread::~fps_thread() {
-    timer->stop();
-    delete timer;
-    timer = nullptr;
 }
 
 void fps_thread::run() {
-    QTimer timer;
-    connect(&timer, &QTimer::timeout, this, &fps_thread::timer_hit, Qt::DirectConnection);
-    timer.setInterval(1000);
-    timer.start();
-    fflush(stdout);
-    exec();
-    fflush(stdout);
-    timer.stop();
-    timer.disconnect();
+    const int fps = 60;
+    const double interval = 1.0 / fps;
+
+    using clock = std::chrono::steady_clock;
+
+    auto start = clock::now();
+    int processedFrames = 0;
+
+    while (running) {
+        auto now = clock::now();
+        double elapsed = std::chrono::duration<double>(now - start).count();
+
+        int targetFrames = static_cast<int>(elapsed / interval);
+
+        while (processedFrames < targetFrames) {
+            emit fps_signal();
+            processedFrames++;
+        }
+
+        // 精度目的ではなく CPU 負荷軽減用
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
 }
 
-void fps_thread::timer_hit() {
-    emit fps_signal();
+void fps_thread::stop() {
+    running = false;
 }

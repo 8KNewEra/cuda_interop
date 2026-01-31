@@ -10,18 +10,17 @@ class fps_thread : public QThread {
 public:
     explicit fps_thread(QObject *parent = nullptr);
     ~fps_thread() override;
+    void stop();
 
 signals:
     void fps_signal();
-
-public slots:
-    void timer_hit();
 
 protected:
     void run() override;
 
 private:
-    QTimer* timer;
+    std::atomic<bool> running{true};
+    double fps = 0.0;
 };
 
 #endif // FPS_THREAD_H

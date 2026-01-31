@@ -106,6 +106,10 @@ MainWindow::MainWindow(QWidget *parent)
     audioSink = new QAudioSink(fmt);
     audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
     audioOutput = audioSink->start();
+
+
+
+    fpsTimer.start();
 }
 
 MainWindow::~MainWindow()
@@ -137,7 +141,6 @@ void MainWindow::GLwidgetInitialized(){
     // 初期化完了後の処理
     connect(glWidget, &GLWidget::initialized, this, [=]() {
         qDebug() << "GLWidget 初期化完了";
-        start_fps_thread();
         start_info_thread();
         ui->actionOpenFile->setEnabled(true);
         ui->info->setEnabled(true);
@@ -334,7 +337,13 @@ void MainWindow::play_audio(QByteArray pcm)
 
 //fps表示
 void MainWindow::fps_view(){
-
+    fpsCount++;
+    if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
+        fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
+        fpsCount = 0;
+        qDebug()<<fps;
+        fpsTimer.restart();
+    }
 }
 
 //再生速度コンボボックス
@@ -442,6 +451,8 @@ void MainWindow::start_decode_thread(QString filePath) {
             run_decode_thread = true;
             QMetaObject::invokeMethod(decodestream, "startProcessing", Qt::QueuedConnection);
             ui->comboBox_speed->setCurrentIndex(6);
+
+            start_fps_thread();
         }, Qt::SingleShotConnection);
 
         decode__thread->start();
@@ -515,6 +526,8 @@ void MainWindow::stop_decode_thread(){
         decodestream->stopProcessing();
         decode__thread->quit();
         decode__thread->wait();
+
+        stop_fps_thread();
     }
 }
 
@@ -530,6 +543,22 @@ void MainWindow::start_fps_thread(){
 
     fpsstream->start();
 }
+
+//fpsスレッド停止
+void MainWindow::stop_fps_thread()
+{
+    if (!fps_view_thread || !fpsstream)
+        return;
+
+    fpsstream->stop();          // worker に停止指示
+    fps_view_thread->quit();    // event loop 停止
+    fps_view_thread->wait();    // 完全停止待ち
+
+    delete fps_view_thread;
+    fps_view_thread = nullptr;
+    fpsstream = nullptr;
+}
+
 
 //infoスレッド
 void MainWindow::start_info_thread(){
