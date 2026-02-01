@@ -97,11 +97,6 @@ protected:
     DecodeState decode_state = STATE_DECODE_READY;
     DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
 
-    //タイマー関連
-    QTimer *timer;
-    QElapsedTimer elapsedTimer;
-    int interval_ms;
-
     //CUDA
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
     cudaStream_t stream=nullptr;

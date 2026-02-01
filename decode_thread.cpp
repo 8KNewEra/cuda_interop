@@ -18,7 +18,7 @@ extern "C" {
 }
 
 decode_thread::decode_thread(QString FilePath,bool audio_m,QObject *parent)
-    : QObject(parent), video_play_flag(true), timer(new QTimer(this))  {
+    : QObject(parent), video_play_flag(true){
     QFileInfo fileInfo(FilePath);
     QString ext = QFileInfo(fileInfo).suffix().toLower();
     VideoInfo.Name = fileInfo.completeBaseName().toStdString() + "." + ext.toStdString();
@@ -35,13 +35,6 @@ decode_thread::decode_thread(QString FilePath,bool audio_m,QObject *parent)
 }
 
 decode_thread::~decode_thread() {
-    if (timer) {
-        QMetaObject::invokeMethod(timer, "stop", Qt::QueuedConnection);
-        QMetaObject::invokeMethod(timer, "deleteLater", Qt::QueuedConnection);
-        timer = nullptr;
-        delete timer;
-    }
-
     // 1) デコードループ停止要求
     QThread::msleep(10);
 
@@ -189,19 +182,14 @@ void decode_thread::receve_decode_flag(){
 }
 
 void decode_thread::set_decode_speed(int speed){
-    interval_ms = static_cast<int>(1000.0 / speed);
-    elapsedTimer.start();
-    timer->start(interval_ms);
+
 }
 
 void decode_thread::startProcessing() {
     if(initialized_ffmpeg()){
-        interval_ms = static_cast<double>(1000.0 / 33);
-        connect(timer, &QTimer::timeout, this, &decode_thread::processFrame);
-        elapsedTimer.start();
-        timer->start(interval_ms);
         Error_String="";
         qDebug() << "Live Thread: Start Processing";
+        resumePlayback();
     }else{
         emit decode_error(Error_String);
         emit finished();
@@ -210,7 +198,6 @@ void decode_thread::startProcessing() {
 
 void decode_thread::stopProcessing() {
     thread_stop_flag = true;
-
     qDebug() << "decode_thread: stopProcessing called";
 }
 
@@ -256,11 +243,11 @@ void decode_thread::processFrame() {
         return;
     }
 
-    if(decode_state==STATE_DECODE_READY){
+
         decode_state=STATE_DECODING;
         get_decode_image();
         decode_state=STATE_WAIT_DECODE_FLAG;
-    }
+
 
     //デコード修了指示が出た場合は全ての処理を完了してから修了を通知
     if(thread_stop_flag){

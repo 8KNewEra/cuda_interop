@@ -8,7 +8,7 @@ fps_thread::~fps_thread() {
 }
 
 void fps_thread::run() {
-    const int fps = 60;
+    const int fps = 240;
     const double interval = 1.0 / fps;
 
     using clock = std::chrono::steady_clock;

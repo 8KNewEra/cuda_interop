@@ -21,6 +21,7 @@
 #include <QTimer>
 #include <QFileDialog>
 #include <QShortcut>
+#include <QPointer>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -66,8 +67,8 @@ private:
     bool canUseGpuDecode(QString filename);
     void set_preview_speed(const QString &text);
     void decode_view(VideoFrame Frame,bool pause_flag);
-    QThread *decode__thread;
-    decode_thread *decodestream;
+    QThread *decode__thread=nullptr;
+    decode_thread *decodestream=nullptr;
     bool run_decode_thread=false;
     int preview_speed=30;
 
@@ -80,8 +81,8 @@ private:
     void start_fps_thread();
     void stop_fps_thread();
     void fps_view();
-    QThread *fps_view_thread;
-    fps_thread *fpsstream;
+    QThread *fps_view_thread=nullptr;
+    fps_thread *fpsstream=nullptr;
 
     //使用率取得
     void start_info_thread();
@@ -106,11 +107,6 @@ private:
     QIODevice* audioOutput = nullptr;
     int out_sample_rate = 48000;
     bool audio_mode=false;
-
-    //fpsタイマー
-    QElapsedTimer fpsTimer;
-    int fpsCount = 0;
-    double fps = 0.0;
 
 private:
     Ui::MainWindow *ui;

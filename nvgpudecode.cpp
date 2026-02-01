@@ -417,13 +417,13 @@ bool nvgpudecode::get_last_frame_pts() {
 
 //映像取得
 void nvgpudecode::get_decode_image(){
-    if(vd.size()==1){
+    if(vd.size()==0){
+        return;
+    }else if(vd.size()==1){
         get_singledecode_image();
     }else{
         get_multidecode_image();
     }
-
-
 }
 
 //映像シングルストリーム

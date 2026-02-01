@@ -106,10 +106,6 @@ MainWindow::MainWindow(QWidget *parent)
     audioSink = new QAudioSink(fmt);
     audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
     audioOutput = audioSink->start();
-
-
-
-    fpsTimer.start();
 }
 
 MainWindow::~MainWindow()
@@ -142,6 +138,7 @@ void MainWindow::GLwidgetInitialized(){
     connect(glWidget, &GLWidget::initialized, this, [=]() {
         qDebug() << "GLWidget 初期化完了";
         start_info_thread();
+        start_fps_thread();
         ui->actionOpenFile->setEnabled(true);
         ui->info->setEnabled(true);
 
@@ -261,9 +258,7 @@ void MainWindow::Open_Video_File()
     if (!filePath.isEmpty()) {
         qDebug() << "選択されたファイル:" << filePath;
 
-        if(run_decode_thread){
-            stop_decode_thread();
-        }
+        Close_Video_File();
         ui->info->setEnabled(false);
         ui->actionOpenFile->setEnabled(false);
 
@@ -319,7 +314,6 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause_flag){
         //デコードスレッドシグナル
         if(encode_state!=STATE_ENCODE_READY)
             emit decode_please();
-
     }
 }
 
@@ -334,15 +328,15 @@ void MainWindow::play_audio(QByteArray pcm)
     }
 }
 
-
 //fps表示
 void MainWindow::fps_view(){
-    fpsCount++;
-    if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
-        fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
-        fpsCount = 0;
-        qDebug()<<fps;
-        fpsTimer.restart();
+    //シグナルセット
+    if(run_decode_thread){
+        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
+
+        //デコードスレッドシグナル
+        if(encode_state!=STATE_ENCODE_READY)
+            emit decode_please();
     }
 }
 
@@ -451,8 +445,6 @@ void MainWindow::start_decode_thread(QString filePath) {
             run_decode_thread = true;
             QMetaObject::invokeMethod(decodestream, "startProcessing", Qt::QueuedConnection);
             ui->comboBox_speed->setCurrentIndex(6);
-
-            start_fps_thread();
         }, Qt::SingleShotConnection);
 
         decode__thread->start();
@@ -526,22 +518,22 @@ void MainWindow::stop_decode_thread(){
         decodestream->stopProcessing();
         decode__thread->quit();
         decode__thread->wait();
-
-        stop_fps_thread();
     }
 }
 
 //fpsスレッド開始
 void MainWindow::start_fps_thread(){
-    //fpsthread
-    fpsstream = new fps_thread;
-    fps_view_thread = new QThread;
-    fpsstream->moveToThread(fps_view_thread);
+    if(!fpsstream){
+        //fpsthread
+        fpsstream = new fps_thread;
+        fps_view_thread = new QThread;
+        fpsstream->moveToThread(fps_view_thread);
 
-    QObject::connect(fpsstream, &fps_thread::fps_signal,
-                     this, &MainWindow::fps_view);
+        QObject::connect(fpsstream, &fps_thread::fps_signal,
+                         this, &MainWindow::fps_view);
 
-    fpsstream->start();
+        fpsstream->start();
+    }
 }
 
 //fpsスレッド停止
@@ -553,6 +545,8 @@ void MainWindow::stop_fps_thread()
     fpsstream->stop();          // worker に停止指示
     fps_view_thread->quit();    // event loop 停止
     fps_view_thread->wait();    // 完全停止待ち
+    QObject::disconnect(fpsstream, &fps_thread::fps_signal,
+                     this, &MainWindow::fps_view);
 
     delete fps_view_thread;
     fps_view_thread = nullptr;
