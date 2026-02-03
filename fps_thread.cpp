@@ -8,12 +8,12 @@ fps_thread::~fps_thread() {
 }
 
 void fps_thread::run() {
-    const int fps = 240;
+    const int fps = 120;
     const double interval = 1.0 / fps;
 
     using clock = std::chrono::steady_clock;
-
     auto start = clock::now();
+
     int processedFrames = 0;
 
     while (running) {
@@ -22,15 +22,15 @@ void fps_thread::run() {
 
         int targetFrames = static_cast<int>(elapsed / interval);
 
-        while (processedFrames < targetFrames) {
-            emit fps_signal();
-            processedFrames++;
+        if (processedFrames < targetFrames) {
+            emit fps_signal();      // ← 1フレームだけ送る
+            processedFrames++;      // ← 遅れは内部で吸収
         }
 
-        // 精度目的ではなく CPU 負荷軽減用
         std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
 }
+
 
 void fps_thread::stop() {
     running = false;

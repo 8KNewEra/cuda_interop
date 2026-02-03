@@ -106,6 +106,8 @@ MainWindow::MainWindow(QWidget *parent)
     audioSink = new QAudioSink(fmt);
     audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
     audioOutput = audioSink->start();
+
+    fpsTimer.start();
 }
 
 MainWindow::~MainWindow()
@@ -138,7 +140,7 @@ void MainWindow::GLwidgetInitialized(){
     connect(glWidget, &GLWidget::initialized, this, [=]() {
         qDebug() << "GLWidget 初期化完了";
         start_info_thread();
-        start_fps_thread();
+
         ui->actionOpenFile->setEnabled(true);
         ui->info->setEnabled(true);
 
@@ -330,14 +332,22 @@ void MainWindow::play_audio(QByteArray pcm)
 
 //fps表示
 void MainWindow::fps_view(){
-    //シグナルセット
-    if(run_decode_thread){
-        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
+    // fpsCount++;
+    // if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
+    //     fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
+    //     qDebug()<<fps;
+    //     fpsCount = 0;
+    //     fpsTimer.restart();
+    // }
 
-        //デコードスレッドシグナル
-        if(encode_state!=STATE_ENCODE_READY)
-            emit decode_please();
-    }
+    // //シグナルセット
+    // if(run_decode_thread){
+    //     QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
+
+    //     //デコードスレッドシグナル
+    //     if(encode_state!=STATE_ENCODE_READY)
+    //         emit decode_please();
+    // }
 }
 
 //再生速度コンボボックス
@@ -444,6 +454,7 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(decode__thread, &QThread::started, this, [this]() {
             run_decode_thread = true;
             QMetaObject::invokeMethod(decodestream, "startProcessing", Qt::QueuedConnection);
+            start_fps_thread();
             ui->comboBox_speed->setCurrentIndex(6);
         }, Qt::SingleShotConnection);
 
@@ -530,7 +541,7 @@ void MainWindow::start_fps_thread(){
         fpsstream->moveToThread(fps_view_thread);
 
         QObject::connect(fpsstream, &fps_thread::fps_signal,
-                         this, &MainWindow::fps_view);
+                         decodestream, &decode_thread::processFrame);
 
         fpsstream->start();
     }

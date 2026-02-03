@@ -179,6 +179,11 @@ void decode_thread::receve_decode_flag(){
     if(decode_state==STATE_WAIT_DECODE_FLAG){
         decode_state = STATE_DECODE_READY;
     }
+
+    if(drop_flag){
+        QMetaObject::invokeMethod(this, "processFrame", Qt::QueuedConnection);
+        drop_flag=false;
+    }
 }
 
 void decode_thread::set_decode_speed(int speed){
@@ -243,11 +248,15 @@ void decode_thread::processFrame() {
         return;
     }
 
-
+    if(decode_state==STATE_DECODE_READY){
         decode_state=STATE_DECODING;
         get_decode_image();
         decode_state=STATE_WAIT_DECODE_FLAG;
-
+    }else{
+        drop_count++;
+        qDebug()<<drop_count;
+        drop_flag=true;
+    }
 
     //デコード修了指示が出た場合は全ての処理を完了してから修了を通知
     if(thread_stop_flag){

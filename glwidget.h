@@ -46,6 +46,8 @@ public:
     int gaussianfilterEnabled=0;
     int averagingfilterEnabled=0;
 
+        double fps = 0.0;
+
 protected:
     void initializeGL() override;
 
@@ -114,7 +116,6 @@ private:
     //fpsタイマー
     QElapsedTimer fpsTimer;
     int fpsCount = 0;
-    double fps = 0.0;
 
     //ヒストグラム
     cudaStream_t stream = nullptr;

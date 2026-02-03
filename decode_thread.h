@@ -48,6 +48,7 @@ signals:
     void finished();
     void decode_end();
     void decode_error(QString error);
+    void drop_decode();
 
 public slots:
     void sliderPlayback(int value);
@@ -120,6 +121,15 @@ protected:
     QIODevice* audioOutput = nullptr;
     AVFrame* audio_Frame=nullptr;
     int seq=0;
+
+    int drop_count=0;
+    bool drop_flag=false;
+
+    //タイマー関連
+    QTimer *timer;
+    QElapsedTimer elapsedTimer;
+    int interval_ms;
+
 };
 
 #endif // DECODE_THREAD_H
