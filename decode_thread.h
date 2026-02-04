@@ -59,7 +59,6 @@ public slots:
     void stopProcessing();
     void processFrame();
     void receve_decode_flag();
-    void set_decode_speed(int speed);
 
 protected:
     enum DecodeState {

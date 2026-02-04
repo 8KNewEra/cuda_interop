@@ -35,7 +35,6 @@ class MainWindow : public QMainWindow
 
 signals:
     void send_encode_flag(bool flag,int slider_max);
-    void send_decode_speed(int speed);
     void send_manual_pause();
     void send_manual_resumeplayback();
     void send_manual_slider(int value);
@@ -65,7 +64,6 @@ private:
     void start_decode_thread(QString filePath);
     void stop_decode_thread();
     bool canUseGpuDecode(QString filename);
-    void set_preview_speed(const QString &text);
     void decode_view(VideoFrame Frame,bool pause_flag);
     QThread *decode__thread=nullptr;
     decode_thread *decodestream=nullptr;

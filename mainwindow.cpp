@@ -25,15 +25,15 @@ MainWindow::MainWindow(QWidget *parent)
     ui->pause_pushButton->setFixedHeight(26);
     ui->reverse_pushButton->setFixedWidth(30);
     ui->reverse_pushButton->setFixedHeight(26);
-    ui->comboBox_speed->setFixedWidth(55);
-    ui->comboBox_speed->setFixedHeight(26);
-    ui->label_speed->setFixedWidth(85);
-    ui->label_speed->setFixedHeight(26);
+    // ui->comboBox_speed->setFixedWidth(55);
+    // ui->comboBox_speed->setFixedHeight(26);
+    // ui->label_speed->setFixedWidth(85);
+    // ui->label_speed->setFixedHeight(26);
 
     //再生速度combobox
-    QStringList items;
-    items << "1" << "2" << "5" << "10" << "15" << "20" << "30" << "60" << "125" << "250" << "500" << "1000";
-    ui->comboBox_speed->addItems(items);
+    // QStringList items;
+    // items << "1" << "2" << "5" << "10" << "15" << "20" << "30" << "60" << "125" << "250" << "500" << "1000";
+    // ui->comboBox_speed->addItems(items);
 
     //ESCショートカット
     QShortcut *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), container);
@@ -52,7 +52,6 @@ MainWindow::MainWindow(QWidget *parent)
         glWidget->histgram_flag=flag;
     }, Qt::QueuedConnection);
 
-    QObject::connect(ui->comboBox_speed, &QComboBox::currentTextChanged, this, &MainWindow::set_preview_speed, Qt::QueuedConnection);
     QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::Open_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionCloseFile, &QAction::triggered, this, &MainWindow::Close_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionFileSave, &QAction::triggered, this, &MainWindow::encode_set,Qt::QueuedConnection);
@@ -168,8 +167,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->play_pushButton->setGeometry(41, window_height-53,66,window_height-5);
     ui->pause_pushButton->setGeometry(74, window_height-53,99,window_height-5);
     ui->reverse_pushButton->setGeometry(8, window_height-53,33,window_height-5);
-    ui->label_speed->setGeometry(window_width-154, window_height-53,window_width-230,window_height-5);
-    ui->comboBox_speed->setGeometry(window_width-65, window_height-53,window_width-120,window_height-5);
+    // ui->label_speed->setGeometry(window_width-154, window_height-53,window_width-230,window_height-5);
+    // ui->comboBox_speed->setGeometry(window_width-65, window_height-53,window_width-120,window_height-5);
     ui->openGLContainer->setGeometry(0, 0, window_width, window_height-48); // 位置とサイズを指定
 
     setMinimumSize(QSize(640, 480));
@@ -204,7 +203,7 @@ void MainWindow::toggleFullScreen()
         ui->play_pushButton->hide();
         ui->pause_pushButton->hide();
         ui->reverse_pushButton->hide();
-        ui->comboBox_speed->hide();
+        // ui->comboBox_speed->hide();
 
         glWidget->GLresize();
 
@@ -237,7 +236,7 @@ void MainWindow::toggleFullScreen()
         ui->play_pushButton->show();
         ui->pause_pushButton->show();
         ui->reverse_pushButton->show();
-        ui->comboBox_speed->show();
+        // ui->comboBox_speed->show();
 
         glWidget->GLresize();
 
@@ -330,21 +329,6 @@ void MainWindow::play_audio(QByteArray pcm)
     }
 }
 
-//再生速度コンボボックス
-void MainWindow::set_preview_speed(const QString &text){
-    preview_speed=text.toInt();
-
-    //30fpsの場合、timerの精度の関係上33の方が良い
-    if(preview_speed==15){
-        preview_speed=16;
-    }else if(preview_speed==20){
-        preview_speed=22;
-    }else if(preview_speed==30){
-        preview_speed=33;
-    }
-    emit send_decode_speed(preview_speed);
-}
-
 //動画の範囲に合わせてスライダーの範囲を変更
 void MainWindow::slider_set_range(){
     if(VideoInfo.audio)
@@ -357,8 +341,8 @@ void MainWindow::slider_set_range(){
     ui->pause_pushButton->setEnabled(true);
     ui->reverse_pushButton->setEnabled(true);
     ui->Live_horizontalSlider->setEnabled(true);
-    ui->label_speed->setEnabled(true);
-    ui->comboBox_speed->setEnabled(true);
+    // ui->label_speed->setEnabled(true);
+    // ui->comboBox_speed->setEnabled(true);
     ui->actionFileSave->setEnabled(true);
     ui->actionCloseFile->setEnabled(true);
     ui->action_videoinfo->setEnabled(true);
@@ -401,7 +385,6 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view,Qt::QueuedConnection);
         QObject::connect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio, Qt::QueuedConnection);
 
-        QObject::connect(this, &MainWindow::send_decode_speed, decodestream, &decode_thread::set_decode_speed);
         QObject::connect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::slider_set_range);
 
         QObject::connect(ui->play_pushButton, &QPushButton::clicked, decodestream, &decode_thread::resumePlayback, Qt::QueuedConnection);
@@ -435,7 +418,6 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(decode__thread, &QThread::started, this, [this]() {
             run_decode_thread = true;
             QMetaObject::invokeMethod(decodestream, "startProcessing", Qt::QueuedConnection);
-            ui->comboBox_speed->setCurrentIndex(6);
         }, Qt::SingleShotConnection);
 
         decode__thread->start();
@@ -495,8 +477,8 @@ void MainWindow::stop_decode_thread(){
         ui->pause_pushButton->setEnabled(false);
         ui->reverse_pushButton->setEnabled(false);
         ui->Live_horizontalSlider->setEnabled(false);
-        ui->label_speed->setEnabled(false);
-        ui->comboBox_speed->setEnabled(false);
+        // ui->label_speed->setEnabled(false);
+        // ui->comboBox_speed->setEnabled(false);
         ui->actionFileSave->setEnabled(false);
         ui->actionCloseFile->setEnabled(false);
         ui->action_videoinfo->setEnabled(false);

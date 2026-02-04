@@ -186,10 +186,6 @@ void decode_thread::receve_decode_flag(){
     }
 }
 
-void decode_thread::set_decode_speed(int speed){
-
-}
-
 void decode_thread::startProcessing() {
     if(initialized_ffmpeg()){
         Error_String="";
