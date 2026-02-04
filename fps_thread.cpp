@@ -2,32 +2,34 @@
 #include "qdebug.h"
 #include "qtimer.h"
 
-fps_thread::fps_thread(QObject *parent) : QThread(parent){}
+fps_thread::fps_thread(double fps, QObject *parent) : QThread(parent){
+    target_fps = fps;
+}
 
 fps_thread::~fps_thread() {
 }
 
 void fps_thread::run() {
-    const int fps = 120;
+    const double fps = target_fps; // 正式 29.97
     const double interval = 1.0 / fps;
 
     using clock = std::chrono::steady_clock;
     auto start = clock::now();
 
-    int processedFrames = 0;
+    int frames = 0;
 
     while (running) {
         auto now = clock::now();
         double elapsed = std::chrono::duration<double>(now - start).count();
 
-        int targetFrames = static_cast<int>(elapsed / interval);
+        int targetFrames = (int)(elapsed / interval);
 
-        if (processedFrames < targetFrames) {
-            emit fps_signal();      // ← 1フレームだけ送る
-            processedFrames++;      // ← 遅れは内部で吸収
+        if (frames < targetFrames) {
+            emit fps_signal();
+            frames++;
         }
 
-        std::this_thread::sleep_for(std::chrono::microseconds(200));
+        std::this_thread::yield();
     }
 }
 

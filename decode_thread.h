@@ -122,7 +122,6 @@ protected:
     AVFrame* audio_Frame=nullptr;
     int seq=0;
 
-    int drop_count=0;
     bool drop_flag=false;
 
     //タイマー関連

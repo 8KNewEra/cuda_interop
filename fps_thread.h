@@ -8,7 +8,7 @@ class fps_thread : public QThread {
     Q_OBJECT // <--- これが重要
 
 public:
-    explicit fps_thread(QObject *parent = nullptr);
+    explicit fps_thread(double fps,QObject *parent = nullptr);
     ~fps_thread() override;
     void stop();
 
@@ -20,7 +20,7 @@ protected:
 
 private:
     std::atomic<bool> running{true};
-    double fps = 0.0;
+    double target_fps = 0.0;
 };
 
 #endif // FPS_THREAD_H

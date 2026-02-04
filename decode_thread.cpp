@@ -194,7 +194,6 @@ void decode_thread::startProcessing() {
     if(initialized_ffmpeg()){
         Error_String="";
         qDebug() << "Live Thread: Start Processing";
-        resumePlayback();
     }else{
         emit decode_error(Error_String);
         emit finished();
@@ -253,8 +252,6 @@ void decode_thread::processFrame() {
         get_decode_image();
         decode_state=STATE_WAIT_DECODE_FLAG;
     }else{
-        drop_count++;
-        qDebug()<<drop_count;
         drop_flag=true;
     }
 

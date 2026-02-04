@@ -330,26 +330,6 @@ void MainWindow::play_audio(QByteArray pcm)
     }
 }
 
-//fps表示
-void MainWindow::fps_view(){
-    // fpsCount++;
-    // if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
-    //     fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
-    //     qDebug()<<fps;
-    //     fpsCount = 0;
-    //     fpsTimer.restart();
-    // }
-
-    // //シグナルセット
-    // if(run_decode_thread){
-    //     QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
-
-    //     //デコードスレッドシグナル
-    //     if(encode_state!=STATE_ENCODE_READY)
-    //         emit decode_please();
-    // }
-}
-
 //再生速度コンボボックス
 void MainWindow::set_preview_speed(const QString &text){
     preview_speed=text.toInt();
@@ -390,6 +370,7 @@ void MainWindow::slider_set_range(){
     qDebug() << "Framerate:" << VideoInfo.fps;
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
     ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
+    start_fps_thread(VideoInfo.fps);
     glWidget->GLresize();
 }
 
@@ -454,7 +435,6 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(decode__thread, &QThread::started, this, [this]() {
             run_decode_thread = true;
             QMetaObject::invokeMethod(decodestream, "startProcessing", Qt::QueuedConnection);
-            start_fps_thread();
             ui->comboBox_speed->setCurrentIndex(6);
         }, Qt::SingleShotConnection);
 
@@ -529,14 +509,16 @@ void MainWindow::stop_decode_thread(){
         decodestream->stopProcessing();
         decode__thread->quit();
         decode__thread->wait();
+
+        stop_fps_thread();
     }
 }
 
 //fpsスレッド開始
-void MainWindow::start_fps_thread(){
+void MainWindow::start_fps_thread(double target_fps){
     if(!fpsstream){
         //fpsthread
-        fpsstream = new fps_thread;
+        fpsstream = new fps_thread(target_fps);
         fps_view_thread = new QThread;
         fpsstream->moveToThread(fps_view_thread);
 
@@ -556,14 +538,14 @@ void MainWindow::stop_fps_thread()
     fpsstream->stop();          // worker に停止指示
     fps_view_thread->quit();    // event loop 停止
     fps_view_thread->wait();    // 完全停止待ち
+
     QObject::disconnect(fpsstream, &fps_thread::fps_signal,
-                     this, &MainWindow::fps_view);
+                     decodestream, &decode_thread::processFrame);
 
     delete fps_view_thread;
     fps_view_thread = nullptr;
     fpsstream = nullptr;
 }
-
 
 //infoスレッド
 void MainWindow::start_info_thread(){

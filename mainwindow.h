@@ -78,9 +78,8 @@ private:
     int Now_Frame;
 
     //fpsスレッド
-    void start_fps_thread();
+    void start_fps_thread(double target_fps);
     void stop_fps_thread();
-    void fps_view();
     QThread *fps_view_thread=nullptr;
     fps_thread *fpsstream=nullptr;
 
@@ -105,7 +104,7 @@ private:
     void play_audio(QByteArray pcm);
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
-    int out_sample_rate = 48000;
+    int out_sample_rate = 96000;
     bool audio_mode=false;
 
     //fpsタイマー
