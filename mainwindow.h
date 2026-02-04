@@ -99,10 +99,10 @@ private:
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
     //オーディオ
+    void init_async_audio();
     void play_audio(QByteArray pcm);
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
-    int out_sample_rate = 96000;
     bool audio_mode=false;
 
     //fpsタイマー

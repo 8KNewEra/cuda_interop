@@ -96,16 +96,6 @@ MainWindow::MainWindow(QWidget *parent)
         }
     }, Qt::QueuedConnection);
 
-    // ---------- QAudioSink ----------
-    QAudioFormat fmt;
-    fmt.setSampleRate(out_sample_rate);
-    fmt.setChannelCount(2);
-    fmt.setSampleFormat(QAudioFormat::Int16);
-
-    audioSink = new QAudioSink(fmt);
-    audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
-    audioOutput = audioSink->start();
-
     fpsTimer.start();
 }
 
@@ -355,6 +345,7 @@ void MainWindow::slider_set_range(){
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
     ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
     start_fps_thread(VideoInfo.fps);
+    init_async_audio();
     glWidget->GLresize();
 }
 
@@ -493,6 +484,10 @@ void MainWindow::stop_decode_thread(){
         decode__thread->wait();
 
         stop_fps_thread();
+
+        //
+        delete audioSink;
+        audioSink=nullptr;
     }
 }
 
@@ -537,6 +532,19 @@ void MainWindow::start_info_thread(){
     infostream->moveToThread(info_view_thread);
 
     infostream->start();
+}
+
+//非同期オーディオ初期化
+void MainWindow::init_async_audio(){
+    // ---------- QAudioSink ----------
+    QAudioFormat fmt;
+    fmt.setSampleRate(VideoInfo.out_sample_rate);
+    fmt.setChannelCount(2);
+    fmt.setSampleFormat(QAudioFormat::Int16);
+
+    audioSink = new QAudioSink(fmt);
+    audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
+    audioOutput = audioSink->start();
 }
 
 //エンコードウィンドウ起動時
