@@ -33,7 +33,7 @@ struct EncodeSettings {
 
     int gop_size = 60;
     int b_frames{};
-    int save_fps{};
+    double save_fps{};
 };
 
 // ★書き込みを許可したいクラスをここで「前方宣言」

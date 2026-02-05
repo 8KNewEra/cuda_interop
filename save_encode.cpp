@@ -36,7 +36,8 @@ save_encode::save_encode(int h,int w) {
         this->ve[i].stream = ve[i].stream;
     }
 
-    init_audio_encoder();
+    if(VideoInfo.audio)
+        init_audio_encoder();
 
     // ③ ファイルオープンは1回
     ret = avio_open(&fmt_ctx->pb, encode_settings.Save_Path.c_str(), AVIO_FLAG_WRITE);
@@ -90,36 +91,38 @@ save_encode::~save_encode() {
     // ==========================
     // Audio flush（AAC）
     // ==========================
-    const int fs = audio_enc_ctx->frame_size;
-    int remain = av_audio_fifo_size(audio_fifo);
+    if (audio_enc_ctx){
+        const int fs = audio_enc_ctx->frame_size;
+        int remain = av_audio_fifo_size(audio_fifo);
 
-    if (remain > 0) {
-        AVFrame* f = av_frame_alloc();
-        f->nb_samples = fs;
-        f->format = audio_enc_ctx->sample_fmt;
-        f->sample_rate = audio_enc_ctx->sample_rate;
-        av_channel_layout_copy(&f->ch_layout, &audio_enc_ctx->ch_layout);
+        if (remain > 0) {
+            AVFrame* f = av_frame_alloc();
+            f->nb_samples = fs;
+            f->format = audio_enc_ctx->sample_fmt;
+            f->sample_rate = audio_enc_ctx->sample_rate;
+            av_channel_layout_copy(&f->ch_layout, &audio_enc_ctx->ch_layout);
 
-        av_frame_get_buffer(f, 0);
+            av_frame_get_buffer(f, 0);
 
-        av_audio_fifo_read(audio_fifo, (void**)f->data, remain);
+            av_audio_fifo_read(audio_fifo, (void**)f->data, remain);
 
-        av_samples_set_silence(
-            f->data,
-            remain,
-            fs - remain,
-            audio_enc_ctx->ch_layout.nb_channels,
-            audio_enc_ctx->sample_fmt
-            );
+            av_samples_set_silence(
+                f->data,
+                remain,
+                fs - remain,
+                audio_enc_ctx->ch_layout.nb_channels,
+                audio_enc_ctx->sample_fmt
+                );
 
-        f->pts = audio_pts;
-        audio_pts += fs;
+            f->pts = audio_pts;
+            audio_pts += fs;
 
-        avcodec_send_frame(audio_enc_ctx, f);
-        av_frame_free(&f);
+            avcodec_send_frame(audio_enc_ctx, f);
+            av_frame_free(&f);
+        }
+
+        avcodec_send_frame(audio_enc_ctx, nullptr);
     }
-
-    avcodec_send_frame(audio_enc_ctx, nullptr);
 
     // ---- 各メモリ解放 ----
     for(int i=0;i<ve.size();i++){
@@ -213,8 +216,11 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     ve[i].codec_ctx->width = width_/encode_settings.width_tile;
     ve[i].codec_ctx->height = height_/encode_settings.height_tile;
     ve[i].codec_ctx->pix_fmt = hw_pix_fmt;
-    ve[i].codec_ctx->time_base = AVRational{1, encode_settings.save_fps};
-    ve[i].codec_ctx->framerate = AVRational{encode_settings.save_fps, 1};
+
+    //フレームレート設定
+    AVRational fps = av_d2q(encode_settings.save_fps, 100000);
+    ve[i].codec_ctx->framerate = fps;
+    ve[i].codec_ctx->time_base = av_inv_q(fps);
 
     //初期化された hw_* を参照
     ve[i].codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);

@@ -126,24 +126,6 @@
      <string/>
     </property>
    </widget>
-   <widget class="QCheckBox" name="allow_overwrite_checkBox">
-    <property name="geometry">
-     <rect>
-      <x>385</x>
-      <y>59</y>
-      <width>101</width>
-      <height>16</height>
-     </rect>
-    </property>
-    <property name="font">
-     <font>
-      <pointsize>9</pointsize>
-     </font>
-    </property>
-    <property name="text">
-     <string>上書きを許可</string>
-    </property>
-   </widget>
   </widget>
   <widget class="QGroupBox" name="normalsetting_groupBox">
    <property name="geometry">

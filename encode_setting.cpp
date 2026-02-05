@@ -11,19 +11,17 @@ encode_setting::encode_setting(QWidget *parent)
     //設定ファイルが無ければ作成
     init_txt();
 
-    ui->allow_overwrite_checkBox->hide();
-
-    settingmap[0] = {"h264_nvenc", 1,"0",0,"p1","default","cbr","1pass",1,1};
-    settingmap[1] = {"hevc_nvenc",2,"1",1,"p2","hq","vbr","2pass-quarter-res",15,2};
-    settingmap[2] = {"av1_nvenc",5,"",2,"p3","ll","cq","2pass-full-res",30,4};
-    settingmap[3] = {"",10,"",3,"p4","ull","","",60,8};
-    settingmap[4] = {"",15,"",4,"p5","lossless","","",120,0};
-    settingmap[5] = {"",20,"",5,"p6","","","",250,0};
-    settingmap[6] = {"",30,"",6,"p7","","","",30,0};
-    settingmap[7] = {"",60,"",7,"p8","","","",0,0};
-    settingmap[8] = {"",120,"",8,"","","","",0,0};
-    settingmap[9] = {"",240,"",9,"","","","",0,0};
-    settingmap[10] = {"",300,"",10,"","","","",0,0};
+    settingmap[0] = {"h264_nvenc","0",0,"p1","default","cbr","1pass",1,1};
+    settingmap[1] = {"hevc_nvenc","1",1,"p2","hq","vbr","2pass-quarter-res",15,2};
+    settingmap[2] = {"av1_nvenc","",2,"p3","ll","cq","2pass-full-res",30,4};
+    settingmap[3] = {"","",3,"p4","ull","","",60,8};
+    settingmap[4] = {"","",4,"p5","lossless","","",120,0};
+    settingmap[5] = {"","",5,"p6","","","",250,0};
+    settingmap[6] = {"","",6,"p7","","","",30,0};
+    settingmap[7] = {"","",7,"p8","","","",0,0};
+    settingmap[8] = {"","",8,"","","","",0,0};
+    settingmap[9] = {"","",9,"","","","",0,0};
+    settingmap[10] = {"","",10,"","","","",0,0};
 
     //ファイルパス
     {
@@ -58,16 +56,6 @@ encode_setting::encode_setting(QWidget *parent)
         QObject::connect(ui->comboBox_codec, &QComboBox::currentIndexChanged, this, [&](int index) {
             settings.Codec= settingmap[index].codec.toStdString();
             combo_index_control2();
-        }, Qt::QueuedConnection);
-    }
-
-    //保存フレームレート
-    {
-        QStringList framerate_items;
-        framerate_items << "1" << "2" << "5" << "10" << "15" << "20" << "30" << "60" << "120" << "240" << "300";
-        ui->comboBox_framerate->addItems(framerate_items);
-        QObject::connect(ui->comboBox_framerate, &QComboBox::currentIndexChanged, this, [&](int index) {
-            settings.save_fps = settingmap[index].framerate_items;
         }, Qt::QueuedConnection);
     }
 
@@ -271,16 +259,6 @@ encode_setting::encode_setting(QWidget *parent)
             return;
         }
 
-
-        //上書きできるか
-        if (!ui->allow_overwrite_checkBox->isChecked()||(VideoInfo.Path==settings.Save_Path)) {
-            allow_overwrite = false;
-            settings.Save_Path = file_check(QString::fromStdString(settings.Save_Path)).toStdString();
-            ui->label_filepath->setText(QString::fromStdString(settings.Save_Path));
-        }else{
-            allow_overwrite = true;
-        }
-
         //設定データ保存
         write_txt();
 
@@ -323,31 +301,28 @@ encode_setting::encode_setting(QWidget *parent)
         ui->comboBox_codec->setCurrentIndex(combo_index[0]);
         emitIndexChanged(ui->comboBox_codec);
 
-        ui->comboBox_framerate->setCurrentIndex(combo_index[1]);
-        emitIndexChanged(ui->comboBox_framerate);
-
-        ui->comboBox_splitencode->setCurrentIndex(combo_index[2]);
+        ui->comboBox_splitencode->setCurrentIndex(combo_index[1]);
         emitIndexChanged(ui->comboBox_splitencode);
 
-        ui->comboBox_b_frame->setCurrentIndex(combo_index[3]);
+        ui->comboBox_b_frame->setCurrentIndex(combo_index[2]);
         emitIndexChanged(ui->comboBox_b_frame);
 
-        ui->comboBox_preset->setCurrentIndex(combo_index[4]);
+        ui->comboBox_preset->setCurrentIndex(combo_index[3]);
         emitIndexChanged(ui->comboBox_preset);
 
-        ui->comboBox_profile->setCurrentIndex(combo_index[5]);
+        ui->comboBox_profile->setCurrentIndex(combo_index[4]);
         emitIndexChanged(ui->comboBox_profile);
 
-        ui->comboBox_rc->setCurrentIndex(combo_index[6]);
+        ui->comboBox_rc->setCurrentIndex(combo_index[5]);
         emitIndexChanged(ui->comboBox_rc);
 
-        ui->comboBox_encodepass->setCurrentIndex(combo_index[7]);
+        ui->comboBox_encodepass->setCurrentIndex(combo_index[6]);
         emitIndexChanged(ui->comboBox_encodepass);
 
-        ui->comboBox_gop->setCurrentIndex(combo_index[8]);
+        ui->comboBox_gop->setCurrentIndex(combo_index[7]);
         emitIndexChanged(ui->comboBox_gop);
 
-        ui->comboBox_tile->setCurrentIndex(combo_index[9]);
+        ui->comboBox_tile->setCurrentIndex(combo_index[8]);
         emitIndexChanged(ui->comboBox_tile);
 
         ui->horizontalSlider_targetbitrate->setValue(target_bit_rate);
@@ -358,8 +333,6 @@ encode_setting::encode_setting(QWidget *parent)
 
         ui->horizontalSlider_cq->setValue(settings.cq);
         ui->label_cq_value->setText(QString::number(settings.cq));
-
-        ui->allow_overwrite_checkBox->setChecked(allow_overwrite);
     }
 }
 
@@ -382,7 +355,6 @@ void encode_setting::init_txt(){
             QTextStream out(&file);
             out << "Save_Path:\"" << fullPath << "\"\n";
             out << "Codec:\"h264_nvenc\"\n";
-            out << "save_fps:30\n";
             out << "preset:\"p4\"\n";
             out << "tune:\"default\"\n";
             out << "b_frames:\"0\"\n";
@@ -391,7 +363,6 @@ void encode_setting::init_txt(){
             out << "split_encode_mode:\"0\"\n";
             out << "pass_mode:\"1pass\"\n";
             out << "rc_mode:\"cbr\"\n";
-            out << "allow_overwrite:\"true\"\n";
             out << "target_bit_rate:100000000\n";
             out << "max_bit_rate:200000000\n";
             out << "cq:23\n";
@@ -423,26 +394,22 @@ void encode_setting::read_txt(){
                         combo_index[0]=foundIndex("codec",line.split(':')[1].remove('"'));
                     }
                 }
-            }else if (line.startsWith("save_fps:")){
-                combo_index[1]=foundIndex("fps",line.split(':')[1].remove('"'));
             }else if (line.startsWith("split_encode_mode:")){
-                combo_index[2]=foundIndex("split_encode_mode",line.split(':')[1].remove('"'));
+                combo_index[1]=foundIndex("split_encode_mode",line.split(':')[1].remove('"'));
             }else if (line.startsWith("b_frames:")){
-                combo_index[3]=foundIndex("b_frames",line.split(':')[1].remove('"'));
+                combo_index[2]=foundIndex("b_frames",line.split(':')[1].remove('"'));
             }else if (line.startsWith("preset:")){
-                combo_index[4]=foundIndex("preset",line.split(':')[1].remove('"'));
+                combo_index[3]=foundIndex("preset",line.split(':')[1].remove('"'));
             }else if (line.startsWith("tune:")){
-                combo_index[5]=foundIndex("tune",line.split(':')[1].remove('"'));
+                combo_index[4]=foundIndex("tune",line.split(':')[1].remove('"'));
             }else if (line.startsWith("rc_mode:")){
-                combo_index[6]=foundIndex("rc_mode",line.split(':')[1].remove('"'));
+                combo_index[5]=foundIndex("rc_mode",line.split(':')[1].remove('"'));
             }else if (line.startsWith("pass_mode:")){
-                combo_index[7]=foundIndex("pass_mode",line.split(':')[1].remove('"'));
+                combo_index[6]=foundIndex("pass_mode",line.split(':')[1].remove('"'));
             }else if (line.startsWith("gop_size:")){
-                combo_index[8]=foundIndex("gop_size",line.split(':')[1].remove('"'));
+                combo_index[7]=foundIndex("gop_size",line.split(':')[1].remove('"'));
             }else if (line.startsWith("encode_tile:")){
-                combo_index[9]=foundIndex("encode_tile",line.split(':')[1].remove('"'));
-            }else if (line.startsWith("allow_overwrite:")){
-                allow_overwrite = line.split(':')[1].remove('"').trimmed().compare("true", Qt::CaseInsensitive) == 0;
+                combo_index[8]=foundIndex("encode_tile",line.split(':')[1].remove('"'));
             }else if (line.startsWith("target_bit_rate:")){
                 settings.target_bit_rate = line.split(':')[1].remove('"').toInt();
                 target_bit_rate = settings.target_bit_rate/1000000;
@@ -463,8 +430,6 @@ void encode_setting::read_txt(){
 int encode_setting::foundIndex(QString key,const QString& item){
     for (auto it = settingmap.constBegin(); it != settingmap.constEnd(); ++it){
         if (key=="codec"&&it.value().codec == item){
-            return it.key();
-        }else if(key=="fps"&&it.value().framerate_items == item.toInt()){
             return it.key();
         }else if(key=="split_encode_mode"&&it.value().splitencode_items == item){
             return it.key();
@@ -495,7 +460,6 @@ void encode_setting::write_txt(){
         QTextStream out(&file);
         out << "Save_Path:\"" << QString::fromStdString(settings.Save_Path)<< "\"\n";
         out << "Codec:\"" << QString::fromStdString(settings.Codec) << "\"\n";
-        out << "save_fps:\"" << QString::number(settings.save_fps) << "\"\n";
         out << "preset:\"" << QString::fromStdString(settings.preset) << "\"\n";
         out << "tune:\"" << QString::fromStdString(settings.tune) << "\"\n";
         out << "b_frames:\"" << QString::number(settings.b_frames) << "\"\n";
@@ -504,7 +468,6 @@ void encode_setting::write_txt(){
         out << "split_encode_mode:\"" << QString::fromStdString(settings.split_encode_mode) << "\"\n";
         out << "pass_mode:\"" << QString::fromStdString(settings.pass_mode) << "\"\n";
         out << "rc_mode:\"" << QString::fromStdString(settings.rc_mode) << "\"\n";
-        out << "allow_overwrite:\"" << QVariant(allow_overwrite).toString() << "\"\n";
         out << "target_bit_rate:\"" << QString::number(target_bit_rate*1000*1000) << "\"\n";
         out << "max_bit_rate:\"" << QString::number(max_bit_rate*1000*1000) << "\"\n";
         out << "cq:\"" << QString::number(settings.cq) << "\"\n";
@@ -585,6 +548,7 @@ void encode_setting::slider(int min,int max){
     ui->encode_progressBar->setRange(min, max);
     ui->encode_progressBar->setValue(min);
 
+    fps_cmbobox_control();
     tile_index_control();
 }
 
@@ -593,6 +557,45 @@ void encode_setting::progress_bar(int value){
     ui->encode_progressBar->setValue(value);
 }
 
+//fps設定
+void encode_setting::fps_cmbobox_control(){
+    ui->comboBox_framerate->clear();
+
+    //保存フレームレート
+    {
+        QStringList framerate_items;
+        framerate_items << "1" << "2" << "5" << "10" << "15" << "20"
+                        << "30" << "60" << "120" << "240" << "300";
+
+        // fps を追加（未登録なら）
+        QString fpsStr = QString::number(VideoInfo.fps);
+        if (!framerate_items.contains(fpsStr))
+            framerate_items << fpsStr;
+
+        // 数値ソート
+        std::sort(framerate_items.begin(), framerate_items.end(),
+                  [](const QString& a, const QString& b) {
+                      return a.toDouble() < b.toDouble();
+                  });
+
+        // ComboBox 初期化
+        ui->comboBox_framerate->blockSignals(true); // signal防止
+        ui->comboBox_framerate->clear();
+        ui->comboBox_framerate->addItems(framerate_items);
+
+        QObject::connect(ui->comboBox_framerate,&QComboBox::currentIndexChanged,this,[&](int index) {
+                             double fps = ui->comboBox_framerate->currentText().toDouble();
+                             settings.save_fps = fps;
+        });
+
+        // 初期値を VideoInfo.fps に設定
+        ui->comboBox_framerate->setCurrentText(fpsStr);
+        ui->comboBox_framerate->blockSignals(false);
+        settings.save_fps=VideoInfo.fps;
+    }
+}
+
+//コーデックに応じて非対応オプションを非表示
 void encode_setting::combo_index_control2(){
     if(settings.gop_size == 1){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
@@ -620,6 +623,7 @@ void encode_setting::combo_index_control2(){
     }
 }
 
+//特定のコンボボックスを非表示にする
 void encode_setting::combo_index_control(QComboBox* comboBox,QListView* view, int ini_index, int target_index, bool flag,bool index_change_flag) {
     for (int i = ini_index; i <= target_index; i++) {
         view->setRowHidden(i, flag);
@@ -641,6 +645,7 @@ void encode_setting::combo_index_control(QComboBox* comboBox,QListView* view, in
     }
 }
 
+//タイル数コントロール
 void encode_setting::tile_index_control(){
     //H264チェック
     if(VideoInfo.width*VideoInfo.width_scale/settings.width_tile>4096||VideoInfo.height*VideoInfo.height_scale/settings.height_tile>4096){

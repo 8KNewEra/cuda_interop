@@ -40,19 +40,17 @@ private:
     Ui::encode_setting *ui;
     EncodeSettings& settings = EncodeSettingsManager::getInstance().getSettingsNonConst();
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
+
+
+
     void read_txt();
     void init_txt();
     void write_txt();
     int foundIndex(QString key,const QString& item);
-    void extracted(QListView *&view, int &target_index, bool &flag);
-    void combo_index_control(QComboBox* comboBox,QListView *view, int ini_index,int target_index, bool flag,bool index_change_flag);
-    void combo_index_control2();
-    void tile_index_control();
     QString file_check(const QString &filePath);
-    void tile_split_exchange();
+
     struct SettingEntry {
         QString codec;
-        int framerate_items;
         QString splitencode_items;
         int B_frame_items;
         QString preset_items;
@@ -64,13 +62,17 @@ private:
     };
 
     QMap<int, SettingEntry> settingmap;
-    std::vector<int> combo_index= {0, 6, 0, 0, 3, 0, 0, 0,0,0};
-    bool allow_overwrite;
+    std::vector<int> combo_index= {0,0,0,0,0,0,0,0,0};
 
     int target_bit_rate=100;
     int max_bit_rate=200;
-
     bool encode_flag=false;
+
+    void combo_index_control(QComboBox* comboBox,QListView *view, int ini_index,int target_index, bool flag,bool index_change_flag);
+    void fps_cmbobox_control();
+    void combo_index_control2();
+    void tile_index_control();
+    void tile_split_exchange();
 };
 
 #endif // ENCODE_SETTING_H
