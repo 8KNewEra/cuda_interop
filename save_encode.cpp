@@ -91,7 +91,7 @@ save_encode::~save_encode() {
     // ==========================
     // Audio flush（AAC）
     // ==========================
-    if (audio_enc_ctx){
+    if (audio_enc_ctx && audio_fifo) {
         const int fs = audio_enc_ctx->frame_size;
         int remain = av_audio_fifo_size(audio_fifo);
 
@@ -104,8 +104,10 @@ save_encode::~save_encode() {
 
             av_frame_get_buffer(f, 0);
 
+            // FIFO → frame
             av_audio_fifo_read(audio_fifo, (void**)f->data, remain);
 
+            // 不足分を silence で埋める
             av_samples_set_silence(
                 f->data,
                 remain,
@@ -114,14 +116,32 @@ save_encode::~save_encode() {
                 audio_enc_ctx->sample_fmt
                 );
 
+            // PTS
             f->pts = audio_pts;
-            audio_pts += fs;
+            audio_pts += remain; // ★ 実サンプル数で進める
 
             avcodec_send_frame(audio_enc_ctx, f);
             av_frame_free(&f);
         }
 
+        // NULL frame で drain
         avcodec_send_frame(audio_enc_ctx, nullptr);
+
+        // ★ packet drain loop
+        AVPacket pkt;
+        av_init_packet(&pkt);
+
+        while (avcodec_receive_packet(audio_enc_ctx, &pkt) == 0) {
+            av_packet_rescale_ts(
+                &pkt,
+                audio_enc_ctx->time_base,
+                audio_stream->time_base
+                );
+
+            pkt.stream_index = audio_stream->index;
+            av_interleaved_write_frame(fmt_ctx, &pkt);
+            av_packet_unref(&pkt);
+        }
     }
 
     // ---- 各メモリ解放 ----
@@ -187,6 +207,7 @@ save_encode::~save_encode() {
     qDebug() << "save_encode: Destructor called";
 }
 
+//コーデックコンテキスト初期化
 void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     //エンコーダの取得とコンテキスト作成
     const AVCodec* codec = avcodec_find_encoder_by_name(encode_settings.Codec.c_str());
@@ -282,6 +303,7 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     av_dict_free(&opts);
 }
 
+//CUDAデバイスコンテキスト初期化
 void save_encode::initialized_ffmpeg_hardware_context(int i) {
     int ret = 0;
 
@@ -307,6 +329,7 @@ void save_encode::initialized_ffmpeg_hardware_context(int i) {
     if (ret < 0) throw std::runtime_error("Failed to alloc hw_frame");
 }
 
+//オーディオエンコーダー初期化
 void save_encode::init_audio_encoder()
 {
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
@@ -315,13 +338,16 @@ void save_encode::init_audio_encoder()
 
     audio_enc_ctx = avcodec_alloc_context3(codec);
 
-    // ---- encoder 設定 ----
-    audio_enc_ctx->sample_rate = VideoInfo.in_sample_rate;              // ★ decode 側もこれに合わせる
-    audio_enc_ctx->bit_rate    = 192000;
-    audio_enc_ctx->time_base   = AVRational{1, audio_enc_ctx->sample_rate};
+    audio_enc_ctx->sample_rate = VideoInfo.in_sample_rate;
+    audio_enc_ctx->bit_rate = 192000;
+    audio_enc_ctx->time_base = AVRational{1, audio_enc_ctx->sample_rate};
 
-    av_channel_layout_default(&audio_enc_ctx->ch_layout, 2);
-    audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_FLTP; // AAC native
+    av_channel_layout_default(
+        &audio_enc_ctx->ch_layout,
+        VideoInfo.audio_channels > 0 ? VideoInfo.audio_channels : 2
+        );
+
+    audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_FLTP;
 
     if (fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
         audio_enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -329,38 +355,37 @@ void save_encode::init_audio_encoder()
     if (avcodec_open2(audio_enc_ctx, codec, nullptr) < 0)
         throw std::runtime_error("avcodec_open2(audio) failed");
 
-    if (audio_enc_ctx->frame_size != 1024)
-        throw std::runtime_error("Unexpected AAC frame_size");
+    if (audio_enc_ctx->frame_size <= 0)
+        throw std::runtime_error("Invalid AAC frame_size");
 
-    // ---- stream ----
     audio_stream = avformat_new_stream(fmt_ctx, nullptr);
     if (!audio_stream)
         throw std::runtime_error("avformat_new_stream(audio) failed");
 
     audio_stream->time_base = audio_enc_ctx->time_base;
 
-    if (avcodec_parameters_from_context(
-            audio_stream->codecpar,
-            audio_enc_ctx) < 0)
+    if (avcodec_parameters_from_context(audio_stream->codecpar, audio_enc_ctx) < 0)
         throw std::runtime_error("copy audio params failed");
 
-    // ---- FIFO ----
     audio_fifo = av_audio_fifo_alloc(
         audio_enc_ctx->sample_fmt,
         audio_enc_ctx->ch_layout.nb_channels,
-        4096
+        8192
         );
     if (!audio_fifo)
         throw std::runtime_error("av_audio_fifo_alloc failed");
 
-    // ---- swr_enc (S16 → FLTP) ----
+    AVSampleFormat in_fmt = VideoInfo.out_format;
+    if (in_fmt == AV_SAMPLE_FMT_NONE)
+        in_fmt = AV_SAMPLE_FMT_S16;
+
     int ret = swr_alloc_set_opts2(
         &swr_enc,
         &audio_enc_ctx->ch_layout,
-        audio_enc_ctx->sample_fmt,   // FLTP
+        audio_enc_ctx->sample_fmt,
         audio_enc_ctx->sample_rate,
         &audio_enc_ctx->ch_layout,
-        VideoInfo.out_format,            // decode PCM
+        in_fmt,
         audio_enc_ctx->sample_rate,
         0,
         nullptr
@@ -370,13 +395,12 @@ void save_encode::init_audio_encoder()
         throw std::runtime_error("swr_alloc_set_opts2 failed");
 
     if (swr_init(swr_enc) < 0)
-        throw std::runtime_error("swr_init (encoder) failed");
+        throw std::runtime_error("swr_init failed");
 
-    // ---- pts 初期化 ----
     audio_pts = 0;
 }
 
-
+//映像エンコード
 void save_encode::encode(VideoFrame Frame){
     // ------------------------
     // CUDA NV12変換
@@ -468,6 +492,7 @@ void save_encode::encode(VideoFrame Frame){
     frame_index+=1;
 }
 
+//音声エンコード
 void save_encode::encode_audio(VideoFrame Frame)
 {
     if (!audio_enc_ctx || !audio_fifo || !swr_enc) return;
@@ -476,7 +501,6 @@ void save_encode::encode_audio(VideoFrame Frame)
     const int in_bps = av_get_bytes_per_sample(VideoInfo.out_format);// S16
 
     for (const QByteArray& pcm : Frame.audio_pcm) {
-
         int in_samples = pcm.size() / (ch * in_bps);
         if (in_samples <= 0) continue;
 
@@ -522,7 +546,6 @@ void save_encode::encode_audio(VideoFrame Frame)
     const int fs = audio_enc_ctx->frame_size;
 
     while (av_audio_fifo_size(audio_fifo) >= fs) {
-
         AVFrame* frame = av_frame_alloc();
         frame->nb_samples = fs;
         frame->format = audio_enc_ctx->sample_fmt;
