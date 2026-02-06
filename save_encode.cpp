@@ -473,7 +473,7 @@ void save_encode::encode_audio(VideoFrame Frame)
     if (!audio_enc_ctx || !audio_fifo || !swr_enc) return;
 
     const int ch     = audio_enc_ctx->ch_layout.nb_channels;
-    const int in_bps = 2; // S16
+    const int in_bps = av_get_bytes_per_sample(VideoInfo.out_format);// S16
 
     for (const QByteArray& pcm : Frame.audio_pcm) {
 
@@ -537,7 +537,7 @@ void save_encode::encode_audio(VideoFrame Frame)
                                               fs);
 
         frame->pts = audio_pts;
-        audio_pts += 1024*(VideoInfo.fps/encode_settings.save_fps);   // ★ 必ず read_samples で進める
+        audio_pts += read_samples*(VideoInfo.fps/encode_settings.save_fps);   // ★ 必ず read_samples で進める
 
         avcodec_send_frame(audio_enc_ctx, frame);
         av_frame_free(&frame);

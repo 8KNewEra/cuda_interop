@@ -92,9 +92,10 @@ struct DecodeInfo {
     int width_scale=1;
     int height_scale=1;
     QString decode_mode="";
+
+    //音声
     bool audio = false;
     int audio_channels=1;
-
     int in_sample_rate  = 0;
     int out_sample_rate = 0;
     AVSampleFormat in_format  = AV_SAMPLE_FMT_NONE;
@@ -186,7 +187,6 @@ struct VideoFrame {
     //音声
     QVector<QByteArray> audio_pcm{};
     QVector<int> audio_pts{};
-    int out_samples = 1024;
 };
 
 #endif // __GLOBAL___H
