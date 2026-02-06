@@ -85,18 +85,19 @@ private:
     void start_info_thread();
     QThread *info_view_thread;
     info_thread *infostream;
+    const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
+    bool pause_flag=false;
 
     //ファイル
     void Open_Video_File();
     void Close_Video_File();
 
+    //エンコード
     void encode_set();
     void start_encode();
     void finished_encode();
     encode_setting *encodeSetting;
     int encode_state=STATE_NOT_ENCODE;
-
-    const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
     //オーディオ
     void init_async_audio();

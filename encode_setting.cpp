@@ -259,6 +259,12 @@ encode_setting::encode_setting(QWidget *parent)
             return;
         }
 
+        //上書きできるか
+        if(VideoInfo.Path==settings.Save_Path){
+            settings.Save_Path = file_check(QString::fromStdString(settings.Save_Path)).toStdString();
+            ui->label_filepath->setText(QString::fromStdString(settings.Save_Path));
+        }
+
         //設定データ保存
         write_txt();
 
@@ -565,7 +571,7 @@ void encode_setting::fps_cmbobox_control(){
     {
         QStringList framerate_items;
         framerate_items << "1" << "2" << "5" << "10" << "15" << "20"
-                        << "30" << "60" << "120" << "240" << "300";
+                        << "24" << "30" << "60" << "120" << "240" << "300";
 
         // fps を追加（未登録なら）
         QString fpsStr = QString::number(VideoInfo.fps);

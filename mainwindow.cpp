@@ -44,6 +44,17 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
+    //ESCショートカット
+    QShortcut *spaceShortcut = new QShortcut(QKeySequence(Qt::Key_Space), container);
+    spaceShortcut->setContext(Qt::ApplicationShortcut);
+    connect(spaceShortcut, &QShortcut::activated, this, [this] {
+        if(pause_flag){
+            emit send_manual_resumeplayback();
+        }else{
+            emit send_manual_pause();
+        }
+    });
+
     //動画情報
     QObject::connect(ui->action_videoinfo, &QAction::triggered,this, [&](bool flag) {
         glWidget->videoInfo_flag=flag;
@@ -274,7 +285,10 @@ void MainWindow::Close_Video_File()
 }
 
 //動画表示
-void MainWindow::decode_view(VideoFrame Frame,bool pause_flag){
+void MainWindow::decode_view(VideoFrame Frame,bool pause){
+    //停止フラグ更新
+    pause_flag = pause;
+
     if(run_decode_thread){
         //シグナルセット
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);

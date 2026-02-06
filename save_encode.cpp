@@ -337,7 +337,6 @@ void save_encode::init_audio_encoder()
         throw std::runtime_error("AAC encoder not found");
 
     audio_enc_ctx = avcodec_alloc_context3(codec);
-
     audio_enc_ctx->sample_rate = VideoInfo.in_sample_rate;
     audio_enc_ctx->bit_rate = 192000;
     audio_enc_ctx->time_base = AVRational{1, audio_enc_ctx->sample_rate};
@@ -555,12 +554,9 @@ void save_encode::encode_audio(VideoFrame Frame)
         av_frame_get_buffer(frame, 0);
 
         // ★ PTS は「取り出したサンプル数」基準
-        int read_samples = av_audio_fifo_read(audio_fifo,
-                                              (void**)frame->data,
-                                              fs);
-
+        int read_samples = av_audio_fifo_read(audio_fifo,(void**)frame->data,fs);
         frame->pts = audio_pts;
-        audio_pts += read_samples*(VideoInfo.fps/encode_settings.save_fps);   // ★ 必ず read_samples で進める
+        audio_pts += (int)(((double)read_samples)*(VideoInfo.fps/encode_settings.save_fps));   // ★ 必ず read_samples で進める
 
         avcodec_send_frame(audio_enc_ctx, frame);
         av_frame_free(&frame);
