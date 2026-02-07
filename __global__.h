@@ -82,6 +82,8 @@ private:
 struct DecodeInfo {
     std::string Path = "D:/test2.mp4";
     std::string Name = "";
+
+    //映像メタデータ
     std::string Codec = "av1";
     int max_framesNo=10;
     int pts_per_frame=1000;
@@ -92,6 +94,11 @@ struct DecodeInfo {
     int width_scale=1;
     int height_scale=1;
     QString decode_mode="";
+
+    //時間
+    int max_hour = 0;
+    int max_minute = 0;
+    int max_second = 0;
 
     //音声
     bool audio = false;
@@ -183,6 +190,11 @@ struct VideoFrame {
     uint8_t* d_encode_rgba=nullptr;
     size_t encode_pitch=0;
     int FrameNo=0;
+
+    //時間
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
 
     //音声
     QVector<QByteArray> audio_pcm{};

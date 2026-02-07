@@ -106,11 +106,6 @@ private:
     QIODevice* audioOutput = nullptr;
     bool audio_mode=false;
 
-    //fpsタイマー
-    QElapsedTimer fpsTimer;
-    int fpsCount = 0;
-    double fps = 0.0;
-
 private:
     Ui::MainWindow *ui;
 };

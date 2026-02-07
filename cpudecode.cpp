@@ -416,10 +416,15 @@ bool cpudecode::get_last_frame_pts() {
 
     if (frame_received) {
         AVRational tb = fmt_ctx->streams[vd[0].stream_index]->time_base;
-        double seconds = last_pts * av_q2d(tb);
-        qDebug() << "Last PTS:" << last_pts << " (" << seconds << "sec)";
+        double time = last_pts * av_q2d(tb);
+        qDebug() << "Last PTS:" << last_pts << " (" << time << "sec)";
         VideoInfo.max_framesNo = fmt_ctx->streams[vd[0].stream_index]->duration/VideoInfo.pts_per_frame-1;
         Frame.FrameNo = VideoInfo.max_framesNo;
+
+        //最大時間を計算 時:分:秒
+        VideoInfo.max_hour = time / 3600;
+        VideoInfo.max_minute = (int(time) % 3600) / 60;
+        VideoInfo.max_second = fmod(time, 60.0);
     } else {
         Error_String = "No frame found at end.";
         return false;

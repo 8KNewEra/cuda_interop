@@ -25,6 +25,9 @@ MainWindow::MainWindow(QWidget *parent)
     ui->pause_pushButton->setFixedHeight(26);
     ui->reverse_pushButton->setFixedWidth(30);
     ui->reverse_pushButton->setFixedHeight(26);
+    ui->label_time->setFixedWidth(132);
+    ui->label_time->setFixedHeight(26);
+    ui->label_time->hide();
     // ui->comboBox_speed->setFixedWidth(55);
     // ui->comboBox_speed->setFixedHeight(26);
     // ui->label_speed->setFixedWidth(85);
@@ -106,8 +109,6 @@ MainWindow::MainWindow(QWidget *parent)
             }
         }
     }, Qt::QueuedConnection);
-
-    fpsTimer.start();
 }
 
 MainWindow::~MainWindow()
@@ -156,6 +157,7 @@ void MainWindow::GLwidgetInitialized(){
     glWidget->show();
 }
 
+//ウィンドウサイズ変更
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
@@ -168,6 +170,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->play_pushButton->setGeometry(41, window_height-53,66,window_height-5);
     ui->pause_pushButton->setGeometry(74, window_height-53,99,window_height-5);
     ui->reverse_pushButton->setGeometry(8, window_height-53,33,window_height-5);
+    ui->label_time->setGeometry(window_width-157, window_height-53,window_width-230,window_height-5);
     // ui->label_speed->setGeometry(window_width-154, window_height-53,window_width-230,window_height-5);
     // ui->comboBox_speed->setGeometry(window_width-65, window_height-53,window_width-120,window_height-5);
     ui->openGLContainer->setGeometry(0, 0, window_width, window_height-48); // 位置とサイズを指定
@@ -177,6 +180,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     glWidget->GLresize();
 }
 
+//最大スクリーン検知
 void MainWindow::changeEvent(QEvent *event)
 {
     QMainWindow::changeEvent(event);
@@ -204,6 +208,7 @@ void MainWindow::toggleFullScreen()
         ui->play_pushButton->hide();
         ui->pause_pushButton->hide();
         ui->reverse_pushButton->hide();
+        ui->label_time->hide();
         // ui->comboBox_speed->hide();
 
         glWidget->GLresize();
@@ -237,6 +242,7 @@ void MainWindow::toggleFullScreen()
         ui->play_pushButton->show();
         ui->pause_pushButton->show();
         ui->reverse_pushButton->show();
+        ui->label_time->show();
         // ui->comboBox_speed->show();
 
         glWidget->GLresize();
@@ -284,6 +290,77 @@ void MainWindow::Close_Video_File()
     glWidget->doneCurrent();
 }
 
+//GPU利用可否の判定
+bool MainWindow::canUseGpuDecode(QString filename)
+{
+    QByteArray File_byteArray = filename.toUtf8();
+    const char* input_filename = File_byteArray.constData();
+    AVFormatContext* fmt = nullptr;
+
+    if (avformat_open_input(&fmt, input_filename, nullptr, nullptr) < 0)
+        return false;
+
+    if (avformat_find_stream_info(fmt, nullptr) < 0) {
+        avformat_close_input(&fmt);
+        return false;
+    }
+
+    int video_stream = -1;
+    for (unsigned i = 0; i < fmt->nb_streams; i++) {
+        if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            video_stream = i;
+            break;
+        }
+    }
+
+    if (video_stream < 0) {
+        avformat_close_input(&fmt);
+        return false;
+    }
+
+    AVCodecParameters* par = fmt->streams[video_stream]->codecpar;
+    if (par->codec_id == AV_CODEC_ID_H264)
+        return (par->width <= 4096 && par->height <= 4096);
+
+    if (par->codec_id == AV_CODEC_ID_HEVC || par->codec_id == AV_CODEC_ID_AV1)
+        return (par->width <= 8192 && par->height <= 8192);
+
+    avformat_close_input(&fmt);
+
+    return false;
+}
+
+//動画の範囲に合わせてスライダーの範囲を変更
+void MainWindow::slider_set_range(){
+    if(VideoInfo.audio)
+        ui->action_audio_low_laytency->setEnabled(true);
+
+    //一通りUIのセットを行う
+    ui->actionOpenFile->setEnabled(true);
+    ui->info->setEnabled(true);
+    ui->play_pushButton->setEnabled(true);
+    ui->pause_pushButton->setEnabled(true);
+    ui->reverse_pushButton->setEnabled(true);
+    ui->Live_horizontalSlider->setEnabled(true);
+    ui->label_time->show();
+    // ui->label_speed->setEnabled(true);
+    // ui->comboBox_speed->setEnabled(true);
+    ui->actionFileSave->setEnabled(true);
+    ui->actionCloseFile->setEnabled(true);
+    ui->action_videoinfo->setEnabled(true);
+    ui->action_histgram->setEnabled(true);
+    ui->action_filter_sobel->setEnabled(true);
+    ui->action_filter_gausian->setEnabled(true);
+    ui->action_filter_averaging->setEnabled(true);
+    ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
+
+    qDebug() << "Framerate:" << VideoInfo.fps;
+    qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
+    start_fps_thread(VideoInfo.fps);
+    init_async_audio();
+    glWidget->GLresize();
+}
+
 //動画表示
 void MainWindow::decode_view(VideoFrame Frame,bool pause){
     //停止フラグ更新
@@ -295,6 +372,16 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause){
         if(encode_state==STATE_ENCODING){
             QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
         }
+
+        //再生時間表示
+        if (VideoInfo.max_hour > 0) {
+            ui->label_time->setText(QString::asprintf("%02d:%02d:%02d/%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second, VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
+        }else if (VideoInfo.max_minute > 0) {
+            ui->label_time->setText(QString::asprintf("%02d:%02d/%02d:%02d", Frame.minute, Frame.second, VideoInfo.max_minute, VideoInfo.max_second));
+        }else {
+            ui->label_time->setText(QString::asprintf("%02d:%02d/%02d:%02d", Frame.minute, Frame.second, VideoInfo.max_minute, VideoInfo.max_second));
+        }
+        //ui->label_time->setText(QString::asprintf("%02d:%02d:%02d/%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second, VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
 
         //UIの制御
         if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
@@ -322,6 +409,7 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause){
     }
 }
 
+//非同期オーディオ再生
 void MainWindow::play_audio(QByteArray pcm)
 {
     if (encode_state == STATE_NOT_ENCODE && !audio_mode) {
@@ -331,36 +419,6 @@ void MainWindow::play_audio(QByteArray pcm)
             }
         }
     }
-}
-
-//動画の範囲に合わせてスライダーの範囲を変更
-void MainWindow::slider_set_range(){
-    if(VideoInfo.audio)
-        ui->action_audio_low_laytency->setEnabled(true);
-
-    //一通りUIのセットを行う
-    ui->actionOpenFile->setEnabled(true);
-    ui->info->setEnabled(true);
-    ui->play_pushButton->setEnabled(true);
-    ui->pause_pushButton->setEnabled(true);
-    ui->reverse_pushButton->setEnabled(true);
-    ui->Live_horizontalSlider->setEnabled(true);
-    // ui->label_speed->setEnabled(true);
-    // ui->comboBox_speed->setEnabled(true);
-    ui->actionFileSave->setEnabled(true);
-    ui->actionCloseFile->setEnabled(true);
-    ui->action_videoinfo->setEnabled(true);
-    ui->action_histgram->setEnabled(true);
-    ui->action_filter_sobel->setEnabled(true);
-    ui->action_filter_gausian->setEnabled(true);
-    ui->action_filter_averaging->setEnabled(true);
-
-    qDebug() << "Framerate:" << VideoInfo.fps;
-    qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
-    ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
-    start_fps_thread(VideoInfo.fps);
-    init_async_audio();
-    glWidget->GLresize();
 }
 
 //デコードスレッド開始
@@ -429,46 +487,6 @@ void MainWindow::start_decode_thread(QString filePath) {
     }
 }
 
-//GPU利用可否の判定
-bool MainWindow::canUseGpuDecode(QString filename)
-{
-    QByteArray File_byteArray = filename.toUtf8();
-    const char* input_filename = File_byteArray.constData();
-    AVFormatContext* fmt = nullptr;
-
-    if (avformat_open_input(&fmt, input_filename, nullptr, nullptr) < 0)
-        return false;
-
-    if (avformat_find_stream_info(fmt, nullptr) < 0) {
-        avformat_close_input(&fmt);
-        return false;
-    }
-
-    int video_stream = -1;
-    for (unsigned i = 0; i < fmt->nb_streams; i++) {
-        if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            video_stream = i;
-            break;
-        }
-    }
-
-    if (video_stream < 0) {
-        avformat_close_input(&fmt);
-        return false;
-    }
-
-    AVCodecParameters* par = fmt->streams[video_stream]->codecpar;
-    if (par->codec_id == AV_CODEC_ID_H264)
-        return (par->width <= 4096 && par->height <= 4096);
-
-    if (par->codec_id == AV_CODEC_ID_HEVC || par->codec_id == AV_CODEC_ID_AV1)
-        return (par->width <= 8192 && par->height <= 8192);
-
-    avformat_close_input(&fmt);
-
-    return false;
-}
-
 //デコードスレッド停止
 void MainWindow::stop_decode_thread(){
     if (run_decode_thread) {
@@ -482,6 +500,7 @@ void MainWindow::stop_decode_thread(){
         ui->pause_pushButton->setEnabled(false);
         ui->reverse_pushButton->setEnabled(false);
         ui->Live_horizontalSlider->setEnabled(false);
+        ui->label_time->hide();
         // ui->label_speed->setEnabled(false);
         // ui->comboBox_speed->setEnabled(false);
         ui->actionFileSave->setEnabled(false);
