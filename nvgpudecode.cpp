@@ -651,9 +651,28 @@ void nvgpudecode::get_decode_audio()
         Frame.audio_pcm.push_back(QByteArray(pcm));
         Frame.audio_pts.push_back(audio_frame->pts);
 
+        //低遅延音声再生
         if (encode_state == STATE_NOT_ENCODE) {
-            if (audio_mode && audioOutput) {
-                audioOutput->write(pcm);
+            if (audioOutput && audioSink) {
+                if (audioSink->bytesFree() >= pcm.size()) {
+
+                    float volume = g_audio_vol / 100.0f;
+
+                    int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
+                    int sampleCount = pcm.size() / sizeof(int16_t);
+
+                    for (int i = 0; i < sampleCount; i++) {
+                        int32_t v = samples[i] * volume;
+
+                        // クリップ防止
+                        if (v > 32767) v = 32767;
+                        if (v < -32768) v = -32768;
+
+                        samples[i] = static_cast<int16_t>(v);
+                    }
+
+                    audioOutput->write(pcm);
+                }
             }
         }
 
@@ -661,8 +680,6 @@ void nvgpudecode::get_decode_audio()
         emit send_audio(pcm);
     }
 }
-
-
 
 //CUDAで映像フレームを処理
 void nvgpudecode::CUDA_RGBA_to_merge(){

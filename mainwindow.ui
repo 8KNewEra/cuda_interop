@@ -20,16 +20,6 @@
    <string>CUDA_Interop_VideoViewer</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <widget class="QWidget" name="widget" native="true">
-    <property name="geometry">
-     <rect>
-      <x>170</x>
-      <y>-60</y>
-      <width>720</width>
-      <height>480</height>
-     </rect>
-    </property>
-   </widget>
    <widget class="QSlider" name="Live_horizontalSlider">
     <property name="enabled">
      <bool>false</bool>
@@ -109,20 +99,39 @@
      <rect>
       <x>1078</x>
       <y>667</y>
-      <width>141</width>
+      <width>91</width>
       <height>26</height>
      </rect>
     </property>
     <property name="font">
      <font>
-      <pointsize>12</pointsize>
+      <pointsize>9</pointsize>
      </font>
+    </property>
+    <property name="text">
+     <string>00:00:00/00:00:00</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_volume">
+    <property name="geometry">
+     <rect>
+      <x>1225</x>
+      <y>665</y>
+      <width>31</width>
+      <height>31</height>
+     </rect>
     </property>
     <property name="text">
      <string/>
     </property>
-    <property name="alignment">
-     <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignVCenter</set>
+    <property name="iconSize">
+     <size>
+      <width>16</width>
+      <height>16</height>
+     </size>
     </property>
    </widget>
   </widget>

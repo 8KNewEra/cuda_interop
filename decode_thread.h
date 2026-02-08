@@ -23,6 +23,7 @@ extern "C" {
 }
 
 extern int g_cudaDeviceID;
+extern int g_audio_vol;
 
 struct VideoDecorder {
     AVCodecContext* codec_ctx = nullptr;
@@ -85,6 +86,7 @@ protected:
     bool thread_stop_flag =false;
     int slider_No;
     QMutex mutex;
+    bool drop_flag=false;
 
     //FFmpeg関連
     AVPacket* packet = nullptr;
@@ -119,9 +121,6 @@ protected:
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
     AVFrame* audio_Frame=nullptr;
-    int seq=0;
-
-    bool drop_flag=false;
 
     //タイマー関連
     QTimer *timer;

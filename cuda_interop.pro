@@ -18,6 +18,7 @@ CONFIG += c++17
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+    audio_volume.cpp \
     avidecode.cpp \
     cpudecode.cpp \
     cuda_imageprocess.cpp \
@@ -33,6 +34,7 @@ SOURCES += \
 
 HEADERS += \
     __global__.h \
+    audio_volume.h \
     avidecode.h \
     cpudecode.h \
     cuda_imageprocess.h \
@@ -46,6 +48,7 @@ HEADERS += \
     save_encode.h
 
 FORMS += \
+    audio_volume.ui \
     encode_setting.ui \
     mainwindow.ui
 

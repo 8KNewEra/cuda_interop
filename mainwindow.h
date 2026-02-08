@@ -1,6 +1,7 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "audio_volume.h"
 #include "fps_thread.h"
 #include "decode_thread.h"
 #include "info_thread.h"
@@ -22,6 +23,8 @@
 #include <QFileDialog>
 #include <QShortcut>
 #include <QPointer>
+
+extern int g_audio_vol;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -53,6 +56,7 @@ private:
     int window_height=360;
     void resizeEvent(QResizeEvent *event) override;
     void changeEvent(QEvent *event) override;
+    bool eventFilter(QObject *obj, QEvent *event)override;
     void toggleFullScreen();
 
     //OpenGLwidget
@@ -105,6 +109,8 @@ private:
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
     bool audio_mode=false;
+
+    audio_volume *audioVolume;
 
 private:
     Ui::MainWindow *ui;

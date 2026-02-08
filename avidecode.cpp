@@ -541,11 +541,29 @@ void avidecode::get_decode_audio()
         // 低遅延再生（同一スレッド）
         Frame.audio_pcm.push_back(QByteArray(pcm));
         Frame.audio_pts.push_back(audio_frame->pts);
-        //qDebug()<<"音声"<<Frame.audio_pts.size();
 
+        //低遅延音声再生
         if (encode_state == STATE_NOT_ENCODE) {
-            if (audio_mode && audioOutput) {
-                audioOutput->write(pcm);
+            if (audioOutput && audioSink) {
+                if (audioSink->bytesFree() >= pcm.size()) {
+
+                    float volume = g_audio_vol / 100.0f;
+
+                    int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
+                    int sampleCount = pcm.size() / sizeof(int16_t);
+
+                    for (int i = 0; i < sampleCount; i++) {
+                        int32_t v = samples[i] * volume;
+
+                        // クリップ防止
+                        if (v > 32767) v = 32767;
+                        if (v < -32768) v = -32768;
+
+                        samples[i] = static_cast<int16_t>(v);
+                    }
+
+                    audioOutput->write(pcm);
+                }
             }
         }
 

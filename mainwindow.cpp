@@ -27,7 +27,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->reverse_pushButton->setFixedHeight(26);
     ui->label_time->setFixedWidth(132);
     ui->label_time->setFixedHeight(26);
-    ui->label_time->hide();
+    ui->pushButton_volume->setFixedWidth(30);
+    ui->pushButton_volume->setFixedHeight(26);
     // ui->comboBox_speed->setFixedWidth(55);
     // ui->comboBox_speed->setFixedHeight(26);
     // ui->label_speed->setFixedWidth(85);
@@ -109,6 +110,9 @@ MainWindow::MainWindow(QWidget *parent)
             }
         }
     }, Qt::QueuedConnection);
+
+    //音量ボタンアイコン設定
+    ui->pushButton_volume->setIcon(style()->standardIcon( QStyle::SP_MediaVolume));
 }
 
 MainWindow::~MainWindow()
@@ -148,13 +152,51 @@ void MainWindow::GLwidgetInitialized(){
         //エンコード設定用
         encodeSetting = new encode_setting();
         encodeSetting->setWindowModality(Qt::ApplicationModal);
-        encodeSetting->setFixedSize(515, 464);
         encodeSetting->hide();
         QObject::connect(encodeSetting, &encode_setting::signal_encode_start,this, &MainWindow::start_encode,Qt::QueuedConnection);
         QObject::connect(encodeSetting, &encode_setting::signal_encode_finished,this, &MainWindow::finished_encode,Qt::QueuedConnection);
+
+        //オーディオ音量調整
+        audioVolume = new audio_volume(this);
+        audioVolume->setAnchorButton(ui->pushButton_volume);
+        ui->pushButton_volume->installEventFilter(this);
+        connect(ui->pushButton_volume, &QPushButton::clicked,this, [this]() {
+            audioVolume->showPopup();
+        });
+        connect(audioVolume, &audio_volume::volumeChanged,this, [&](int value) {
+            g_audio_vol = value;
+
+            QStyle::StandardPixmap icon;
+
+            if (value == 0)
+                icon = QStyle::SP_MediaVolumeMuted;   // ミュート
+            else if (value < 40)
+                icon = QStyle::SP_MediaVolume;         // 小
+            else
+                icon = QStyle::SP_MediaVolume;         // 中〜大（Qtは統一）
+
+            ui->pushButton_volume->setIcon(style()->standardIcon(icon));
+        },Qt::QueuedConnection);
     });
 
     glWidget->show();
+}
+
+//マウスカーソルホバー処理
+bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+{
+    if (obj == ui->pushButton_volume) {
+
+        if (event->type() == QEvent::Enter) {
+            audioVolume->showPopup();
+        }
+
+        if (event->type() == QEvent::Leave) {
+            audioVolume->hideTimer.start(); // ← 1秒後に消すか判断
+        }
+    }
+
+    return QMainWindow::eventFilter(obj, event);
 }
 
 //ウィンドウサイズ変更
@@ -166,11 +208,12 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     window_width = newSize.width();
     window_height = newSize.height();
 
-    ui->Live_horizontalSlider->setGeometry(107, window_height-49,window_width-267,window_height-5);
+    ui->Live_horizontalSlider->setGeometry(107, window_height-49,window_width-240,window_height-5);
     ui->play_pushButton->setGeometry(41, window_height-53,66,window_height-5);
     ui->pause_pushButton->setGeometry(74, window_height-53,99,window_height-5);
     ui->reverse_pushButton->setGeometry(8, window_height-53,33,window_height-5);
-    ui->label_time->setGeometry(window_width-157, window_height-53,window_width-230,window_height-5);
+    ui->label_time->setGeometry(window_width-152, window_height-53,window_width-226,window_height-5);
+    ui->pushButton_volume->setGeometry(window_width-38, window_height-53,window_width-60,window_height-5);
     // ui->label_speed->setGeometry(window_width-154, window_height-53,window_width-230,window_height-5);
     // ui->comboBox_speed->setGeometry(window_width-65, window_height-53,window_width-120,window_height-5);
     ui->openGLContainer->setGeometry(0, 0, window_width, window_height-48); // 位置とサイズを指定
@@ -342,7 +385,6 @@ void MainWindow::slider_set_range(){
     ui->pause_pushButton->setEnabled(true);
     ui->reverse_pushButton->setEnabled(true);
     ui->Live_horizontalSlider->setEnabled(true);
-    ui->label_time->show();
     // ui->label_speed->setEnabled(true);
     // ui->comboBox_speed->setEnabled(true);
     ui->actionFileSave->setEnabled(true);
@@ -353,6 +395,19 @@ void MainWindow::slider_set_range(){
     ui->action_filter_gausian->setEnabled(true);
     ui->action_filter_averaging->setEnabled(true);
     ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
+
+    //時間の桁数に応じてフォント調整
+    if (VideoInfo.max_hour > 0) {
+        QFont font = ui->label_time->font();
+        font.setPointSize(9);   // 文字サイズ
+        ui->label_time->setFont(font);
+        ui->label_time->setText(QString::asprintf("00:00:00/%02d:%02d:%02d", VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
+    }else {
+        QFont font = ui->label_time->font();
+        font.setPointSize(12);   // 文字サイズ
+        ui->label_time->setFont(font);
+        ui->label_time->setText(QString::asprintf("00:00/%02d:%02d", VideoInfo.max_minute, VideoInfo.max_second));
+    }
 
     qDebug() << "Framerate:" << VideoInfo.fps;
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
@@ -376,12 +431,9 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause){
         //再生時間表示
         if (VideoInfo.max_hour > 0) {
             ui->label_time->setText(QString::asprintf("%02d:%02d:%02d/%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second, VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
-        }else if (VideoInfo.max_minute > 0) {
-            ui->label_time->setText(QString::asprintf("%02d:%02d/%02d:%02d", Frame.minute, Frame.second, VideoInfo.max_minute, VideoInfo.max_second));
         }else {
             ui->label_time->setText(QString::asprintf("%02d:%02d/%02d:%02d", Frame.minute, Frame.second, VideoInfo.max_minute, VideoInfo.max_second));
         }
-        //ui->label_time->setText(QString::asprintf("%02d:%02d:%02d/%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second, VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
 
         //UIの制御
         if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
@@ -415,6 +467,22 @@ void MainWindow::play_audio(QByteArray pcm)
     if (encode_state == STATE_NOT_ENCODE && !audio_mode) {
         if (audioOutput && audioSink) {
             if (audioSink->bytesFree() >= pcm.size()) {
+
+                float volume = g_audio_vol / 100.0f;
+
+                int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
+                int sampleCount = pcm.size() / sizeof(int16_t);
+
+                for (int i = 0; i < sampleCount; i++) {
+                    int32_t v = samples[i] * volume;
+
+                    // クリップ防止
+                    if (v > 32767) v = 32767;
+                    if (v < -32768) v = -32768;
+
+                    samples[i] = static_cast<int16_t>(v);
+                }
+
                 audioOutput->write(pcm);
             }
         }
@@ -500,7 +568,6 @@ void MainWindow::stop_decode_thread(){
         ui->pause_pushButton->setEnabled(false);
         ui->reverse_pushButton->setEnabled(false);
         ui->Live_horizontalSlider->setEnabled(false);
-        ui->label_time->hide();
         // ui->label_speed->setEnabled(false);
         // ui->comboBox_speed->setEnabled(false);
         ui->actionFileSave->setEnabled(false);
@@ -511,6 +578,10 @@ void MainWindow::stop_decode_thread(){
         ui->action_filter_gausian->setEnabled(false);
         ui->action_filter_averaging->setEnabled(false);
         ui->action_audio_low_laytency->setEnabled(false);
+        ui->label_time->setText(QString::asprintf("00:00:00/00:00:00"));
+        QFont font = ui->label_time->font();
+        font.setPointSize(9);   // 文字サイズ
+        ui->label_time->setFont(font);
 
         decodestream->stopProcessing();
         decode__thread->quit();

@@ -8,6 +8,7 @@
 int g_gpu_usage=0;
 int g_cudaDeviceID=0;
 cudaDeviceProp g_prop={};
+int g_audio_vol = 50;
 
 int main(int argc, char *argv[])
 {
