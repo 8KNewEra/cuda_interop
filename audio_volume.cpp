@@ -1,5 +1,4 @@
 #include "audio_volume.h"
-#include "qpainter.h"
 #include "ui_audio_volume.h"
 
 audio_volume::audio_volume(QWidget *parent)
@@ -66,9 +65,36 @@ audio_volume::audio_volume(QWidget *parent)
         }
     )");
 
+    //浮かぶ数値バブル
+    valueLabel = new QLabel(this);
+    valueLabel->setAlignment(Qt::AlignCenter);
+    valueLabel->setStyleSheet(
+        "QLabel {"
+        "background: rgba(30,30,30,230);"
+        "color: white;"
+        "border-radius: 3px;"
+        "padding: 2px 4px;"
+        "font-size: 11px;"
+        "}"
+        );
+    valueLabel->hide();
+
+    //ドラッグ位置で表示非表示
+    connect(ui->verticalSlider_volume, &QSlider::sliderPressed, this, [&]() {
+        valueLabel->show();
+    });
+    connect(ui->verticalSlider_volume, &QSlider::sliderReleased, this, [&]() {
+        valueLabel->hide();
+    });
+
     //スライダーの値をmainWindowへ
-    connect(ui->verticalSlider_volume, &QSlider::valueChanged,
-            this, &audio_volume::volumeChanged);
+    connect(ui->verticalSlider_volume, &QSlider::valueChanged, this, [&](int value) {
+        updateValuePopup(value);
+        valueLabel->show();
+        emit volumeChanged(value);
+    });
+
+    updateValuePopup(ui->verticalSlider_volume->value());
 }
 
 audio_volume::~audio_volume()
@@ -138,4 +164,34 @@ void audio_volume::showPopup()
     show();
     raise();
 }
+
+//スライダーの制御に応じて数値ラベルを表示
+void audio_volume::updateValuePopup(int value)
+{
+    valueLabel->setText(QString("%1%").arg(value));
+
+    QStyleOptionSlider opt;
+    opt.initFrom(ui->verticalSlider_volume);
+    opt.orientation = Qt::Vertical;
+    opt.minimum = ui->verticalSlider_volume->minimum();
+    opt.maximum = ui->verticalSlider_volume->maximum();
+    opt.sliderPosition = value;
+    opt.sliderValue = value;
+
+    QRect handleRect = ui->verticalSlider_volume->style()->subControlRect(
+        QStyle::CC_Slider, &opt, QStyle::SC_SliderHandle, ui->verticalSlider_volume
+        );
+
+    // スライダー内ローカル → 親座標へ変換
+    QPoint sliderPos = ui->verticalSlider_volume->mapToParent(handleRect.center());
+
+    // ハンドルの上に表示
+    valueLabel->adjustSize();
+    if(value>75){
+        valueLabel->move(sliderPos.x() - valueLabel->width() / 2 + 1,valueLabel->height() - sliderPos.y() + 107);
+    }else{
+        valueLabel->move(sliderPos.x() - valueLabel->width() / 2 + 1,valueLabel->height() - sliderPos.y() + 75);
+    }
+}
+
 

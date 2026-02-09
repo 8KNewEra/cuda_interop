@@ -1,13 +1,15 @@
 #ifndef AUDIO_VOLUME_H
 #define AUDIO_VOLUME_H
 
+#include "qlabel.h"
 #pragma once
 #include <QWidget>
 #include <QPushButton>
 #include <QTimer>
 #include <QPropertyAnimation>
 #include <QPainterPath>
-
+#include "qpainter.h"
+#include "qstyleoption.h"
 
 namespace Ui {
 class audio_volume;
@@ -39,6 +41,8 @@ private:
     QPushButton* anchorButton = nullptr;
     bool mouseInside = false;
     QPropertyAnimation* fadeAnim = nullptr;
+    QLabel* valueLabel = nullptr;
+    void updateValuePopup(int value);
 };
 
 #endif // AUDIO_VOLUME_H
