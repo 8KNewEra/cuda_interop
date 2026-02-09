@@ -186,11 +186,6 @@ void MainWindow::GLwidgetInitialized(){
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
     if (obj == ui->pushButton_volume) {
-
-        if (event->type() == QEvent::Enter) {
-            audioVolume->showPopup();
-        }
-
         if (event->type() == QEvent::Leave) {
             audioVolume->hideTimer.start(); // ← 1秒後に消すか判断
         }
