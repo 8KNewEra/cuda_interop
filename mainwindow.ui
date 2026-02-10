@@ -52,7 +52,7 @@
      <string>▶</string>
     </property>
    </widget>
-   <widget class="QPushButton" name="pause_pushButton">
+   <widget class="QPushButton" name="stop_pushButton">
     <property name="enabled">
      <bool>false</bool>
     </property>
@@ -105,7 +105,7 @@
     </property>
     <property name="font">
      <font>
-      <pointsize>9</pointsize>
+      <pointsize>8</pointsize>
      </font>
     </property>
     <property name="text">

@@ -43,7 +43,7 @@ public:
     QMutex audioMutex;
 
 signals:
-    void send_decode_image(VideoFrame Frame,bool pause_flag);
+    void send_decode_image(VideoFrame Frame,bool pause,bool reverse);
     void send_audio(QByteArray pcm);
     void send_slider_info();
     void finished();

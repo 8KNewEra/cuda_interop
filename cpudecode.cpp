@@ -664,5 +664,5 @@ void cpudecode::gpu_upload(){
     Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
     slider_No = Frame.FrameNo;
 
-    emit send_decode_image(Frame,false);
+    emit send_decode_image(Frame,false,video_reverse_flag);
 }

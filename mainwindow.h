@@ -39,6 +39,7 @@ class MainWindow : public QMainWindow
 signals:
     void send_encode_flag(bool flag,int slider_max);
     void send_manual_pause();
+    void send_manual_reverse();
     void send_manual_resumeplayback();
     void send_manual_slider(int value);
     void decode_please();
@@ -58,6 +59,7 @@ private:
     void changeEvent(QEvent *event) override;
     bool eventFilter(QObject *obj, QEvent *event)override;
     void toggleFullScreen();
+    void CSS_Design();
 
     //OpenGLwidget
     GLWidget* glWidget;
@@ -68,16 +70,24 @@ private:
     void start_decode_thread(QString filePath);
     void stop_decode_thread();
     bool canUseGpuDecode(QString filename);
-    void decode_view(VideoFrame Frame,bool pause_flag);
+    void decode_view(VideoFrame Frame,bool pause,bool reverse);
     QThread *decode__thread=nullptr;
     decode_thread *decodestream=nullptr;
     bool run_decode_thread=false;
     int preview_speed=30;
 
     //スライダー
-    void slider_set_range();
+    void init_decodethread_complete();
     int slider_No=1;
     int Now_Frame;
+
+    //再生・一時停止・スライダー
+    void switch_resume_pause();
+    void reverse_pushbutton_control();
+    void stop_pushbutton_control();
+    void slider_control(int value);
+    bool pause_flag = false;
+    bool reverse_flag = false;
 
     //fpsスレッド
     void start_fps_thread(double target_fps);
@@ -90,7 +100,6 @@ private:
     QThread *info_view_thread;
     info_thread *infostream;
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
-    bool pause_flag=false;
 
     //ファイル
     void Open_Video_File();
@@ -111,6 +120,7 @@ private:
     bool audio_mode=false;
 
     audio_volume *audioVolume;
+    bool audio_slider = false;
 
 private:
     Ui::MainWindow *ui;
