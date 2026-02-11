@@ -29,6 +29,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->reverse_pushButton->setFixedHeight(26);
     ui->label_time->setFixedWidth(132);
     ui->label_time->setFixedHeight(26);
+    ui->pushButton_speed->setFixedWidth(30);
+    ui->pushButton_speed->setFixedHeight(26);
     ui->pushButton_volume->setFixedWidth(30);
     ui->pushButton_volume->setFixedHeight(26);
     // ui->comboBox_speed->setFixedWidth(55);
@@ -176,8 +178,8 @@ void MainWindow::GLwidgetInitialized(){
         audioVolume = new audio_volume(this);
         audioVolume->setAnchorButton(ui->pushButton_volume);
         ui->pushButton_volume->installEventFilter(this);
+        //音量調節ボタン
         connect(ui->pushButton_volume, &QPushButton::clicked, this, [this]() {
-
             if (!audioVolume)
                 return;
 
@@ -191,7 +193,7 @@ void MainWindow::GLwidgetInitialized(){
                 audioVolume->showPopup();  // ← 既存関数を活用
             }
         });
-
+        //スライダー制御シグナル受信
         connect(audioVolume, &audio_volume::volumeChanged,this, [&](int value) {
             g_audio_vol = value;
 
@@ -205,6 +207,53 @@ void MainWindow::GLwidgetInitialized(){
                 icon = QStyle::SP_MediaVolume;         // 中〜大（Qtは統一）
 
             ui->pushButton_volume->setIcon(style()->standardIcon(icon));
+        },Qt::QueuedConnection);
+
+        //再生速度
+        videoSpeed = new video_speed(this);
+        videoSpeed->setAnchorButton(ui->pushButton_speed);
+        ui->pushButton_speed->installEventFilter(this);
+        //再生速度ボタン
+        connect(ui->pushButton_speed, &QPushButton::clicked, this, [this]() {
+            if (!videoSpeed)
+                return;
+
+            // すでに表示中なら閉じる
+            if (videoSpeed->isVisible()) {
+                videoSpeed->hide();
+                videoSpeed->hideTimer.stop();
+            }
+            // 非表示なら表示
+            else {
+                videoSpeed->setCurrentSpeed(videospeed);
+                videoSpeed->showPopup();
+            }
+        });
+
+        //ボタンシグナル受信
+        connect(videoSpeed, &video_speed::speedChanged, this,[this](double value) {
+            videospeed = value;
+
+            QString text;
+            // 整数 (1.0, 2.0) は小数1桁
+            if (qFuzzyCompare(videospeed, qRound(videospeed))) {
+                text = QString("x %1").arg(videospeed, 0, 'f', 1);
+                //フォントサイズをちょっと大きくする
+                QFont font = ui->pushButton_speed->font();
+                font.setPointSize(7);
+            } else {
+                // 最大2桁、不要な0削除
+                QString s = QString::number(videospeed, 'f', 2);
+                s.remove(QRegularExpression("0+$"));
+                s.remove(QRegularExpression("\\.$"));
+                text = "x " + s;
+                //フォントサイズを小さくする
+                QFont font = ui->pushButton_speed->font();
+                font.setPointSize(5);
+            }
+            ui->pushButton_speed->setText(text);
+            videoSpeed->hide();
+            videoSpeed->hideTimer.stop();
         },Qt::QueuedConnection);
     });
 
@@ -296,8 +345,6 @@ void MainWindow::CSS_Design(){
         }
     )");
 
-
-
     //再生、停止、逆再生
     QString transportStyle = R"(
         QPushButton {
@@ -308,7 +355,7 @@ void MainWindow::CSS_Design(){
             );
             border: 1px solid rgba(255,255,255,70);
             border-radius: 8px;
-            padding: 6px;
+            padding: 2px;
             color: rgb(235,235,235); /* ← 通常テキスト 白 */
             font-weight: 600;
         }
@@ -353,6 +400,7 @@ void MainWindow::CSS_Design(){
     ui->play_pushButton->setStyleSheet(transportStyle);
     ui->stop_pushButton->setStyleSheet(transportStyle);
     ui->reverse_pushButton->setStyleSheet(transportStyle);
+    ui->pushButton_speed->setStyleSheet(transportStyle);
     ui->pushButton_volume->setStyleSheet(transportStyle);
     ui->play_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->stop_pushButton->setFocusPolicy(Qt::NoFocus);
@@ -398,9 +446,17 @@ void MainWindow::CSS_Design(){
 //マウスカーソルホバー処理
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    //音量調整
     if (obj == ui->pushButton_volume) {
         if (event->type() == QEvent::Leave) {
             audioVolume->hideTimer.start(); // ← 1秒後に消すか判断
+        }
+    }
+
+    //再生速度
+    if (obj == ui->pushButton_speed) {
+        if (event->type() == QEvent::Leave) {
+            videoSpeed->hideTimer.start(); // ← 1秒後に消すか判断
         }
     }
 
@@ -416,11 +472,12 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     window_width = newSize.width();
     window_height = newSize.height();
 
-    ui->Live_horizontalSlider->setGeometry(107, window_height-49,window_width-251,window_height-5);
+    ui->Live_horizontalSlider->setGeometry(107, window_height-49,window_width-286,window_height-5);
     ui->play_pushButton->setGeometry(41, window_height-53,66,window_height-5);
     ui->stop_pushButton->setGeometry(74, window_height-53,99,window_height-5);
     ui->reverse_pushButton->setGeometry(8, window_height-53,33,window_height-5);
-    ui->label_time->setGeometry(window_width-157, window_height-52,window_width-226,window_height-5);
+    ui->label_time->setGeometry(window_width-191, window_height-52,window_width-261,window_height-5);
+    ui->pushButton_speed->setGeometry(window_width-71, window_height-53,window_width-41,window_height-5);
     ui->pushButton_volume->setGeometry(window_width-38, window_height-53,window_width-60,window_height-5);
     // ui->label_speed->setGeometry(window_width-154, window_height-53,window_width-230,window_height-5);
     // ui->comboBox_speed->setGeometry(window_width-65, window_height-53,window_width-120,window_height-5);

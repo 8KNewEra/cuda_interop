@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>video_speed</class>
+ <widget class="QWidget" name="video_speed">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>65</width>
+    <height>152</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <widget class="QPushButton" name="pushButton_025">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>7</y>
+     <width>56</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>x 0.25</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_05">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>27</y>
+     <width>56</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>x 0.5</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_075">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>47</y>
+     <width>56</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>x 0.75</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_10">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>67</y>
+     <width>56</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>x 1.0</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_15">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>87</y>
+     <width>56</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>x 1.5</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_20">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>107</y>
+     <width>56</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>x 2.0</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_40">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>127</y>
+     <width>56</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>x 4.0</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

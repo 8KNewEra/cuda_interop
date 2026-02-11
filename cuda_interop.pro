@@ -30,7 +30,8 @@ SOURCES += \
     main.cpp \
     mainwindow.cpp \
     nvgpudecode.cpp \
-    save_encode.cpp
+    save_encode.cpp \
+    video_speed.cpp
 
 HEADERS += \
     __global__.h \
@@ -45,12 +46,14 @@ HEADERS += \
     info_thread.h \
     mainwindow.h \
     nvgpudecode.h \
-    save_encode.h
+    save_encode.h \
+    video_speed.h
 
 FORMS += \
     audio_volume.ui \
     encode_setting.ui \
-    mainwindow.ui
+    mainwindow.ui \
+    video_speed.ui
 
 TRANSLATIONS += \
     cuda_interop_ja_JP.ts

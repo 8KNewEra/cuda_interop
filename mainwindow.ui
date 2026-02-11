@@ -137,6 +137,30 @@
      </size>
     </property>
    </widget>
+   <widget class="QPushButton" name="pushButton_speed">
+    <property name="geometry">
+     <rect>
+      <x>1183</x>
+      <y>666</y>
+      <width>31</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>7</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>x 1.0</string>
+    </property>
+    <property name="iconSize">
+     <size>
+      <width>16</width>
+      <height>16</height>
+     </size>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menuBar">
    <property name="enabled">

@@ -6,6 +6,7 @@
 #include "decode_thread.h"
 #include "info_thread.h"
 #include "encode_setting.h"
+#include "video_speed.h"
 #define NOMINMAX
 
 #include <QMainWindow>
@@ -125,6 +126,10 @@ private:
 
     audio_volume *audioVolume;
     bool audio_slider = false;
+
+    //再生速度
+    video_speed *videoSpeed;
+    double videospeed = 1.0;
 
 private:
     Ui::MainWindow *ui;
