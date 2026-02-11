@@ -17,7 +17,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>CUDA_Interop_VideoViewer</string>
+   <string>CUDA Master VideoViewer</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <widget class="QSlider" name="Live_horizontalSlider">
@@ -153,8 +153,8 @@
    <widget class="QMenu" name="menu">
     <property name="geometry">
      <rect>
-      <x>644</x>
-      <y>119</y>
+      <x>951</x>
+      <y>138</y>
       <width>121</width>
       <height>120</height>
      </rect>

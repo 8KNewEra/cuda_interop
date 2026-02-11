@@ -14,7 +14,6 @@
 #include "glwidget.h"
 #include "__global__.h"
 
-#include <windows.h>
 #include <QMainWindow>
 #include <QResizeEvent>
 #include <QMessageBox>
@@ -23,6 +22,10 @@
 #include <QFileDialog>
 #include <QShortcut>
 #include <QPointer>
+
+#include <windows.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 
 extern int g_audio_vol;
 
@@ -60,6 +63,7 @@ private:
     bool eventFilter(QObject *obj, QEvent *event)override;
     void toggleFullScreen();
     void CSS_Design();
+    QIcon makeWhiteIcon(const QIcon &icon);
 
     //OpenGLwidget
     GLWidget* glWidget;

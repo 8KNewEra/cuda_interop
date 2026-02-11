@@ -115,6 +115,16 @@ MainWindow::MainWindow(QWidget *parent)
 
     //音量ボタンアイコン設定
     ui->pushButton_volume->setIcon(style()->standardIcon( QStyle::SP_MediaVolume));
+    ui->actionOpenFile->setIcon(makeWhiteIcon(QIcon::fromTheme("document-open")));
+    ui->info->setIcon(makeWhiteIcon(QIcon::fromTheme("dialog-information")));
+    ui->actionCloseFile->setIcon(makeWhiteIcon(QIcon::fromTheme("edit-clear")));
+    ui->actionFileSave->setIcon(makeWhiteIcon(QIcon::fromTheme("document-print")));
+
+    //ダークUI
+    HWND hwnd = (HWND)winId();
+    BOOL dark = TRUE;
+    DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark)); // Windows 11
+    DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark)); // Windows 10 fallback
 }
 
 MainWindow::~MainWindow()
@@ -130,7 +140,6 @@ MainWindow::~MainWindow()
 //OpenGL初期化
 void MainWindow::GLwidgetInitialized(){
     glWidget = new GLWidget();
-
     container = QWidget::createWindowContainer(glWidget);;
     container->setMinimumSize(320, 240);
     container->setFocusPolicy(Qt::StrongFocus);
@@ -138,9 +147,14 @@ void MainWindow::GLwidgetInitialized(){
     // openGLContainerにコンテナを追加
     QLayout* layout = ui->openGLContainer->layout();
     if (!layout) {
-        layout = new QVBoxLayout(ui->openGLContainer);
-        ui->openGLContainer->setLayout(layout);
+        auto* vlayout = new QVBoxLayout(ui->openGLContainer);
+        vlayout->setContentsMargins(0, 0, 0, 12);   // ★ 超重要
+        vlayout->setSpacing(0);                    // ★ 超重要
+        ui->openGLContainer->setLayout(vlayout);
+        layout = vlayout;
     }
+    layout->setContentsMargins(0, 0, 0, 12);
+    layout->setSpacing(0);
     layout->addWidget(container);
 
     // 初期化完了後の処理
@@ -197,14 +211,92 @@ void MainWindow::GLwidgetInitialized(){
     glWidget->show();
 }
 
+//アイコンを白くする
+QIcon MainWindow::makeWhiteIcon(const QIcon &icon) {
+    QPixmap pix = icon.pixmap(32, 32);
+    QImage img = pix.toImage().convertToFormat(QImage::Format_ARGB32);
+
+    for (int y = 0; y < img.height(); y++) {
+        for (int x = 0; x < img.width(); x++) {
+            QColor c = img.pixelColor(x, y);
+            img.setPixelColor(x, y, QColor(255, 255, 255, c.alpha()));
+        }
+    }
+    return QIcon(QPixmap::fromImage(img));
+}
+
 //UIデザイン
 void MainWindow::CSS_Design(){
     //MainWindow
     this->setStyleSheet(R"(
         QMainWindow {
-            background-color: #141414;
+            background-color: #202020;
+        }
+
+        /* ===== Menu Bar ===== */
+        QMenuBar {
+            background-color: #444444;
+            color: white;
+        }
+
+        QMenuBar::item {
+            color: white;
+            background: transparent;
+        }
+
+        QMenuBar::item:selected {
+            background-color: #6a6a6a;
+        }
+
+        QMenuBar::item:disabled {
+            color: #888888;
+        }
+
+        /* ===== QMenu ===== */
+        QMenu {
+            background-color: #262626;
+            color: #dcdcdc;
+            border: 1px solid #3a3a3a;
+            padding: 4px;
+        }
+
+        /* メニュー項目 */
+        QMenu::item {
+            padding: 3px 12px 3px 6px; /* ← 左を詰める */
+            border-radius: 4px;
+        }
+
+        /* アイコンサイズを統一 */
+        QMenu::icon {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* 選択時 */
+        QMenu::item:selected {
+            background-color: #555555;
+            color: white;
+        }
+
+        /* 無効項目 */
+        QMenu::item:disabled {
+            color: #777777;
+        }
+
+        /* セパレーター */
+        QMenu::separator {
+            height: 1px;
+            background-color: #3a3a3a;
+            margin: 5px 6px;
+        }
+
+        /* サブメニュー矢印余白縮小 */
+        QMenu::right-arrow {
+            padding-right: 6px;
         }
     )");
+
+
 
     //再生、停止、逆再生
     QString transportStyle = R"(
