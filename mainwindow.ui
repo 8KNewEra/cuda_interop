@@ -65,7 +65,10 @@
      </rect>
     </property>
     <property name="text">
-     <string>■</string>
+     <string extracomment="eeeeeeeeee">■</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
     </property>
    </widget>
    <widget class="QPushButton" name="reverse_pushButton">
