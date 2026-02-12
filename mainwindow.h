@@ -129,7 +129,7 @@ private:
 
     //再生速度
     video_speed *videoSpeed;
-    double videospeed = 1.0;
+    double video_speed_ratio = 1.0;
 
 private:
     Ui::MainWindow *ui;

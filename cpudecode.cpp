@@ -563,7 +563,7 @@ void cpudecode::get_decode_audio()
 
         //低遅延音声再生
         if (encode_state == STATE_NOT_ENCODE) {
-            if (audioOutput && audioSink) {
+            if (audio_mode && audioOutput) {
                 if (audioSink->bytesFree() >= pcm.size()) {
 
                     float volume = g_audio_vol / 100.0f;

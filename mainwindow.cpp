@@ -225,25 +225,29 @@ void MainWindow::GLwidgetInitialized(){
             }
             // 非表示なら表示
             else {
-                videoSpeed->setCurrentSpeed(videospeed);
+                videoSpeed->setCurrentSpeed(video_speed_ratio);
                 videoSpeed->showPopup();
             }
         });
 
         //ボタンシグナル受信
         connect(videoSpeed, &video_speed::speedChanged, this,[this](double value) {
-            videospeed = value;
+            video_speed_ratio = value;
+
+            if(fpsstream){
+                fpsstream->change_speed(video_speed_ratio*VideoInfo.fps);
+            }
 
             QString text;
             // 整数 (1.0, 2.0) は小数1桁
-            if (qFuzzyCompare(videospeed, qRound(videospeed))) {
-                text = QString("x %1").arg(videospeed, 0, 'f', 1);
+            if (qFuzzyCompare(video_speed_ratio, qRound(video_speed_ratio))) {
+                text = QString("x %1").arg(video_speed_ratio, 0, 'f', 1);
                 //フォントサイズをちょっと大きくする
                 QFont font = ui->pushButton_speed->font();
                 font.setPointSize(7);
             } else {
                 // 最大2桁、不要な0削除
-                QString s = QString::number(videospeed, 'f', 2);
+                QString s = QString::number(video_speed_ratio, 'f', 2);
                 s.remove(QRegularExpression("0+$"));
                 s.remove(QRegularExpression("\\.$"));
                 text = "x " + s;
@@ -677,7 +681,7 @@ void MainWindow::init_decodethread_complete(){
 
     qDebug() << "Framerate:" << VideoInfo.fps;
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
-    start_fps_thread(VideoInfo.fps);
+    start_fps_thread(VideoInfo.fps*video_speed_ratio);
     init_async_audio();
     glWidget->GLresize();
 }
