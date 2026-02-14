@@ -227,11 +227,28 @@ void decode_thread::reversePlayback(){
     video_reverse_flag = true;
 }
 
+//1フレーム送り
+void decode_thread::go1frame(){
+    QMutexLocker locker(&mutex);
+    oneframe_flag = true;
+    video_play_flag = false;
+    video_reverse_flag = false;
+    one_FrameNo = Frame.FrameNo;
+}
+
 //デコードループ
 void decode_thread::processFrame() {
     QMutexLocker locker(&mutex);
     Frame.audio_pcm.clear();
     Frame.audio_pts.clear();
+
+    //1フレーム送り
+    if(oneframe_flag){
+        get_decode_image();
+        if(Frame.FrameNo+2>one_FrameNo||one_FrameNo>=VideoInfo.max_framesNo){
+            oneframe_flag = false;
+        }
+    }
 
     //停止ボタン押下でシークしていない場合は停止
     if (!video_play_flag && slider_No == Frame.FrameNo){
@@ -243,6 +260,7 @@ void decode_thread::processFrame() {
         return;
     }
 
+    //デコード
     if(decode_state==STATE_DECODE_READY){
         decode_state=STATE_DECODING;
         get_decode_image();

@@ -26,10 +26,10 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>140</x>
+      <x>240</x>
       <y>672</y>
-      <width>931</width>
-      <height>16</height>
+      <width>831</width>
+      <height>20</height>
      </rect>
     </property>
     <property name="orientation">
@@ -42,7 +42,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>50</x>
+      <x>84</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -58,7 +58,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>90</x>
+      <x>162</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -77,7 +77,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>10</x>
+      <x>44</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -159,6 +159,63 @@
       <width>16</width>
       <height>16</height>
      </size>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="go10s_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>202</x>
+      <y>668</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">+10s</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="back10s_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>6</x>
+      <y>668</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">-10s</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="go1frame_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>123</x>
+      <y>668</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">|▶</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
     </property>
    </widget>
   </widget>

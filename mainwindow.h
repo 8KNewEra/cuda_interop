@@ -45,6 +45,7 @@ signals:
     void send_manual_pause();
     void send_manual_reverse();
     void send_manual_resumeplayback();
+    void send_manual_go1frame();
     void send_manual_slider(int value);
     void decode_please();
 
@@ -87,12 +88,16 @@ private:
     int Now_Frame;
 
     //再生・一時停止・スライダー
-    void switch_resume_pause();
+    void back10s_pushbutton_control();
     void reverse_pushbutton_control();
+    void switch_resume_pause();
+    void go1frame_pushbutton_control();
     void stop_pushbutton_control();
+    void go10s_pushbutton_control();
     void slider_control(int value);
     bool pause_flag = false;
     bool reverse_flag = false;
+    int FrameNo = 0;
 
     //fpsスレッド
     void start_fps_thread(double target_fps);

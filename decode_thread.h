@@ -56,6 +56,7 @@ public slots:
     void resumePlayback();
     void pausePlayback();
     void reversePlayback();
+    void go1frame();
     void startProcessing();
     void stopProcessing();
     void processFrame();
@@ -87,6 +88,8 @@ protected:
     int slider_No;
     QMutex mutex;
     bool drop_flag=false;
+    bool oneframe_flag = false;
+    int one_FrameNo = 0;
 
     //FFmpeg関連
     AVPacket* packet = nullptr;
