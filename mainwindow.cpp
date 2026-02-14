@@ -488,7 +488,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     window_width = newSize.width();
     window_height = newSize.height();
 
-    ui->Live_horizontalSlider->setGeometry(206, window_height-49,window_width-286,window_height-5);
+    ui->Live_horizontalSlider->setFixedWidth(window_width-388);
+    ui->Live_horizontalSlider->setGeometry(208, window_height-49,window_width-286,window_height-5);
     ui->back10s_pushButton->setGeometry(8, window_height-53,33,window_height-5);
     ui->reverse_pushButton->setGeometry(41, window_height-53,66,window_height-5);
     ui->play_pushButton->setGeometry(74, window_height-53,99,window_height-5);
