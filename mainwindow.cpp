@@ -959,6 +959,27 @@ void MainWindow::stop_decode_thread(){
         font.setPointSize(8);   // 文字サイズ
         ui->label_time->setFont(font);
 
+        //Disconnect
+        QObject::disconnect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
+        QObject::disconnect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio);
+
+        QObject::disconnect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::init_decodethread_complete);
+
+        QObject::disconnect(ui->back1frame_pushButton, &QPushButton::clicked, this, &MainWindow::back1frame_pushbutton_control);
+        QObject::disconnect(ui->back10s_pushButton, &QPushButton::clicked, this, &MainWindow::back10s_pushbutton_control);
+        QObject::disconnect(ui->reverse_pushButton, &QPushButton::clicked, this, &MainWindow::reverse_pushbutton_control);
+        QObject::disconnect(ui->play_pushButton, &QPushButton::clicked, this, &MainWindow::switch_resume_pause);
+        QObject::disconnect(ui->go1frame_pushButton, &QPushButton::clicked, this, &MainWindow::go1frame_pushbutton_control);
+        QObject::disconnect(ui->stop_pushButton, &QPushButton::clicked, this, &MainWindow::stop_pushbutton_control);
+        QObject::disconnect(ui->go10s_pushButton, &QPushButton::clicked, this, &MainWindow::go10s_pushbutton_control);
+        QObject::disconnect(ui->Live_horizontalSlider, &QSlider::sliderMoved, this, &MainWindow::slider_control);
+        QObject::disconnect(this, &MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
+        QObject::disconnect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
+        QObject::disconnect(this, &MainWindow::send_manual_reverse, decodestream, &decode_thread::reversePlayback);
+        QObject::disconnect(this, &MainWindow::send_manual_back1frame, decodestream, &decode_thread::back1frame);
+        QObject::disconnect(this, &MainWindow::send_manual_go1frame, decodestream, &decode_thread::go1frame);
+        QObject::disconnect(this, &MainWindow::send_manual_slider, decodestream, &decode_thread::sliderPlayback);
+
         decodestream->stopProcessing();
         decode__thread->quit();
         decode__thread->wait();

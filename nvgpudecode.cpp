@@ -603,25 +603,34 @@ void nvgpudecode::get_multidecode_image() {
 //高精度シーク
 void nvgpudecode::high_res_seek_frame(int targetFrameNo)
 {
+    AVStream* st = fmt_ctx->streams[vd[0].stream_index];
+
     // ----------- 正確なPTS計算 -----------
     int64_t target_pts = av_rescale_q(
         targetFrameNo,
-        av_inv_q(fmt_ctx->streams[vd[0].stream_index]->avg_frame_rate),
-        fmt_ctx->streams[vd[0].stream_index]->time_base
+        av_inv_q(st->avg_frame_rate),
+        st->time_base
         );
 
-    // ----------- flush -----------
-    avcodec_flush_buffers(vd[0].codec_ctx);
+    // ----------- backward seek -----------
+    int ret = avformat_seek_file(fmt_ctx,
+                                 vd[0].stream_index,
+                                 INT64_MIN,
+                                 target_pts,
+                                 INT64_MAX,
+                                 AVSEEK_FLAG_BACKWARD);
+
+    if (ret < 0) {
+        qDebug() << "Seek failed:" << ret;
+        return;
+    }
+
+    // ----------- flush（seek後）-----------
     if (audio_ctx)
         avcodec_flush_buffers(audio_ctx);
 
-    // ----------- backward seek -----------
-    avformat_seek_file(fmt_ctx,
-                       vd[0].stream_index,
-                       INT64_MIN,
-                       target_pts,
-                       INT64_MAX,
-                       AVSEEK_FLAG_BACKWARD);
+    for (auto& dec : vd)
+        avcodec_flush_buffers(dec.codec_ctx);
 
     Frame.FrameNo = targetFrameNo;
 
@@ -630,16 +639,33 @@ void nvgpudecode::high_res_seek_frame(int targetFrameNo)
 
     bool found = false;
 
+    // 誤差許容（2フレーム分）
+    int64_t tolerance = av_rescale_q(
+        2,
+        av_inv_q(st->avg_frame_rate),
+        st->time_base
+        );
+
+    int safetyCounter = 0;
+    const int safetyLimit = 1000;  // 無限防止
+
     // ----------- 正確フレームまでデコード -----------
-    while (av_read_frame(fmt_ctx, &pkt) >= 0) {
+    while (av_read_frame(fmt_ctx, &pkt) >= 0 && safetyCounter < safetyLimit) {
 
-        if (pkt.stream_index == vd[0].stream_index) {
+        safetyCounter++;
 
-            avcodec_send_packet(vd[0].codec_ctx, &pkt);
+        if (pkt.stream_index != vd[0].stream_index) {
+            av_packet_unref(&pkt);
+            continue;
+        }
+
+        if (avcodec_send_packet(vd[0].codec_ctx, &pkt) == 0) {
 
             while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
 
-                if (vd[0].Frame->pts >= target_pts) {
+                int64_t pts = vd[0].Frame->best_effort_timestamp;
+
+                if (pts >= target_pts - tolerance) {
                     found = true;
                     break;
                 }
@@ -654,6 +680,8 @@ void nvgpudecode::high_res_seek_frame(int targetFrameNo)
 
     if (found) {
         CUDA_RGBA_to_merge();
+    } else {
+        qDebug() << "Seek frame not found!";
     }
 }
 
