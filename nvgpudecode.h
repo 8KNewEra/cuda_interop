@@ -17,8 +17,10 @@ protected:
     bool get_last_frame_pts();
     void get_singledecode_image();
     void get_multidecode_image();
+    void high_res_seek_frame(int FrameNo)override;
     void get_decode_audio();
     void CUDA_RGBA_to_merge();
+
     int a=0;
 };
 

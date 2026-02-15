@@ -26,9 +26,9 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>240</x>
+      <x>280</x>
       <y>672</y>
-      <width>831</width>
+      <width>791</width>
       <height>20</height>
      </rect>
     </property>
@@ -42,7 +42,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>84</x>
+      <x>121</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -58,7 +58,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>162</x>
+      <x>199</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -77,7 +77,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>44</x>
+      <x>81</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -167,7 +167,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>202</x>
+      <x>239</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -205,7 +205,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>123</x>
+      <x>160</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -213,6 +213,25 @@
     </property>
     <property name="text">
      <string extracomment="eeeeeeeeee">|▶</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="back1frame_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>43</x>
+      <y>668</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">◀|</string>
     </property>
     <property name="checkable">
      <bool>false</bool>

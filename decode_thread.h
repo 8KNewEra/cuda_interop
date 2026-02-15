@@ -56,6 +56,7 @@ public slots:
     void resumePlayback();
     void pausePlayback();
     void reversePlayback();
+    void back1frame();
     void go1frame();
     void startProcessing();
     void stopProcessing();
@@ -72,6 +73,7 @@ protected:
     //デコード周り
     virtual bool initialized_ffmpeg()=0;
     virtual void get_decode_image()=0;
+    virtual void high_res_seek_frame(int FrameNo)=0;
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     bool get_last_frame_pts();
@@ -88,8 +90,10 @@ protected:
     int slider_No;
     QMutex mutex;
     bool drop_flag=false;
-    bool oneframe_flag = false;
-    int one_FrameNo = 0;
+    bool back1frame_flag = false;
+    bool go1frame_flag = false;
+    int back1FrameNo = 0;
+    int go1FrameNo = 0;
 
     //FFmpeg関連
     AVPacket* packet = nullptr;

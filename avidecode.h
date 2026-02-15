@@ -11,6 +11,7 @@ public:
 protected:
     bool initialized_ffmpeg() override;
     void get_decode_image()override;
+    void high_res_seek_frame(int FrameNo)override;
     const char*selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     bool get_last_frame_pts();

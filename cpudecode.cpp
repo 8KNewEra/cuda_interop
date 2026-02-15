@@ -510,6 +510,62 @@ void cpudecode::get_decode_image(){
     }
 }
 
+//高精度シーク
+void cpudecode::high_res_seek_frame(int targetFrameNo){
+    // ----------- 正確なPTS計算 -----------
+    int64_t target_pts = av_rescale_q(
+        targetFrameNo,
+        av_inv_q(fmt_ctx->streams[vd[0].stream_index]->avg_frame_rate),
+        fmt_ctx->streams[vd[0].stream_index]->time_base
+        );
+
+    // ----------- flush -----------
+    avcodec_flush_buffers(vd[0].codec_ctx);
+    if (audio_ctx)
+        avcodec_flush_buffers(audio_ctx);
+
+    // ----------- backward seek -----------
+    avformat_seek_file(fmt_ctx,
+                       vd[0].stream_index,
+                       INT64_MIN,
+                       target_pts,
+                       INT64_MAX,
+                       AVSEEK_FLAG_BACKWARD);
+
+    Frame.FrameNo = targetFrameNo;
+
+    AVPacket pkt;
+    av_init_packet(&pkt);
+
+    bool found = false;
+
+    // ----------- 正確フレームまでデコード -----------
+    while (av_read_frame(fmt_ctx, &pkt) >= 0) {
+
+        if (pkt.stream_index == vd[0].stream_index) {
+
+            avcodec_send_packet(vd[0].codec_ctx, &pkt);
+
+            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+
+                if (vd[0].Frame->pts >= target_pts) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        av_packet_unref(&pkt);
+
+        if (found)
+            break;
+    }
+
+    if (found) {
+        gpu_upload();
+    }
+}
+
 //オーディオ
 void cpudecode::get_decode_audio()
 {

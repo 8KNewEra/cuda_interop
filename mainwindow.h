@@ -42,6 +42,7 @@ class MainWindow : public QMainWindow
 
 signals:
     void send_encode_flag(bool flag,int slider_max);
+    void send_manual_back1frame();
     void send_manual_pause();
     void send_manual_reverse();
     void send_manual_resumeplayback();
@@ -89,6 +90,7 @@ private:
 
     //再生・一時停止・スライダー
     void back10s_pushbutton_control();
+    void back1frame_pushbutton_control();
     void reverse_pushbutton_control();
     void switch_resume_pause();
     void go1frame_pushbutton_control();
