@@ -629,139 +629,6 @@ void MainWindow::Close_Video_File()
     glWidget->doneCurrent();
 }
 
-//GPU利用可否の判定
-bool MainWindow::canUseGpuDecode(QString filename)
-{
-    QByteArray File_byteArray = filename.toUtf8();
-    const char* input_filename = File_byteArray.constData();
-    AVFormatContext* fmt = nullptr;
-
-    if (avformat_open_input(&fmt, input_filename, nullptr, nullptr) < 0)
-        return false;
-
-    if (avformat_find_stream_info(fmt, nullptr) < 0) {
-        avformat_close_input(&fmt);
-        return false;
-    }
-
-    int video_stream = -1;
-    for (unsigned i = 0; i < fmt->nb_streams; i++) {
-        if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            video_stream = i;
-            break;
-        }
-    }
-
-    if (video_stream < 0) {
-        avformat_close_input(&fmt);
-        return false;
-    }
-
-    AVCodecParameters* par = fmt->streams[video_stream]->codecpar;
-    if (par->codec_id == AV_CODEC_ID_H264)
-        return (par->width <= 4096 && par->height <= 4096);
-
-    if (par->codec_id == AV_CODEC_ID_HEVC || par->codec_id == AV_CODEC_ID_AV1)
-        return (par->width <= 8192 && par->height <= 8192);
-
-    avformat_close_input(&fmt);
-
-    return false;
-}
-
-//動画の範囲に合わせてスライダーの範囲を変更
-void MainWindow::init_decodethread_complete(){
-    if(VideoInfo.audio)
-        ui->action_audio_low_laytency->setEnabled(true);
-
-    //一通りUIのセットを行う
-    ui->actionOpenFile->setEnabled(true);
-    ui->info->setEnabled(true);
-    ui->back1frame_pushButton->setEnabled(true);
-    ui->back10s_pushButton->setEnabled(true);
-    ui->reverse_pushButton->setEnabled(true);
-    ui->play_pushButton->setEnabled(true);
-    ui->go1frame_pushButton->setEnabled(true);
-    ui->stop_pushButton->setEnabled(true);
-    ui->go10s_pushButton->setEnabled(true);
-    ui->Live_horizontalSlider->setEnabled(true);
-    ui->actionFileSave->setEnabled(true);
-    ui->actionCloseFile->setEnabled(true);
-    ui->action_videoinfo->setEnabled(true);
-    ui->action_histgram->setEnabled(true);
-    ui->action_filter_sobel->setEnabled(true);
-    ui->action_filter_gausian->setEnabled(true);
-    ui->action_filter_averaging->setEnabled(true);
-    ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
-    ui->play_pushButton->setText("||");
-
-    //時間の桁数に応じてフォント調整
-    if (VideoInfo.max_hour > 0) {
-        QFont font = ui->label_time->font();
-        font.setPointSize(8);   // 文字サイズ
-        ui->label_time->setFont(font);
-        ui->label_time->setText(QString::asprintf("00:00:00/%02d:%02d:%02d", VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
-    }else {
-        QFont font = ui->label_time->font();
-        font.setPointSize(12);   // 文字サイズ
-        ui->label_time->setFont(font);
-        ui->label_time->setText(QString::asprintf("00:00/%02d:%02d", VideoInfo.max_minute, VideoInfo.max_second));
-    }
-
-    qDebug() << "Framerate:" << VideoInfo.fps;
-    qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
-    start_fps_thread(VideoInfo.fps*video_speed_ratio);
-    init_async_audio();
-    glWidget->GLresize();
-}
-
-//動画表示
-void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
-    //停止フラグ更新
-    pause_flag = pause;
-    reverse_flag = reverse;
-    FrameNo = Frame.FrameNo;
-
-    if(run_decode_thread){
-        //シグナルセット
-        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
-        if(encode_state==STATE_ENCODING){
-            QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
-        }
-
-        //再生時間表示
-        if (VideoInfo.max_hour > 0) {
-            ui->label_time->setText(QString::asprintf("%02d:%02d:%02d/%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second, VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
-        }else {
-            ui->label_time->setText(QString::asprintf("%02d:%02d/%02d:%02d", Frame.minute, Frame.second, VideoInfo.max_minute, VideoInfo.max_second));
-        }
-
-        //UIの制御
-        if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
-            ui->Live_horizontalSlider->setValue(Frame.FrameNo);
-        }
-        slider_No=Frame.FrameNo;
-
-        //描画を開始
-        //コンテキストを作成
-        glWidget->makeCurrent();
-
-        //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
-        if(!pause_flag&&encode_state!=STATE_ENCODE_READY){
-            glWidget->uploadToGLTexture(Frame);
-        }else if(encode_state==STATE_NOT_ENCODE){
-            glWidget->FBO_Rendering(Frame);
-        }
-
-        //コンテキストを破棄
-        glWidget->doneCurrent();
-
-        //デコードスレッドシグナル
-        if(encode_state!=STATE_ENCODE_READY)
-            emit decode_please();
-    }
-}
-
 //非同期オーディオ再生
 void MainWindow::play_audio(QByteArray pcm)
 {
@@ -801,6 +668,10 @@ void MainWindow::back10s_pushbutton_control(){
 //1フレーム戻しボタン制御
 void MainWindow::back1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
+
+    //重いので変な操作されないようにUI無効化
+    UI_control(false);
+
     emit send_manual_back1frame();
 }
 
@@ -851,6 +722,150 @@ void MainWindow::go10s_pushbutton_control(){
 void MainWindow::slider_control(int value){
     emit send_manual_slider(value);
     ui->play_pushButton->setText("▶");
+}
+
+//UIの有効無効制御
+void MainWindow::UI_control(bool flag){
+    ui->back1frame_pushButton->setEnabled(flag);
+    ui->back10s_pushButton->setEnabled(flag);
+    ui->reverse_pushButton->setEnabled(flag);
+    ui->play_pushButton->setEnabled(flag);
+    ui->go1frame_pushButton->setEnabled(flag);
+    ui->stop_pushButton->setEnabled(flag);
+    ui->go10s_pushButton->setEnabled(flag);
+    ui->Live_horizontalSlider->setEnabled(flag);
+    ui->actionFileSave->setEnabled(flag);
+    ui->actionCloseFile->setEnabled(flag);
+    ui->action_videoinfo->setEnabled(flag);
+    ui->action_histgram->setEnabled(flag);
+    ui->action_filter_sobel->setEnabled(flag);
+    ui->action_filter_gausian->setEnabled(flag);
+    ui->action_filter_averaging->setEnabled(flag);
+    ui->action_audio_low_laytency->setEnabled(flag);
+}
+
+//GPU利用可否の判定
+bool MainWindow::canUseGpuDecode(QString filename)
+{
+    QByteArray File_byteArray = filename.toUtf8();
+    const char* input_filename = File_byteArray.constData();
+    AVFormatContext* fmt = nullptr;
+
+    if (avformat_open_input(&fmt, input_filename, nullptr, nullptr) < 0)
+        return false;
+
+    if (avformat_find_stream_info(fmt, nullptr) < 0) {
+        avformat_close_input(&fmt);
+        return false;
+    }
+
+    int video_stream = -1;
+    for (unsigned i = 0; i < fmt->nb_streams; i++) {
+        if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            video_stream = i;
+            break;
+        }
+    }
+
+    if (video_stream < 0) {
+        avformat_close_input(&fmt);
+        return false;
+    }
+
+    AVCodecParameters* par = fmt->streams[video_stream]->codecpar;
+    if (par->codec_id == AV_CODEC_ID_H264)
+        return (par->width <= 4096 && par->height <= 4096);
+
+    if (par->codec_id == AV_CODEC_ID_HEVC || par->codec_id == AV_CODEC_ID_AV1)
+        return (par->width <= 8192 && par->height <= 8192);
+
+    avformat_close_input(&fmt);
+
+    return false;
+}
+
+//動画の範囲に合わせてスライダーの範囲を変更
+void MainWindow::init_decodethread_complete(){
+    if(VideoInfo.audio)
+        ui->action_audio_low_laytency->setEnabled(true);
+
+    //一通りUIのセットを行う
+    ui->actionOpenFile->setEnabled(true);
+    ui->info->setEnabled(true);
+    UI_control(true);
+    ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
+    ui->play_pushButton->setText("||");
+
+    //時間の桁数に応じてフォント調整
+    if (VideoInfo.max_hour > 0) {
+        QFont font = ui->label_time->font();
+        font.setPointSize(8);   // 文字サイズ
+        ui->label_time->setFont(font);
+        ui->label_time->setText(QString::asprintf("00:00:00/%02d:%02d:%02d", VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
+    }else {
+        QFont font = ui->label_time->font();
+        font.setPointSize(12);   // 文字サイズ
+        ui->label_time->setFont(font);
+        ui->label_time->setText(QString::asprintf("00:00/%02d:%02d", VideoInfo.max_minute, VideoInfo.max_second));
+    }
+
+    qDebug() << "Framerate:" << VideoInfo.fps;
+    qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
+    start_fps_thread(VideoInfo.fps*video_speed_ratio);
+    init_async_audio();
+    glWidget->GLresize();
+}
+
+//動画表示
+void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
+    //停止フラグ更新
+    pause_flag = pause;
+    reverse_flag = reverse;
+    FrameNo = Frame.FrameNo;
+
+    if(run_decode_thread){
+        //シグナルセット
+        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+        if(encode_state==STATE_ENCODING){
+            QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
+        }
+
+        //再生時間表示
+        if (VideoInfo.max_hour > 0) {
+            ui->label_time->setText(QString::asprintf("%02d:%02d:%02d/%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second, VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
+        }else {
+            ui->label_time->setText(QString::asprintf("%02d:%02d/%02d:%02d", Frame.minute, Frame.second, VideoInfo.max_minute, VideoInfo.max_second));
+        }
+
+        //1フレーム戻しが入っている場合はUI有効に
+        if(!decodestream->back1frame_flag){
+            UI_control(true);
+        }
+
+        //UIの制御
+        if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
+            ui->Live_horizontalSlider->setValue(Frame.FrameNo);
+        }
+        slider_No=Frame.FrameNo;
+
+        //描画を開始
+        //コンテキストを作成
+        glWidget->makeCurrent();
+
+        //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
+        if(!pause_flag&&encode_state!=STATE_ENCODE_READY){
+            glWidget->uploadToGLTexture(Frame);
+        }else if(encode_state==STATE_NOT_ENCODE){
+            glWidget->FBO_Rendering(Frame);
+        }
+
+        //コンテキストを破棄
+        glWidget->doneCurrent();
+
+        //デコードスレッドシグナル
+        if(encode_state!=STATE_ENCODE_READY)
+            emit decode_please();
+    }
 }
 
 //デコードスレッド開始
@@ -935,24 +950,7 @@ void MainWindow::stop_decode_thread(){
         //UI設定
         ui->actionOpenFile->setEnabled(true);
         ui->info->setEnabled(true);
-        ui->back1frame_pushButton->setEnabled(false);
-        ui->back10s_pushButton->setEnabled(false);
-        ui->reverse_pushButton->setEnabled(false);
-        ui->play_pushButton->setEnabled(false);
-        ui->go1frame_pushButton->setEnabled(false);
-        ui->stop_pushButton->setEnabled(false);
-        ui->go10s_pushButton->setEnabled(false);
-        ui->Live_horizontalSlider->setEnabled(false);
-        // ui->label_speed->setEnabled(false);
-        // ui->comboBox_speed->setEnabled(false);
-        ui->actionFileSave->setEnabled(false);
-        ui->actionCloseFile->setEnabled(false);
-        ui->action_videoinfo->setEnabled(false);
-        ui->action_histgram->setEnabled(false);
-        ui->action_filter_sobel->setEnabled(false);
-        ui->action_filter_gausian->setEnabled(false);
-        ui->action_filter_averaging->setEnabled(false);
-        ui->action_audio_low_laytency->setEnabled(false);
+        UI_control(false);
         ui->play_pushButton->setText("▶");
         ui->label_time->setText(QString::asprintf("00:00:00/00:00:00"));
         QFont font = ui->label_time->font();

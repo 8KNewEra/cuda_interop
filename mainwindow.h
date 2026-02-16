@@ -97,6 +97,7 @@ private:
     void stop_pushbutton_control();
     void go10s_pushbutton_control();
     void slider_control(int value);
+    void UI_control(bool flag);
     bool pause_flag = false;
     bool reverse_flag = false;
     int FrameNo = 0;

@@ -20,6 +20,8 @@ protected:
     void high_res_seek_frame(int FrameNo)override;
     void get_decode_audio();
     void CUDA_RGBA_to_merge();
+    void high_res_seek_frame_single(int FrameNo);
+    void high_res_seek_frame_multi(int FrameNo);
 
     int a=0;
 };

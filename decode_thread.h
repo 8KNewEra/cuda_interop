@@ -40,7 +40,7 @@ public:
     ~decode_thread() override;
     int encode_state=STATE_NOT_ENCODE;
     bool audio_mode=false;
-    QMutex audioMutex;
+    bool back1frame_flag = false;
 
 signals:
     void send_decode_image(VideoFrame Frame,bool pause,bool reverse);
@@ -90,7 +90,6 @@ protected:
     int slider_No;
     QMutex mutex;
     bool drop_flag=false;
-    bool back1frame_flag = false;
     bool go1frame_flag = false;
     int back1FrameNo = 0;
     int go1FrameNo = 0;

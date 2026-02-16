@@ -431,6 +431,17 @@ void nvgpudecode::get_decode_image(){
     }
 }
 
+//高精度シーク
+void nvgpudecode::high_res_seek_frame(int targetFrameNo){
+    if(vd.size()==0){
+        return;
+    }else if(vd.size()==1){
+        high_res_seek_frame_single(targetFrameNo);
+    }else{
+        high_res_seek_frame_multi(targetFrameNo);
+    }
+}
+
 //映像シングルストリーム
 void nvgpudecode::get_singledecode_image() {
     //qDebug()<<"1フレーム読み込み";
@@ -477,6 +488,8 @@ void nvgpudecode::get_singledecode_image() {
                 emit decode_end();
                 seek_frame = 0;
             }
+
+            qDebug()<<"EOF"<<seek_frame;
 
             avcodec_flush_buffers(vd[0].codec_ctx);
             if (audio_ctx)
@@ -598,91 +611,6 @@ void nvgpudecode::get_multidecode_image() {
     cudaEventSynchronize(events);
 
     CUDA_RGBA_to_merge();
-}
-
-//高精度シーク
-void nvgpudecode::high_res_seek_frame(int targetFrameNo)
-{
-    AVStream* st = fmt_ctx->streams[vd[0].stream_index];
-
-    // ----------- 正確なPTS計算 -----------
-    int64_t target_pts = av_rescale_q(
-        targetFrameNo,
-        av_inv_q(st->avg_frame_rate),
-        st->time_base
-        );
-
-    // ----------- backward seek -----------
-    int ret = avformat_seek_file(fmt_ctx,
-                                 vd[0].stream_index,
-                                 INT64_MIN,
-                                 target_pts,
-                                 INT64_MAX,
-                                 AVSEEK_FLAG_BACKWARD);
-
-    if (ret < 0) {
-        qDebug() << "Seek failed:" << ret;
-        return;
-    }
-
-    // ----------- flush（seek後）-----------
-    if (audio_ctx)
-        avcodec_flush_buffers(audio_ctx);
-
-    for (auto& dec : vd)
-        avcodec_flush_buffers(dec.codec_ctx);
-
-    Frame.FrameNo = targetFrameNo;
-
-    AVPacket pkt;
-    av_init_packet(&pkt);
-
-    bool found = false;
-
-    // 誤差許容（2フレーム分）
-    int64_t tolerance = av_rescale_q(
-        2,
-        av_inv_q(st->avg_frame_rate),
-        st->time_base
-        );
-
-    int safetyCounter = 0;
-    const int safetyLimit = 1000;  // 無限防止
-
-    // ----------- 正確フレームまでデコード -----------
-    while (av_read_frame(fmt_ctx, &pkt) >= 0 && safetyCounter < safetyLimit) {
-
-        safetyCounter++;
-
-        if (pkt.stream_index != vd[0].stream_index) {
-            av_packet_unref(&pkt);
-            continue;
-        }
-
-        if (avcodec_send_packet(vd[0].codec_ctx, &pkt) == 0) {
-
-            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-
-                int64_t pts = vd[0].Frame->best_effort_timestamp;
-
-                if (pts >= target_pts - tolerance) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        av_packet_unref(&pkt);
-
-        if (found)
-            break;
-    }
-
-    if (found) {
-        CUDA_RGBA_to_merge();
-    } else {
-        qDebug() << "Seek frame not found!";
-    }
 }
 
 //オーディオ
@@ -849,4 +777,164 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     Frame.second = fmod(time, 60.0);
 
     emit send_decode_image(Frame,false,video_reverse_flag);
+}
+
+//高精度シークシングルストリーム
+void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
+    //0より低い、最大フレーム数より多い数値が来た場合は修正
+    if(targetFrameNo<0){
+        targetFrameNo = 0;
+    }
+    if(targetFrameNo>VideoInfo.max_framesNo){
+        targetFrameNo = VideoInfo.max_framesNo;
+    }
+
+    // ----------- シーク処理 -----------
+    avcodec_flush_buffers(vd[0].codec_ctx);
+    if (audio_ctx)
+        avcodec_flush_buffers(audio_ctx);
+
+    av_seek_frame(fmt_ctx, vd[0].stream_index,
+                  targetFrameNo * VideoInfo.pts_per_frame,
+                  AVSEEK_FLAG_BACKWARD);
+
+    // ----------- パケット読み込みループ -----------
+    while (true) {
+        int ret = av_read_frame(fmt_ctx, packet);
+
+        // ---------- EOF ----------
+        if (ret < 0) {
+            avcodec_send_packet(vd[0].codec_ctx, nullptr);
+
+            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+
+                //ターゲットフレームNoより小さい値で最も近いフレーム番号で抜ける
+                if(targetFrameNo <= FrameNo){
+                    CUDA_RGBA_to_merge();
+                    av_packet_unref(packet);
+                    break;
+                }
+                av_packet_unref(packet);
+            }
+
+            // 終端→先頭に戻ってループ
+            uint64_t seek_frame{};
+            if (Frame.FrameNo < VideoInfo.max_framesNo - 1) {
+                seek_frame = Frame.FrameNo + 1;
+            }
+
+            avcodec_flush_buffers(vd[0].codec_ctx);
+            if (audio_ctx)
+                avcodec_flush_buffers(audio_ctx);
+
+            av_seek_frame(fmt_ctx, vd[0].stream_index,
+                          seek_frame * VideoInfo.pts_per_frame,
+                          AVSEEK_FLAG_ANY);
+
+            av_packet_unref(packet);
+            continue;
+        }
+
+        // ----------- VIDEO PACKET -----------
+        if (packet->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
+                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                    int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+
+                    qDebug()<<targetFrameNo<<":"<<FrameNo;
+
+                    //ターゲットフレームNoより小さい値で最も近いフレーム番号で抜ける
+                    if(targetFrameNo <= FrameNo){
+                        CUDA_RGBA_to_merge();
+                        av_packet_unref(packet);
+                        break;
+                    }
+                    av_packet_unref(packet);
+                }
+            }
+        }
+        av_packet_unref(packet);
+    }
+}
+
+//高精度シークマルチストリーム
+void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
+    //0より低い、最大フレーム数より多い数値が来た場合は修正
+    if(targetFrameNo<0){
+        targetFrameNo = 0;
+    }
+    if(targetFrameNo>VideoInfo.max_framesNo){
+        targetFrameNo = VideoInfo.max_framesNo;
+    }
+
+    // ----------- シーク処理 -----------
+    // ビデオ/オーディオの両方 flush
+    if (audio_ctx)
+        avcodec_flush_buffers(audio_ctx);
+
+    for (auto& dec : vd) {
+        avcodec_flush_buffers(dec.codec_ctx);
+    }
+
+    av_seek_frame(fmt_ctx, vd[0].stream_index,
+                  targetFrameNo * VideoInfo.pts_per_frame,
+                  AVSEEK_FLAG_BACKWARD);
+
+    //デコードループ
+    bool running = true;
+    while(running){
+        std::vector<bool> got_frame(vd.size(), false);
+        int got_count = 0;
+
+        while (got_count < vd.size()) {
+            int ret = av_read_frame(fmt_ctx, packet);
+
+            if (ret < 0) {
+                for (int i = 0; i < vd.size(); i++) {
+                    avcodec_send_packet(vd[i].codec_ctx, nullptr);
+                    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
+                        got_frame[i] = true;
+                        got_count++;
+                    }
+                }
+
+                if (got_count == vd.size()) {
+                    int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+                    qDebug()<<targetFrameNo<<":EOF:"<<FrameNo;
+                    if(targetFrameNo<=FrameNo){
+                        CUDA_RGBA_to_merge();
+                        running = false;
+                    }
+                }
+
+                av_packet_unref(packet);
+                break;
+            }
+
+            for (int i = 0; i < vd.size(); i++) {
+                if (packet->stream_index == vd[i].stream_index && !got_frame[i]) {
+                    if (avcodec_send_packet(vd[i].codec_ctx, packet) == 0) {
+                        if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
+                            got_frame[i] = true;
+                            got_count++;
+                        }
+                    }
+                }
+            }
+
+            av_packet_unref(packet);
+        }
+
+        // CUDAの処理,NVDEC完了待ち
+        cudaEventRecord(events, stream);
+        cudaEventSynchronize(events);
+
+        int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        qDebug()<<targetFrameNo<<":"<<FrameNo;
+        if(targetFrameNo<=FrameNo){
+            CUDA_RGBA_to_merge();
+            running = false;
+        }
+    }
 }

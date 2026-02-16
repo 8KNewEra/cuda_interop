@@ -230,6 +230,7 @@ void decode_thread::reversePlayback(){
 //1フレーム戻し
 void decode_thread::back1frame(){
     QMutexLocker locker(&mutex);
+
     back1frame_flag = true;
     video_play_flag = false;
     video_reverse_flag = false;
