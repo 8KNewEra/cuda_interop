@@ -463,6 +463,7 @@ void nvgpudecode::get_singledecode_image() {
                       AVSEEK_FLAG_BACKWARD);
 
         Frame.FrameNo = slider_No;
+        seek_flag = true;
     }
 
     // ----------- パケット読み込みループ -----------
@@ -552,6 +553,7 @@ void nvgpudecode::get_multidecode_image() {
                       AVSEEK_FLAG_BACKWARD);
 
         Frame.FrameNo = slider_No;
+        seek_flag = true;
     }
 
     while (got_count < vd.size()) {
@@ -767,8 +769,21 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     cudaEventSynchronize(events);
 
     //フレーム番号取得
-    Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-    slider_No = Frame.FrameNo;
+    if(seek_flag){
+        Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        slider_No = Frame.FrameNo;
+        back1FrameNo = Frame.FrameNo-1;
+    }else if(back1frame_flag){
+        Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        slider_No = Frame.FrameNo;
+    }else{
+        back1FrameNo = Frame.FrameNo;
+        Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        slider_No = Frame.FrameNo;
+    }
+    seek_flag = false;
+
+    qDebug()<<back1FrameNo<<":"<<Frame.FrameNo;
 
     //時刻を算出
     double time = Frame.FrameNo/VideoInfo.fps;
@@ -799,6 +814,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
                   AVSEEK_FLAG_BACKWARD);
 
     // ----------- パケット読み込みループ -----------
+    int FrameNo = Frame.FrameNo-2;
     while (true) {
         int ret = av_read_frame(fmt_ctx, packet);
 
@@ -807,7 +823,8 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
             if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+                back1FrameNo = FrameNo;
+                FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
 
                 //ターゲットフレームNoより小さい値で最も近いフレーム番号で抜ける
                 if(targetFrameNo <= FrameNo){
@@ -840,9 +857,8 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
         if (packet->stream_index == vd[0].stream_index) {
             if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                    int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-
-                    qDebug()<<targetFrameNo<<":"<<FrameNo;
+                    back1FrameNo = FrameNo;
+                    FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
 
                     //ターゲットフレームNoより小さい値で最も近いフレーム番号で抜ける
                     if(targetFrameNo <= FrameNo){
@@ -883,6 +899,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
 
     //デコードループ
     bool running = true;
+    int FrameNo = Frame.FrameNo-2;
     while(running){
         std::vector<bool> got_frame(vd.size(), false);
         int got_count = 0;
@@ -900,8 +917,9 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
                 }
 
                 if (got_count == vd.size()) {
-                    int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-                    qDebug()<<targetFrameNo<<":EOF:"<<FrameNo;
+                    back1FrameNo = FrameNo;
+                    FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+                    qDebug()<<"high res seek"<<targetFrameNo<<":"<<FrameNo;
                     if(targetFrameNo<=FrameNo){
                         CUDA_RGBA_to_merge();
                         running = false;
@@ -930,8 +948,9 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
         cudaEventRecord(events, stream);
         cudaEventSynchronize(events);
 
-        int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-        qDebug()<<targetFrameNo<<":"<<FrameNo;
+        back1FrameNo = FrameNo;
+        FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        qDebug()<<"high res seek"<<targetFrameNo<<":"<<FrameNo;
         if(targetFrameNo<=FrameNo){
             CUDA_RGBA_to_merge();
             running = false;

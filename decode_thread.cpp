@@ -234,7 +234,6 @@ void decode_thread::back1frame(){
     back1frame_flag = true;
     video_play_flag = false;
     video_reverse_flag = false;
-    back1FrameNo = Frame.FrameNo;
     qDebug()<<"back;"<<back1FrameNo;
 }
 
@@ -255,7 +254,7 @@ void decode_thread::processFrame() {
 
     //1フレーム戻し
     if(back1frame_flag){
-        high_res_seek_frame(back1FrameNo-1);
+        high_res_seek_frame(back1FrameNo);
         back1frame_flag = false;
     }
 

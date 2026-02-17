@@ -87,6 +87,7 @@ protected:
     bool video_play_flag;
     bool video_reverse_flag;
     bool thread_stop_flag =false;
+    bool seek_flag = false;
     int slider_No;
     QMutex mutex;
     bool drop_flag=false;
