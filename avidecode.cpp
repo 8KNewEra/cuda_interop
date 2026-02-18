@@ -433,6 +433,7 @@ void avidecode::get_decode_image(){
                       AVSEEK_FLAG_BACKWARD);
 
         Frame.FrameNo = slider_No;
+        seek_flag = true;
     }
 
     // ----------- パケット読み込みループ -----------
@@ -487,85 +488,6 @@ void avidecode::get_decode_image(){
             }
         }
 
-        av_packet_unref(packet);
-    }
-}
-
-//高精度シーク
-void avidecode::high_res_seek_frame(int targetFrameNo){
-    //0より低い、最大フレーム数より多い数値が来た場合は修正
-    if(targetFrameNo<0){
-        targetFrameNo = 0;
-    }
-    if(targetFrameNo>VideoInfo.max_framesNo){
-        targetFrameNo = VideoInfo.max_framesNo;
-    }
-
-    // ----------- シーク処理 -----------
-    avcodec_flush_buffers(vd[0].codec_ctx);
-    if (audio_ctx)
-        avcodec_flush_buffers(audio_ctx);
-
-    av_seek_frame(fmt_ctx, vd[0].stream_index,
-                  targetFrameNo * VideoInfo.pts_per_frame,
-                  AVSEEK_FLAG_BACKWARD);
-
-    // ----------- パケット読み込みループ -----------
-    while (true) {
-        int ret = av_read_frame(fmt_ctx, packet);
-
-        // ---------- EOF ----------
-        if (ret < 0) {
-            avcodec_send_packet(vd[0].codec_ctx, nullptr);
-
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-
-                //ターゲットフレームNoより小さい値で最も近いフレーム番号で抜ける
-                if(targetFrameNo <= FrameNo){
-                    gpu_upload();
-                    av_packet_unref(packet);
-                    break;
-                }
-                av_packet_unref(packet);
-            }
-
-            // 終端→先頭に戻ってループ
-            uint64_t seek_frame{};
-            if (Frame.FrameNo < VideoInfo.max_framesNo - 1) {
-                seek_frame = Frame.FrameNo + 1;
-            }
-
-            avcodec_flush_buffers(vd[0].codec_ctx);
-            if (audio_ctx)
-                avcodec_flush_buffers(audio_ctx);
-
-            av_seek_frame(fmt_ctx, vd[0].stream_index,
-                          seek_frame * VideoInfo.pts_per_frame,
-                          AVSEEK_FLAG_ANY);
-
-            av_packet_unref(packet);
-            continue;
-        }
-
-        // ----------- VIDEO PACKET -----------
-        if (packet->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
-                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                    int FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-
-                    qDebug()<<targetFrameNo<<":"<<FrameNo;
-
-                    //ターゲットフレームNoより小さい値で最も近いフレーム番号で抜ける
-                    if(targetFrameNo <= FrameNo){
-                        gpu_upload();
-                        av_packet_unref(packet);
-                        break;
-                    }
-                    av_packet_unref(packet);
-                }
-            }
-        }
         av_packet_unref(packet);
     }
 }
@@ -700,8 +622,100 @@ void avidecode::gpu_upload(){
     cudaEventSynchronize(events);
 
     //フレーム番号取得
-    Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-    slider_No = Frame.FrameNo;
+    if(seek_flag){
+        Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        slider_No = Frame.FrameNo;
+        back1FrameNo = Frame.FrameNo-1;
+    }else if(back1frame_flag){
+        Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        slider_No = Frame.FrameNo;
+    }else{
+        back1FrameNo = Frame.FrameNo;
+        Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        slider_No = Frame.FrameNo;
+    }
+    if(back1FrameNo<0)back1FrameNo=0;
+    seek_flag = false;
 
     emit send_decode_image(Frame,false,video_reverse_flag);
+}
+
+//高精度シーク
+void avidecode::high_res_seek_frame(int targetFrameNo){
+    //0より低い、最大フレーム数より多い数値が来た場合は修正
+    if(targetFrameNo<0){
+        targetFrameNo = 0;
+    }
+    if(targetFrameNo>VideoInfo.max_framesNo){
+        targetFrameNo = VideoInfo.max_framesNo;
+    }
+
+    // ----------- シーク処理 -----------
+    avcodec_flush_buffers(vd[0].codec_ctx);
+    if (audio_ctx)
+        avcodec_flush_buffers(audio_ctx);
+
+    av_seek_frame(fmt_ctx, vd[0].stream_index,
+                  targetFrameNo * VideoInfo.pts_per_frame,
+                  AVSEEK_FLAG_BACKWARD);
+
+    // ----------- パケット読み込みループ -----------
+    int FrameNo = Frame.FrameNo-2;
+    if(FrameNo<0){
+        FrameNo = 0;
+    }
+    while(true){
+        while (true) {
+            int ret = av_read_frame(fmt_ctx, packet);
+
+            // ---------- EOF ----------
+            if (ret < 0) {
+
+                avcodec_send_packet(vd[0].codec_ctx, nullptr);
+
+                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                    av_packet_unref(packet);
+                    break;
+                }
+
+                // 終端→先頭に戻ってループ
+                uint64_t seek_frame{};
+                if (Frame.FrameNo < VideoInfo.max_framesNo - 1) {
+                    seek_frame = Frame.FrameNo + 1;
+                }
+
+                avcodec_flush_buffers(vd[0].codec_ctx);
+                if (audio_ctx)
+                    avcodec_flush_buffers(audio_ctx);
+
+                av_seek_frame(fmt_ctx, vd[0].stream_index,
+                              seek_frame * VideoInfo.pts_per_frame,
+                              AVSEEK_FLAG_ANY);
+
+                av_packet_unref(packet);
+                continue;
+            }
+
+            // ----------- VIDEO PACKET -----------
+            if (packet->stream_index == vd[0].stream_index) {
+                if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
+                    if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                        av_packet_unref(packet);
+                        break;
+                    }
+                }
+            }
+        }
+
+        back1FrameNo = FrameNo;
+        FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+
+        //ターゲットフレームNoより小さい値で最も近いフレーム番号で抜ける
+        if(targetFrameNo <= FrameNo){
+            gpu_upload();
+            av_packet_unref(packet);
+            break;
+        }
+        av_packet_unref(packet);
+    }
 }
