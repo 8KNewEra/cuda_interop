@@ -811,7 +811,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
     if(FrameNo<0){
         FrameNo = 0;
     }
-    while(true){
+    while(!thread_stop_flag){
         while (true) {
             int ret = av_read_frame(fmt_ctx, packet);
 
@@ -893,7 +893,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
     if(FrameNo<0){
         FrameNo = 0;
     }
-    while(true){
+    while(!thread_stop_flag){
         std::vector<bool> got_frame(vd.size(), false);
         int got_count = 0;
 

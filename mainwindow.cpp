@@ -173,7 +173,6 @@ void MainWindow::GLwidgetInitialized(){
         start_info_thread();
 
         ui->actionOpenFile->setEnabled(true);
-        ui->info->setEnabled(true);
 
         //エンコード設定用
         encodeSetting = new encode_setting();
@@ -661,6 +660,10 @@ void MainWindow::play_audio(QByteArray pcm)
 void MainWindow::back10s_pushbutton_control(){
     int seek = FrameNo-VideoInfo.fps*10;
     if(seek<0) seek = 0;
+
+    //変な操作されないようにUI無効化
+    UI_control(false);
+
     emit send_manual_slider(seek);
     emit send_manual_resumeplayback();
 }
@@ -669,7 +672,7 @@ void MainWindow::back10s_pushbutton_control(){
 void MainWindow::back1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
 
-    //重いので変な操作されないようにUI無効化
+    //変な操作されないようにUI無効化
     UI_control(false);
 
     emit send_manual_back1frame();
@@ -700,6 +703,10 @@ void MainWindow::switch_resume_pause(){
 //1フレーム送りボタン制御
 void MainWindow::go1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
+
+    //変な操作されないようにUI無効化
+    UI_control(false);
+
     emit send_manual_go1frame();
 }
 
@@ -707,13 +714,22 @@ void MainWindow::go1frame_pushbutton_control(){
 void MainWindow::stop_pushbutton_control(){
     emit send_manual_slider(0);
     ui->play_pushButton->setText("||");
+
+    //変な操作されないようにUI無効化
+    UI_control(false);
+
     emit send_manual_resumeplayback();
 }
 
 //10秒送りボタン制御
 void MainWindow::go10s_pushbutton_control(){
     int seek = FrameNo+VideoInfo.fps*10;
+    qDebug()<<seek;
     if(seek>VideoInfo.max_framesNo) seek = VideoInfo.max_framesNo;
+
+    //変な操作されないようにUI無効化
+    UI_control(false);
+
     emit send_manual_slider(seek);
     emit send_manual_resumeplayback();
 }
@@ -735,9 +751,6 @@ void MainWindow::UI_control(bool flag){
     ui->go10s_pushButton->setEnabled(flag);
     ui->Live_horizontalSlider->setEnabled(flag);
     ui->actionFileSave->setEnabled(flag);
-    ui->actionCloseFile->setEnabled(flag);
-    ui->action_videoinfo->setEnabled(flag);
-    ui->action_histgram->setEnabled(flag);
     ui->action_filter_sobel->setEnabled(flag);
     ui->action_filter_gausian->setEnabled(flag);
     ui->action_filter_averaging->setEnabled(flag);
@@ -792,6 +805,7 @@ void MainWindow::init_decodethread_complete(){
     //一通りUIのセットを行う
     ui->actionOpenFile->setEnabled(true);
     ui->info->setEnabled(true);
+    ui->actionCloseFile->setEnabled(true);
     UI_control(true);
     ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
     ui->play_pushButton->setText("||");
@@ -927,7 +941,6 @@ void MainWindow::start_decode_thread(QString filePath) {
                                      QMessageBox::Ok);
 
                 ui->actionOpenFile->setEnabled(true);
-                ui->info->setEnabled(true);
             }, Qt::QueuedConnection);
         },Qt::SingleShotConnection);
 
@@ -948,8 +961,8 @@ void MainWindow::stop_decode_thread(){
         run_decode_thread=false;
 
         //UI設定
-        ui->actionOpenFile->setEnabled(true);
-        ui->info->setEnabled(true);
+        ui->actionCloseFile->setEnabled(false);
+        ui->info->setEnabled(false);
         UI_control(false);
         ui->play_pushButton->setText("▶");
         ui->label_time->setText(QString::asprintf("00:00:00/00:00:00"));
