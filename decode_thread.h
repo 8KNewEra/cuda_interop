@@ -58,6 +58,7 @@ public slots:
     void reversePlayback();
     void back1frame();
     void go1frame();
+    void high_res_sliderPlayback(int value);
     void startProcessing();
     void stopProcessing();
     void processFrame();
@@ -88,12 +89,14 @@ protected:
     bool video_reverse_flag;
     bool thread_stop_flag =false;
     bool seek_flag = false;
+    bool high_res_slider_flag = false;
     int slider_No;
     QMutex mutex;
     bool drop_flag=false;
     bool go1frame_flag = false;
     int back1FrameNo = 0;
     int go1FrameNo = 0;
+    int high_res_sliderNo = 0;
 
     //FFmpeg関連
     AVPacket* packet = nullptr;

@@ -230,7 +230,6 @@ void decode_thread::reversePlayback(){
 //1フレーム戻し
 void decode_thread::back1frame(){
     QMutexLocker locker(&mutex);
-
     back1frame_flag = true;
     video_play_flag = false;
     video_reverse_flag = false;
@@ -240,10 +239,19 @@ void decode_thread::back1frame(){
 //1フレーム送り
 void decode_thread::go1frame(){
     QMutexLocker locker(&mutex);
+    go1FrameNo = Frame.FrameNo;
     go1frame_flag = true;
     video_play_flag = false;
     video_reverse_flag = false;
-    go1FrameNo = Frame.FrameNo;
+}
+
+//高精度スライダー
+void decode_thread::high_res_sliderPlayback(int value){
+    QMutexLocker locker(&mutex);
+    high_res_sliderNo = value;
+    high_res_slider_flag = true;
+    video_play_flag = false;
+    video_reverse_flag = false;
 }
 
 //デコードループ
@@ -256,6 +264,12 @@ void decode_thread::processFrame() {
     if(back1frame_flag){
         high_res_seek_frame(back1FrameNo);
         back1frame_flag = false;
+    }
+
+    //高精度スライダー
+    if(high_res_slider_flag){
+        high_res_seek_frame(high_res_sliderNo);
+        high_res_slider_flag = false;
     }
 
     //1フレーム送り

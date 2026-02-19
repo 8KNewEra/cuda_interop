@@ -48,6 +48,7 @@ signals:
     void send_manual_resumeplayback();
     void send_manual_go1frame();
     void send_manual_slider(int value);
+    void send_manual_high_res_slider(int value);
     void decode_please();
 
 public:

@@ -664,7 +664,7 @@ void MainWindow::back10s_pushbutton_control(){
     //変な操作されないようにUI無効化
     UI_control(false);
 
-    emit send_manual_slider(seek);
+    emit send_manual_high_res_slider(seek);
     emit send_manual_resumeplayback();
 }
 
@@ -730,7 +730,7 @@ void MainWindow::go10s_pushbutton_control(){
     //変な操作されないようにUI無効化
     UI_control(false);
 
-    emit send_manual_slider(seek);
+    emit send_manual_high_res_slider(seek);
     emit send_manual_resumeplayback();
 }
 
@@ -925,6 +925,7 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(this, &MainWindow::send_manual_back1frame, decodestream, &decode_thread::back1frame, Qt::QueuedConnection);
         QObject::connect(this, &MainWindow::send_manual_go1frame, decodestream, &decode_thread::go1frame, Qt::QueuedConnection);
         QObject::connect(this, &MainWindow::send_manual_slider, decodestream, &decode_thread::sliderPlayback);
+        QObject::connect(this, &MainWindow::send_manual_high_res_slider, decodestream, &decode_thread::high_res_sliderPlayback);
 
         QObject::connect(decodestream, &decode_thread::finished,decode__thread, &QThread::quit,Qt::SingleShotConnection);
         QObject::connect(decode__thread, &QThread::finished,decodestream, &QObject::deleteLater,Qt::SingleShotConnection);
@@ -990,6 +991,7 @@ void MainWindow::stop_decode_thread(){
         QObject::disconnect(this, &MainWindow::send_manual_back1frame, decodestream, &decode_thread::back1frame);
         QObject::disconnect(this, &MainWindow::send_manual_go1frame, decodestream, &decode_thread::go1frame);
         QObject::disconnect(this, &MainWindow::send_manual_slider, decodestream, &decode_thread::sliderPlayback);
+        QObject::disconnect(this, &MainWindow::send_manual_high_res_slider, decodestream, &decode_thread::high_res_sliderPlayback);
 
         decodestream->stopProcessing();
         decode__thread->quit();
