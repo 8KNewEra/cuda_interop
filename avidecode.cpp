@@ -660,7 +660,8 @@ void avidecode::high_res_seek_frame(int targetFrameNo){
                   AVSEEK_FLAG_BACKWARD);
 
     // ----------- パケット読み込みループ -----------
-    int FrameNo = Frame.FrameNo-2;
+    //デコードループ(最初はback1Frame記憶用)
+    int FrameNo = targetFrameNo-1;
     if(FrameNo<0){
         FrameNo = 0;
     }
@@ -670,9 +671,7 @@ void avidecode::high_res_seek_frame(int targetFrameNo){
 
             // ---------- EOF ----------
             if (ret < 0) {
-
                 avcodec_send_packet(vd[0].codec_ctx, nullptr);
-
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
                     av_packet_unref(packet);
                     break;
@@ -707,13 +706,13 @@ void avidecode::high_res_seek_frame(int targetFrameNo){
             }
         }
 
+        //ターゲットフレームの番号かどうか判定
         back1FrameNo = FrameNo;
         FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
 
-        //ターゲットフレームNoより小さい値で最も近いフレーム番号で抜ける
+        //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){
             gpu_upload();
-            av_packet_unref(packet);
             break;
         }
         av_packet_unref(packet);

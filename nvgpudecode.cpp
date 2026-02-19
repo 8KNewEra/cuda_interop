@@ -431,17 +431,6 @@ void nvgpudecode::get_decode_image(){
     }
 }
 
-//高精度シーク
-void nvgpudecode::high_res_seek_frame(int targetFrameNo){
-    if(vd.size()==0){
-        return;
-    }else if(vd.size()==1){
-        high_res_seek_frame_single(targetFrameNo);
-    }else{
-        high_res_seek_frame_multi(targetFrameNo);
-    }
-}
-
 //映像シングルストリーム
 void nvgpudecode::get_singledecode_image() {
     //qDebug()<<"1フレーム読み込み";
@@ -786,6 +775,17 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     emit send_decode_image(Frame,false,video_reverse_flag);
 }
 
+//高精度シーク
+void nvgpudecode::high_res_seek_frame(int targetFrameNo){
+    if(vd.size()==0){
+        return;
+    }else if(vd.size()==1){
+        high_res_seek_frame_single(targetFrameNo);
+    }else{
+        high_res_seek_frame_multi(targetFrameNo);
+    }
+}
+
 //高精度シークシングルストリーム
 void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
     //0より低い、最大フレーム数より多い数値が来た場合は修正
@@ -806,7 +806,8 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
                   AVSEEK_FLAG_BACKWARD);
 
     // ----------- パケット読み込みループ -----------
-    int FrameNo = Frame.FrameNo-2;
+    //デコードループ(最初はback1Frame記憶用)
+    int FrameNo = targetFrameNo-1;
     if(FrameNo<0){
         FrameNo = 0;
     }
@@ -816,9 +817,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
             // ---------- EOF ----------
             if (ret < 0) {
-
                 avcodec_send_packet(vd[0].codec_ctx, nullptr);
-
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
                     av_packet_unref(packet);
                     break;
@@ -853,13 +852,13 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
             }
         }
 
+        //ターゲットフレームの番号かどうか判定
         back1FrameNo = FrameNo;
         FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
 
-        //ターゲットフレームNoより小さい値で最も近いフレーム番号で抜ける
+        //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){
             CUDA_RGBA_to_merge();
-            av_packet_unref(packet);
             break;
         }
         av_packet_unref(packet);
@@ -889,13 +888,12 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
                   targetFrameNo * VideoInfo.pts_per_frame,
                   AVSEEK_FLAG_BACKWARD);
 
-    //デコードループ
-    int FrameNo = Frame.FrameNo-2;
+    //デコードループ(最初はback1Frame記憶用)
+    int FrameNo = targetFrameNo-1;
     if(FrameNo<0){
         FrameNo = 0;
     }
     while(true){
-
         std::vector<bool> got_frame(vd.size(), false);
         int got_count = 0;
 
@@ -933,12 +931,15 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
         cudaEventRecord(events, stream);
         cudaEventSynchronize(events);
 
+        //フレーム番号記憶
         back1FrameNo = FrameNo;
         FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
-        qDebug()<<back1FrameNo<<":"<<targetFrameNo<<":"<<Frame.FrameNo;
+
+        //ターゲットフレームの番号かどうか判定
         if(targetFrameNo<=FrameNo){
             CUDA_RGBA_to_merge();
             break;
         }
+        av_packet_unref(packet);
     }
 }
