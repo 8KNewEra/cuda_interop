@@ -270,6 +270,7 @@ void decode_thread::processFrame() {
     if(high_res_slider_flag){
         high_res_seek_frame(high_res_sliderNo);
         high_res_slider_flag = false;
+        video_play_flag = true;
     }
 
     //1フレーム送り

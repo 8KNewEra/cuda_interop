@@ -665,7 +665,6 @@ void MainWindow::back10s_pushbutton_control(){
     UI_control(false);
 
     emit send_manual_high_res_slider(seek);
-    emit send_manual_resumeplayback();
 }
 
 //1フレーム戻しボタン制御
@@ -724,14 +723,13 @@ void MainWindow::stop_pushbutton_control(){
 //10秒送りボタン制御
 void MainWindow::go10s_pushbutton_control(){
     int seek = FrameNo+VideoInfo.fps*10;
-    qDebug()<<seek;
+    qDebug()<<FrameNo<<":"<<seek;
     if(seek>VideoInfo.max_framesNo) seek = VideoInfo.max_framesNo;
 
     //変な操作されないようにUI無効化
     UI_control(false);
 
     emit send_manual_high_res_slider(seek);
-    emit send_manual_resumeplayback();
 }
 
 //スライダー操作
