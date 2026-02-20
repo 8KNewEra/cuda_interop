@@ -90,13 +90,17 @@ private:
     int Now_Frame;
 
     //再生・一時停止・スライダー
-    void back10s_pushbutton_control();
     void back1frame_pushbutton_control();
     void reverse_pushbutton_control();
     void switch_resume_pause();
     void go1frame_pushbutton_control();
     void stop_pushbutton_control();
+    void back30s_pushbutton_control();
+    void back10s_pushbutton_control();
+    void back3s_pushbutton_control();
+    void go3s_pushbutton_control();
     void go10s_pushbutton_control();
+    void go30s_pushbutton_control();
     void slider_control(int value);
     void UI_control(bool flag);
     bool pause_flag = false;

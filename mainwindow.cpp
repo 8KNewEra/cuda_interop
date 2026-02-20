@@ -21,8 +21,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     //スライダー
     ui->Live_horizontalSlider->setFixedHeight(20);
-    ui->back10s_pushButton->setFixedWidth(30);
-    ui->back10s_pushButton->setFixedHeight(26);
     ui->back1frame_pushButton->setFixedWidth(30);
     ui->back1frame_pushButton->setFixedHeight(26);
     ui->play_pushButton->setFixedWidth(30);
@@ -33,8 +31,20 @@ MainWindow::MainWindow(QWidget *parent)
     ui->stop_pushButton->setFixedHeight(26);
     ui->reverse_pushButton->setFixedWidth(30);
     ui->reverse_pushButton->setFixedHeight(26);
+
+    ui->back3s_pushButton->setFixedWidth(30);
+    ui->back3s_pushButton->setFixedHeight(26);
+    ui->back10s_pushButton->setFixedWidth(30);
+    ui->back10s_pushButton->setFixedHeight(26);
+    ui->back30s_pushButton->setFixedWidth(30);
+    ui->back30s_pushButton->setFixedHeight(26);
+    ui->go3s_pushButton->setFixedWidth(30);
+    ui->go3s_pushButton->setFixedHeight(26);
     ui->go10s_pushButton->setFixedWidth(30);
     ui->go10s_pushButton->setFixedHeight(26);
+    ui->go30s_pushButton->setFixedWidth(30);
+    ui->go30s_pushButton->setFixedHeight(26);
+
     ui->label_time->setFixedWidth(132);
     ui->label_time->setFixedHeight(26);
     ui->pushButton_speed->setFixedWidth(30);
@@ -158,12 +168,12 @@ void MainWindow::GLwidgetInitialized(){
     QLayout* layout = ui->openGLContainer->layout();
     if (!layout) {
         auto* vlayout = new QVBoxLayout(ui->openGLContainer);
-        vlayout->setContentsMargins(0, 0, 0, 12);   // ★ 超重要
+        vlayout->setContentsMargins(0, 0, 0, 0);   // ★ 超重要
         vlayout->setSpacing(0);                    // ★ 超重要
         ui->openGLContainer->setLayout(vlayout);
         layout = vlayout;
     }
-    layout->setContentsMargins(0, 0, 0, 12);
+    layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(container);
 
@@ -408,22 +418,31 @@ void MainWindow::CSS_Design(){
         }
     )";
 
-    ui->back10s_pushButton->setStyleSheet(transportStyle);
     ui->back1frame_pushButton->setStyleSheet(transportStyle);
     ui->reverse_pushButton->setStyleSheet(transportStyle);
     ui->play_pushButton->setStyleSheet(transportStyle);
     ui->go1frame_pushButton->setStyleSheet(transportStyle);
     ui->stop_pushButton->setStyleSheet(transportStyle);
-    ui->go10s_pushButton->setStyleSheet(transportStyle);
     ui->pushButton_speed->setStyleSheet(transportStyle);
     ui->pushButton_volume->setStyleSheet(transportStyle);
-    ui->back10s_pushButton->setFocusPolicy(Qt::NoFocus);
+    ui->back30s_pushButton->setStyleSheet(transportStyle);
+    ui->back10s_pushButton->setStyleSheet(transportStyle);
+    ui->back3s_pushButton->setStyleSheet(transportStyle);
+    ui->go3s_pushButton->setStyleSheet(transportStyle);
+    ui->go10s_pushButton->setStyleSheet(transportStyle);
+    ui->go30s_pushButton->setStyleSheet(transportStyle);
     ui->back1frame_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->reverse_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->play_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->go1frame_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->stop_pushButton->setFocusPolicy(Qt::NoFocus);
+    ui->back30s_pushButton->setFocusPolicy(Qt::NoFocus);
+    ui->back10s_pushButton->setFocusPolicy(Qt::NoFocus);
+    ui->back3s_pushButton->setFocusPolicy(Qt::NoFocus);
+    ui->go3s_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->go10s_pushButton->setFocusPolicy(Qt::NoFocus);
+    ui->go30s_pushButton->setFocusPolicy(Qt::NoFocus);
+
     ui->pushButton_volume->setFocusPolicy(Qt::NoFocus);
     ui->pushButton_volume->setIcon(
         style()->standardIcon(QStyle::SP_MediaVolume)
@@ -491,22 +510,29 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     window_width = newSize.width();
     window_height = newSize.height();
 
+    ui->openGLContainer->setGeometry(0, 0, window_width, window_height-89); // 位置とサイズを指定
+
     ui->Live_horizontalSlider->setFixedWidth(window_width-421);
-    ui->Live_horizontalSlider->setGeometry(241, window_height-49,window_width-286,window_height-5);
-    ui->back10s_pushButton->setGeometry(8, window_height-53,33,window_height-5);
-    ui->back1frame_pushButton->setGeometry(41, window_height-53,66,window_height-5);
-    ui->reverse_pushButton->setGeometry(74, window_height-53,99,window_height-5);
-    ui->play_pushButton->setGeometry(107, window_height-53,132,window_height-5);
-    ui->go1frame_pushButton->setGeometry(140, window_height-53,165,window_height-5);
-    ui->stop_pushButton->setGeometry(173, window_height-53,198,window_height-5);
-    ui->go10s_pushButton->setGeometry(206, window_height-53,231,window_height-5);
-    ui->label_time->setGeometry(window_width-191, window_height-52,window_width-261,window_height-5);
-    ui->pushButton_speed->setGeometry(window_width-71, window_height-53,window_width-41,window_height-5);
-    ui->pushButton_volume->setGeometry(window_width-38, window_height-53,window_width-60,window_height-5);
-    ui->openGLContainer->setGeometry(0, 0, window_width, window_height-48); // 位置とサイズを指定
+    ui->Live_horizontalSlider->setGeometry(208, window_height-49,window_width-286,window_height-5);
 
-    setMinimumSize(QSize(640, 480));
+    ui->reverse_pushButton->setGeometry(26, window_height-83,99,window_height-5);
+    ui->back1frame_pushButton->setGeometry(59, window_height-83,66,window_height-5);
+    ui->play_pushButton->setGeometry(92, window_height-83,132,window_height-5);
+    ui->go1frame_pushButton->setGeometry(125, window_height-83,165,window_height-5);
+    ui->stop_pushButton->setGeometry(158, window_height-83,198,window_height-5);
 
+    ui->back30s_pushButton->setGeometry(8, window_height-53,33,window_height-5);
+    ui->back10s_pushButton->setGeometry(41, window_height-53,33,window_height-5);
+    ui->back3s_pushButton->setGeometry(74, window_height-53,33,window_height-5);
+    ui->go3s_pushButton->setGeometry(107, window_height-53,231,window_height-5);
+    ui->go10s_pushButton->setGeometry(140, window_height-53,231,window_height-5);
+    ui->go30s_pushButton->setGeometry(173, window_height-53,231,window_height-5);
+
+    ui->pushButton_speed->setGeometry(window_width-71, window_height-83,window_width-41,window_height-5);
+    ui->pushButton_volume->setGeometry(window_width-38, window_height-83,window_width-60,window_height-5);
+    ui->label_time->setGeometry(window_width-191, window_height-82,window_width-261,window_height-5);
+
+    setMinimumSize(QSize(640, 480));\
     glWidget->GLresize();
 }
 
@@ -536,13 +562,19 @@ void MainWindow::toggleFullScreen()
         //UIを隠す
         ui->Live_horizontalSlider->hide();
         ui->back1frame_pushButton->hide();
-        ui->back10s_pushButton->hide();
         ui->reverse_pushButton->hide();
         ui->play_pushButton->hide();
         ui->go1frame_pushButton->hide();
         ui->stop_pushButton->hide();
+        ui->back30s_pushButton->hide();
+        ui->back10s_pushButton->hide();
+        ui->back3s_pushButton->hide();
+        ui->go3s_pushButton->hide();
         ui->go10s_pushButton->hide();
+        ui->go30s_pushButton->hide();
         ui->label_time->hide();
+        ui->pushButton_volume->hide();
+        ui->pushButton_speed->hide();
         // ui->comboBox_speed->hide();
 
         glWidget->GLresize();
@@ -574,14 +606,19 @@ void MainWindow::toggleFullScreen()
         //UIを再表示
         ui->Live_horizontalSlider->show();
         ui->back1frame_pushButton->show();
-        ui->back10s_pushButton->show();
         ui->reverse_pushButton->show();
         ui->play_pushButton->show();
         ui->go1frame_pushButton->show();
         ui->stop_pushButton->show();
+        ui->back30s_pushButton->show();
+        ui->back10s_pushButton->show();
+        ui->back3s_pushButton->show();
+        ui->go3s_pushButton->show();
         ui->go10s_pushButton->show();
+        ui->go30s_pushButton->show();
         ui->label_time->show();
-        // ui->comboBox_speed->show();
+        ui->pushButton_volume->show();
+        ui->pushButton_speed->show();
 
         glWidget->GLresize();
 
@@ -656,17 +693,6 @@ void MainWindow::play_audio(QByteArray pcm)
     }
 }
 
-//10秒戻しボタン制御
-void MainWindow::back10s_pushbutton_control(){
-    int seek = FrameNo-VideoInfo.fps*10;
-    if(seek<0) seek = 0;
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
-    emit send_manual_high_res_slider(seek);
-}
-
 //1フレーム戻しボタン制御
 void MainWindow::back1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
@@ -720,10 +746,64 @@ void MainWindow::stop_pushbutton_control(){
     emit send_manual_resumeplayback();
 }
 
+//30秒戻しボタン制御
+void MainWindow::back30s_pushbutton_control(){
+    int seek = FrameNo-VideoInfo.fps*30;
+    if(seek<0) seek = 0;
+
+    //変な操作されないようにUI無効化
+    UI_control(false);
+
+    emit send_manual_high_res_slider(seek);
+}
+
+//10秒戻しボタン制御
+void MainWindow::back10s_pushbutton_control(){
+    int seek = FrameNo-VideoInfo.fps*10;
+    if(seek<0) seek = 0;
+
+    //変な操作されないようにUI無効化
+    UI_control(false);
+
+    emit send_manual_high_res_slider(seek);
+}
+
+//3秒戻しボタン制御
+void MainWindow::back3s_pushbutton_control(){
+    int seek = FrameNo-VideoInfo.fps*3;
+    if(seek<0) seek = 0;
+
+    //変な操作されないようにUI無効化
+    UI_control(false);
+
+    emit send_manual_high_res_slider(seek);
+}
+
+//3秒送りボタン制御
+void MainWindow::go3s_pushbutton_control(){
+    int seek = FrameNo+VideoInfo.fps*3;
+    if(seek>VideoInfo.max_framesNo) seek = VideoInfo.max_framesNo;
+
+    //変な操作されないようにUI無効化
+    UI_control(false);
+
+    emit send_manual_high_res_slider(seek);
+}
+
 //10秒送りボタン制御
 void MainWindow::go10s_pushbutton_control(){
     int seek = FrameNo+VideoInfo.fps*10;
-    qDebug()<<FrameNo<<":"<<seek;
+    if(seek>VideoInfo.max_framesNo) seek = VideoInfo.max_framesNo;
+
+    //変な操作されないようにUI無効化
+    UI_control(false);
+
+    emit send_manual_high_res_slider(seek);
+}
+
+//30秒送りボタン制御
+void MainWindow::go30s_pushbutton_control(){
+    int seek = FrameNo+VideoInfo.fps*30;
     if(seek>VideoInfo.max_framesNo) seek = VideoInfo.max_framesNo;
 
     //変な操作されないようにUI無効化
@@ -741,12 +821,16 @@ void MainWindow::slider_control(int value){
 //UIの有効無効制御
 void MainWindow::UI_control(bool flag){
     ui->back1frame_pushButton->setEnabled(flag);
-    ui->back10s_pushButton->setEnabled(flag);
     ui->reverse_pushButton->setEnabled(flag);
     ui->play_pushButton->setEnabled(flag);
     ui->go1frame_pushButton->setEnabled(flag);
     ui->stop_pushButton->setEnabled(flag);
+    ui->back30s_pushButton->setEnabled(flag);
+    ui->back10s_pushButton->setEnabled(flag);
+    ui->back3s_pushButton->setEnabled(flag);
+    ui->go3s_pushButton->setEnabled(flag);
     ui->go10s_pushButton->setEnabled(flag);
+    ui->go30s_pushButton->setEnabled(flag);
     ui->Live_horizontalSlider->setEnabled(flag);
     ui->actionFileSave->setEnabled(flag);
     ui->action_filter_sobel->setEnabled(flag);
@@ -910,12 +994,16 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::init_decodethread_complete);
 
         QObject::connect(ui->back1frame_pushButton, &QPushButton::clicked, this, &MainWindow::back1frame_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->back10s_pushButton, &QPushButton::clicked, this, &MainWindow::back10s_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->reverse_pushButton, &QPushButton::clicked, this, &MainWindow::reverse_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->play_pushButton, &QPushButton::clicked, this, &MainWindow::switch_resume_pause, Qt::QueuedConnection);
         QObject::connect(ui->go1frame_pushButton, &QPushButton::clicked, this, &MainWindow::go1frame_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->stop_pushButton, &QPushButton::clicked, this, &MainWindow::stop_pushbutton_control, Qt::QueuedConnection);
+        QObject::connect(ui->back30s_pushButton, &QPushButton::clicked, this, &MainWindow::back30s_pushbutton_control, Qt::QueuedConnection);
+        QObject::connect(ui->back10s_pushButton, &QPushButton::clicked, this, &MainWindow::back10s_pushbutton_control, Qt::QueuedConnection);
+        QObject::connect(ui->back3s_pushButton, &QPushButton::clicked, this, &MainWindow::back3s_pushbutton_control, Qt::QueuedConnection);
+        QObject::connect(ui->go3s_pushButton, &QPushButton::clicked, this, &MainWindow::go3s_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->go10s_pushButton, &QPushButton::clicked, this, &MainWindow::go10s_pushbutton_control, Qt::QueuedConnection);
+        QObject::connect(ui->go30s_pushButton, &QPushButton::clicked, this, &MainWindow::go30s_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->Live_horizontalSlider, &QSlider::sliderMoved, this, &MainWindow::slider_control, Qt::QueuedConnection);
         QObject::connect(this, &MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
         QObject::connect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
@@ -976,12 +1064,16 @@ void MainWindow::stop_decode_thread(){
         QObject::disconnect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::init_decodethread_complete);
 
         QObject::disconnect(ui->back1frame_pushButton, &QPushButton::clicked, this, &MainWindow::back1frame_pushbutton_control);
-        QObject::disconnect(ui->back10s_pushButton, &QPushButton::clicked, this, &MainWindow::back10s_pushbutton_control);
         QObject::disconnect(ui->reverse_pushButton, &QPushButton::clicked, this, &MainWindow::reverse_pushbutton_control);
         QObject::disconnect(ui->play_pushButton, &QPushButton::clicked, this, &MainWindow::switch_resume_pause);
         QObject::disconnect(ui->go1frame_pushButton, &QPushButton::clicked, this, &MainWindow::go1frame_pushbutton_control);
         QObject::disconnect(ui->stop_pushButton, &QPushButton::clicked, this, &MainWindow::stop_pushbutton_control);
+        QObject::disconnect(ui->back30s_pushButton, &QPushButton::clicked, this, &MainWindow::back30s_pushbutton_control);
+        QObject::disconnect(ui->back10s_pushButton, &QPushButton::clicked, this, &MainWindow::back10s_pushbutton_control);
+        QObject::disconnect(ui->back3s_pushButton, &QPushButton::clicked, this, &MainWindow::back3s_pushbutton_control);
+        QObject::disconnect(ui->go3s_pushButton, &QPushButton::clicked, this, &MainWindow::go3s_pushbutton_control);
         QObject::disconnect(ui->go10s_pushButton, &QPushButton::clicked, this, &MainWindow::go10s_pushbutton_control);
+        QObject::disconnect(ui->go30s_pushButton, &QPushButton::clicked, this, &MainWindow::go30s_pushbutton_control);
         QObject::disconnect(ui->Live_horizontalSlider, &QSlider::sliderMoved, this, &MainWindow::slider_control);
         QObject::disconnect(this, &MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
         QObject::disconnect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
