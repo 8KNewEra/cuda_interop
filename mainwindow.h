@@ -6,6 +6,7 @@
 #include "decode_thread.h"
 #include "info_thread.h"
 #include "encode_setting.h"
+#include "rangeslider.h"
 #include "video_speed.h"
 #define NOMINMAX
 
@@ -48,6 +49,8 @@ signals:
     void send_manual_resumeplayback();
     void send_manual_go1frame();
     void send_manual_slider(int value);
+    void send_manual_range_end_slider(int value);
+    void send_manual_range_start_slider(int value);
     void send_manual_high_res_slider(int value);
     void decode_please();
 
@@ -102,10 +105,13 @@ private:
     void go10s_pushbutton_control();
     void go30s_pushbutton_control();
     void slider_control(int value);
+    void slider_start_control(int value);
+    void slider_end_control(int value);
     void UI_control(bool flag);
     bool pause_flag = false;
     bool reverse_flag = false;
     int FrameNo = 0;
+    RangeSlider *rangeSlider;
 
     //fpsスレッド
     void start_fps_thread(double target_fps);

@@ -208,6 +208,20 @@ void decode_thread::sliderPlayback(int value){
     video_reverse_flag = false;
 }
 
+void decode_thread::slider_range_end(int value){
+    if(value>VideoInfo.max_framesNo){
+        value = VideoInfo.max_framesNo;
+    }
+    VideoInfo.end_range_framesNo = value;
+}
+
+void decode_thread::slider_range_start(int value){
+    if(value<0){
+        value = 0;
+    }
+    VideoInfo.start_range_framesNo = value;
+}
+
 void decode_thread::resumePlayback() {
     receve_decode_flag();
     QMutexLocker locker(&mutex);
@@ -233,7 +247,6 @@ void decode_thread::back1frame(){
     back1frame_flag = true;
     video_play_flag = false;
     video_reverse_flag = false;
-    qDebug()<<"back;"<<back1FrameNo;
 }
 
 //1フレーム送り
@@ -250,8 +263,6 @@ void decode_thread::high_res_sliderPlayback(int value){
     QMutexLocker locker(&mutex);
     high_res_sliderNo = value;
     high_res_slider_flag = true;
-    video_play_flag = false;
-    video_reverse_flag = false;
 }
 
 //デコードループ
@@ -262,23 +273,35 @@ void decode_thread::processFrame() {
 
     //1フレーム戻し
     if(back1frame_flag){
-        high_res_seek_frame(back1FrameNo);
+        if(back1FrameNo <= 0){
+            high_res_seek_frame(VideoInfo.end_range_framesNo);
+        }else if(back1FrameNo <= VideoInfo.start_range_framesNo){
+            high_res_seek_frame(VideoInfo.end_range_framesNo);
+        }else{
+            high_res_seek_frame(back1FrameNo);
+        }
         back1frame_flag = false;
+        return;
     }
 
     //高精度スライダー
     if(high_res_slider_flag){
         high_res_seek_frame(high_res_sliderNo);
         high_res_slider_flag = false;
-        video_play_flag = true;
+        return;
     }
 
     //1フレーム送り
     if(go1frame_flag){
-        get_decode_image();
-        if(Frame.FrameNo+2>go1FrameNo||go1FrameNo>=VideoInfo.max_framesNo){
-            go1frame_flag = false;
+        if(Frame.FrameNo >= VideoInfo.max_framesNo){
+            high_res_seek_frame(VideoInfo.start_range_framesNo);
+        }else if(Frame.FrameNo >= VideoInfo.end_range_framesNo){
+            high_res_seek_frame(VideoInfo.start_range_framesNo);
+        }else{
+            get_decode_image();
         }
+        go1frame_flag = false;
+        return;
     }
 
     //停止ボタン押下でシークしていない場合は停止

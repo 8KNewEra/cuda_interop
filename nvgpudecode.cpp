@@ -435,12 +435,25 @@ void nvgpudecode::get_decode_image(){
 void nvgpudecode::get_singledecode_image() {
     //qDebug()<<"1フレーム読み込み";
     // ----------- シーク処理 -----------
-    if (slider_No != Frame.FrameNo || video_reverse_flag) {
-
+    if (slider_No != Frame.FrameNo || video_reverse_flag || Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>VideoInfo.end_range_framesNo) {
         if (video_reverse_flag) {
             slider_No--;
-            if (slider_No < 0)
-                slider_No = VideoInfo.max_framesNo;
+            if (slider_No < VideoInfo.start_range_framesNo)
+                slider_No = VideoInfo.end_range_framesNo;
+        }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
+            if(video_play_flag){
+                high_res_seek_frame(VideoInfo.end_range_framesNo);
+            }else{
+                high_res_seek_frame(VideoInfo.start_range_framesNo);
+            }
+            return;
+        }else if(Frame.FrameNo>VideoInfo.end_range_framesNo){
+            if(video_play_flag){
+                high_res_seek_frame(VideoInfo.start_range_framesNo);
+            }else{
+                high_res_seek_frame(VideoInfo.end_range_framesNo);
+            }
+            return;
         }
 
         avcodec_flush_buffers(vd[0].codec_ctx);
@@ -470,21 +483,18 @@ void nvgpudecode::get_singledecode_image() {
             }
 
             // 終端→先頭に戻ってループ
-            uint64_t seek_frame;
-            if (Frame.FrameNo < VideoInfo.max_framesNo - 1) {
-                seek_frame = Frame.FrameNo + 1;
+            if (Frame.FrameNo < VideoInfo.end_range_framesNo - 1) {
+                avcodec_flush_buffers(vd[0].codec_ctx);
+                if (audio_ctx)
+                    avcodec_flush_buffers(audio_ctx);
+
+                av_seek_frame(fmt_ctx, vd[0].stream_index,
+                              (Frame.FrameNo + 1) * VideoInfo.pts_per_frame,
+                              AVSEEK_FLAG_ANY);
             } else {
                 emit decode_end();
-                seek_frame = 0;
+                high_res_seek_frame(VideoInfo.start_range_framesNo);
             }
-
-            avcodec_flush_buffers(vd[0].codec_ctx);
-            if (audio_ctx)
-                avcodec_flush_buffers(audio_ctx);
-
-            av_seek_frame(fmt_ctx, vd[0].stream_index,
-                          seek_frame * VideoInfo.pts_per_frame,
-                          AVSEEK_FLAG_ANY);
 
             av_packet_unref(packet);
             continue;
@@ -519,17 +529,29 @@ void nvgpudecode::get_multidecode_image() {
     int got_count = 0;
 
     //----------- シーク処理 -----------
-    if (slider_No != Frame.FrameNo || video_reverse_flag) {
+    if (slider_No != Frame.FrameNo || video_reverse_flag || Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>VideoInfo.end_range_framesNo) {
         if (video_reverse_flag) {
             slider_No--;
-            if (slider_No < 0)
-                slider_No = VideoInfo.max_framesNo;
+            if (slider_No < VideoInfo.start_range_framesNo)
+                slider_No = VideoInfo.end_range_framesNo;
+        }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
+            if(video_play_flag){
+                high_res_seek_frame(VideoInfo.end_range_framesNo);
+            }else{
+                high_res_seek_frame(VideoInfo.start_range_framesNo);
+            }
+            return;
+        }else if(Frame.FrameNo>VideoInfo.end_range_framesNo){
+            if(video_play_flag){
+                high_res_seek_frame(VideoInfo.start_range_framesNo);
+            }else{
+                high_res_seek_frame(VideoInfo.end_range_framesNo);
+            }
+            return;
         }
 
-        // ビデオ/オーディオの両方 flush
         if (audio_ctx)
             avcodec_flush_buffers(audio_ctx);
-
         for (auto& dec : vd) {
             avcodec_flush_buffers(dec.codec_ctx);
         }
@@ -554,15 +576,9 @@ void nvgpudecode::get_multidecode_image() {
                 }
             }
 
-            if (Frame.FrameNo >= VideoInfo.max_framesNo) {
+            if (Frame.FrameNo >= VideoInfo.end_range_framesNo) {
                 emit decode_end();
-
-                for (auto& dec : vd) avcodec_flush_buffers(dec.codec_ctx);
-                if (audio_ctx)
-                    avcodec_flush_buffers(audio_ctx);
-
-                av_seek_frame(fmt_ctx, vd[0].stream_index, 0, AVSEEK_FLAG_ANY);
-                av_packet_unref(packet);
+                high_res_seek_frame(VideoInfo.start_range_framesNo);
                 continue;
             }
 
@@ -788,13 +804,15 @@ void nvgpudecode::high_res_seek_frame(int targetFrameNo){
 
 //高精度シークシングルストリーム
 void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
+    qDebug()<<"target1;"<<targetFrameNo;
     //0より低い、最大フレーム数より多い数値が来た場合は修正
-    if(targetFrameNo<0){
-        targetFrameNo = 0;
+    if(targetFrameNo<VideoInfo.start_range_framesNo){
+        targetFrameNo = VideoInfo.end_range_framesNo;
     }
-    if(targetFrameNo>VideoInfo.max_framesNo){
-        targetFrameNo = VideoInfo.max_framesNo;
+    if(targetFrameNo>VideoInfo.end_range_framesNo){
+        targetFrameNo = VideoInfo.start_range_framesNo;
     }
+    qDebug()<<"targe2;"<<targetFrameNo;
 
     // ----------- シーク処理 -----------
     avcodec_flush_buffers(vd[0].codec_ctx);
@@ -825,7 +843,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
                 // 終端→先頭に戻ってループ
                 uint64_t seek_frame{};
-                if (Frame.FrameNo < VideoInfo.max_framesNo - 1) {
+                if (Frame.FrameNo < VideoInfo.end_range_framesNo - 1) {
                     seek_frame = Frame.FrameNo + 1;
                 }
 
@@ -858,6 +876,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){
+            qDebug()<<"FrameNo;"<<FrameNo;
             CUDA_RGBA_to_merge();
             break;
         }
@@ -868,11 +887,11 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 //高精度シークマルチストリーム
 void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
     //0より低い、最大フレーム数より多い数値が来た場合は修正
-    if(targetFrameNo<0){
-        targetFrameNo = 0;
+    if(targetFrameNo<VideoInfo.start_range_framesNo){
+        targetFrameNo = VideoInfo.end_range_framesNo;
     }
-    if(targetFrameNo>VideoInfo.max_framesNo){
-        targetFrameNo = VideoInfo.max_framesNo;
+    if(targetFrameNo>VideoInfo.end_range_framesNo){
+        targetFrameNo = VideoInfo.start_range_framesNo;
     }
 
     // ----------- シーク処理 -----------

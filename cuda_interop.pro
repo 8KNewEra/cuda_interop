@@ -30,6 +30,7 @@ SOURCES += \
     main.cpp \
     mainwindow.cpp \
     nvgpudecode.cpp \
+    rangeslider.cpp \
     save_encode.cpp \
     video_speed.cpp
 
@@ -46,6 +47,7 @@ HEADERS += \
     info_thread.h \
     mainwindow.h \
     nvgpudecode.h \
+    rangeslider.h \
     save_encode.h \
     video_speed.h
 

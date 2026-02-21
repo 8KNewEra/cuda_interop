@@ -53,6 +53,8 @@ signals:
 
 public slots:
     void sliderPlayback(int value);
+    void slider_range_end(int value);
+    void slider_range_start(int value);
     void resumePlayback();
     void pausePlayback();
     void reversePlayback();

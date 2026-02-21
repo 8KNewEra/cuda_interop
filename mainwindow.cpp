@@ -4,6 +4,7 @@
 #include "decode_thread.h"
 #include "nvgpudecode.h"
 #include "ui_mainwindow.h"
+#include "rangeslider.h"
 #include "glwidget.h"
 
 MainWindow::MainWindow(QWidget *parent)
@@ -18,6 +19,13 @@ MainWindow::MainWindow(QWidget *parent)
     CSS_Design();
 
     GLwidgetInitialized();
+
+    //スライダー
+    rangeSlider = new RangeSlider(this);
+    ui->horizontalLayout_slider->addWidget(rangeSlider);
+    rangeSlider->setRange(0, 1000);
+    rangeSlider->setValues(0, 1000);
+
 
     //スライダー
     ui->Live_horizontalSlider->setFixedHeight(20);
@@ -818,6 +826,16 @@ void MainWindow::slider_control(int value){
     ui->play_pushButton->setText("▶");
 }
 
+void MainWindow::slider_end_control(int value){
+    emit send_manual_range_end_slider(value);
+    ui->play_pushButton->setText("▶");
+}
+
+void MainWindow::slider_start_control(int value){
+    emit send_manual_range_start_slider(value);
+    ui->play_pushButton->setText("▶");
+}
+
 //UIの有効無効制御
 void MainWindow::UI_control(bool flag){
     ui->back1frame_pushButton->setEnabled(flag);
@@ -905,6 +923,9 @@ void MainWindow::init_decodethread_complete(){
         ui->label_time->setText(QString::asprintf("00:00/%02d:%02d", VideoInfo.max_minute, VideoInfo.max_second));
     }
 
+    rangeSlider->setRange(0, VideoInfo.max_framesNo);
+    rangeSlider->setValues(0, VideoInfo.max_framesNo);
+
     qDebug() << "Framerate:" << VideoInfo.fps;
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
     start_fps_thread(VideoInfo.fps*video_speed_ratio);
@@ -940,7 +961,8 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
 
         //UIの制御
         if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
-            ui->Live_horizontalSlider->setValue(Frame.FrameNo);
+            //ui->Live_horizontalSlider->setValue(Frame.FrameNo);
+            rangeSlider->setPlayValue(Frame.FrameNo);
         }
         slider_No=Frame.FrameNo;
 
@@ -1004,13 +1026,18 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(ui->go3s_pushButton, &QPushButton::clicked, this, &MainWindow::go3s_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->go10s_pushButton, &QPushButton::clicked, this, &MainWindow::go10s_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->go30s_pushButton, &QPushButton::clicked, this, &MainWindow::go30s_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->Live_horizontalSlider, &QSlider::sliderMoved, this, &MainWindow::slider_control, Qt::QueuedConnection);
+        QObject::connect(rangeSlider, &RangeSlider::playValueChanged, this, &MainWindow::slider_control, Qt::QueuedConnection);
+        QObject::connect(rangeSlider, &RangeSlider::rangeEndChanged, this, &MainWindow::slider_end_control, Qt::QueuedConnection);
+        QObject::connect(rangeSlider, &RangeSlider::rangeStartChanged, this, &MainWindow::slider_start_control, Qt::QueuedConnection);
+        //QObject::connect(ui->Live_horizontalSlider, &QSlider::sliderMoved, this, &MainWindow::slider_control, Qt::QueuedConnection);
         QObject::connect(this, &MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
         QObject::connect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
         QObject::connect(this, &MainWindow::send_manual_reverse, decodestream, &decode_thread::reversePlayback);
         QObject::connect(this, &MainWindow::send_manual_back1frame, decodestream, &decode_thread::back1frame, Qt::QueuedConnection);
         QObject::connect(this, &MainWindow::send_manual_go1frame, decodestream, &decode_thread::go1frame, Qt::QueuedConnection);
         QObject::connect(this, &MainWindow::send_manual_slider, decodestream, &decode_thread::sliderPlayback);
+        QObject::connect(this, &MainWindow::send_manual_range_end_slider, decodestream, &decode_thread::slider_range_end);
+        QObject::connect(this, &MainWindow::send_manual_range_start_slider, decodestream, &decode_thread::slider_range_start);
         QObject::connect(this, &MainWindow::send_manual_high_res_slider, decodestream, &decode_thread::high_res_sliderPlayback);
 
         QObject::connect(decodestream, &decode_thread::finished,decode__thread, &QThread::quit,Qt::SingleShotConnection);
@@ -1074,6 +1101,9 @@ void MainWindow::stop_decode_thread(){
         QObject::disconnect(ui->go3s_pushButton, &QPushButton::clicked, this, &MainWindow::go3s_pushbutton_control);
         QObject::disconnect(ui->go10s_pushButton, &QPushButton::clicked, this, &MainWindow::go10s_pushbutton_control);
         QObject::disconnect(ui->go30s_pushButton, &QPushButton::clicked, this, &MainWindow::go30s_pushbutton_control);
+        QObject::disconnect(rangeSlider, &RangeSlider::playValueChanged, this, &MainWindow::slider_control);
+        QObject::disconnect(rangeSlider, &RangeSlider::rangeStartChanged, this, &MainWindow::slider_start_control);
+        QObject::disconnect(rangeSlider, &RangeSlider::rangeEndChanged, this, &MainWindow::slider_end_control);
         QObject::disconnect(ui->Live_horizontalSlider, &QSlider::sliderMoved, this, &MainWindow::slider_control);
         QObject::disconnect(this, &MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
         QObject::disconnect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
@@ -1081,6 +1111,8 @@ void MainWindow::stop_decode_thread(){
         QObject::disconnect(this, &MainWindow::send_manual_back1frame, decodestream, &decode_thread::back1frame);
         QObject::disconnect(this, &MainWindow::send_manual_go1frame, decodestream, &decode_thread::go1frame);
         QObject::disconnect(this, &MainWindow::send_manual_slider, decodestream, &decode_thread::sliderPlayback);
+        QObject::disconnect(this, &MainWindow::send_manual_range_end_slider, decodestream, &decode_thread::slider_range_end);
+        QObject::disconnect(this, &MainWindow::send_manual_range_start_slider, decodestream, &decode_thread::slider_range_start);
         QObject::disconnect(this, &MainWindow::send_manual_high_res_slider, decodestream, &decode_thread::high_res_sliderPlayback);
 
         decodestream->stopProcessing();

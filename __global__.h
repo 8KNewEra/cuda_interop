@@ -86,6 +86,8 @@ struct DecodeInfo {
     //映像メタデータ
     std::string Codec = "av1";
     int max_framesNo=10;
+    int end_range_framesNo=10;
+    int start_range_framesNo=0;
     int pts_per_frame=1000;
     double fps = 30;
     int bitdepth=8;
