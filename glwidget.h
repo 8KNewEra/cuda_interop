@@ -38,7 +38,9 @@ public:
 
     bool videoInfo_flag=false;
     bool histgram_flag=false;
+    int MinFrame=0;
     int MaxFrame=0;
+    int encode_FrameCount=0;
 
     //画像処理
     bool filter_change_flag = true;
@@ -106,7 +108,6 @@ private:
     int encode_state=STATE_NOT_ENCODE;
     int prev_encode_state=STATE_NOT_ENCODE;
     save_encode* save_encoder=nullptr;
-    int encode_FrameCount=0;
 
     //動画情報
     int width_, height_;

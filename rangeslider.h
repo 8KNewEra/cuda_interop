@@ -25,6 +25,7 @@ signals:
     void rangeStartChanged(int start);
     void rangeEndChanged(int end);
     void playValueChanged(int value);
+    void playValueReleaseChanged(int value);
 
 protected:
     void paintEvent(QPaintEvent*) override;

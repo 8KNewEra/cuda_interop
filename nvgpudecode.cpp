@@ -441,6 +441,7 @@ void nvgpudecode::get_singledecode_image() {
             if (slider_No < VideoInfo.start_range_framesNo)
                 slider_No = VideoInfo.end_range_framesNo;
         }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
+            //停止時は始端固定
             if(video_play_flag){
                 high_res_seek_frame(VideoInfo.end_range_framesNo);
             }else{
@@ -448,6 +449,7 @@ void nvgpudecode::get_singledecode_image() {
             }
             return;
         }else if(Frame.FrameNo>VideoInfo.end_range_framesNo){
+            //停止時は終端固定
             if(video_play_flag){
                 high_res_seek_frame(VideoInfo.start_range_framesNo);
             }else{
@@ -535,6 +537,7 @@ void nvgpudecode::get_multidecode_image() {
             if (slider_No < VideoInfo.start_range_framesNo)
                 slider_No = VideoInfo.end_range_framesNo;
         }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
+            //停止時は始端固定
             if(video_play_flag){
                 high_res_seek_frame(VideoInfo.end_range_framesNo);
             }else{
@@ -542,6 +545,7 @@ void nvgpudecode::get_multidecode_image() {
             }
             return;
         }else if(Frame.FrameNo>VideoInfo.end_range_framesNo){
+            //停止時は終端固定
             if(video_play_flag){
                 high_res_seek_frame(VideoInfo.start_range_framesNo);
             }else{
@@ -804,7 +808,8 @@ void nvgpudecode::high_res_seek_frame(int targetFrameNo){
 
 //高精度シークシングルストリーム
 void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
-    qDebug()<<"target1;"<<targetFrameNo;
+    emit heavy_process_signal(false);
+
     //0より低い、最大フレーム数より多い数値が来た場合は修正
     if(targetFrameNo<VideoInfo.start_range_framesNo){
         targetFrameNo = VideoInfo.end_range_framesNo;
@@ -812,7 +817,6 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
     if(targetFrameNo>VideoInfo.end_range_framesNo){
         targetFrameNo = VideoInfo.start_range_framesNo;
     }
-    qDebug()<<"targe2;"<<targetFrameNo;
 
     // ----------- シーク処理 -----------
     avcodec_flush_buffers(vd[0].codec_ctx);
@@ -876,7 +880,6 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){
-            qDebug()<<"FrameNo;"<<FrameNo;
             CUDA_RGBA_to_merge();
             break;
         }
@@ -886,6 +889,8 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
 //高精度シークマルチストリーム
 void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
+    emit heavy_process_signal(false);
+
     //0より低い、最大フレーム数より多い数値が来た場合は修正
     if(targetFrameNo<VideoInfo.start_range_framesNo){
         targetFrameNo = VideoInfo.end_range_framesNo;

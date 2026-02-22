@@ -90,7 +90,6 @@ private:
     //スライダー
     void init_decodethread_complete();
     int slider_No=1;
-    int Now_Frame;
 
     //再生・一時停止・スライダー
     void back1frame_pushbutton_control();
@@ -107,7 +106,7 @@ private:
     void slider_control(int value);
     void slider_start_control(int value);
     void slider_end_control(int value);
-    void UI_control(bool flag);
+    void heavy_process_UI_control(bool flag);
     bool pause_flag = false;
     bool reverse_flag = false;
     int FrameNo = 0;
@@ -133,6 +132,7 @@ private:
     void encode_set();
     void start_encode();
     void finished_encode();
+    bool wasCanceled=false;
     encode_setting *encodeSetting;
     int encode_state=STATE_NOT_ENCODE;
 

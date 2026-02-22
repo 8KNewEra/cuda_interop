@@ -710,9 +710,9 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
         return;
     }
 
-    // qDebug()<<encode_FrameCount<<":"<<MaxFrame;
+    //qDebug()<<encode_FrameCount<<":"<<MaxFrame-MinFrame;
 
-    if(save_encoder!=nullptr&&encode_FrameCount<=MaxFrame){
+    if(save_encoder!=nullptr&&encode_FrameCount<=(MaxFrame-MinFrame)){
         save_encoder->encode(Frame);
         encode_FrameCount++;
     }else{

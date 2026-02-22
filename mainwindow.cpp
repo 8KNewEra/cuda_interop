@@ -25,6 +25,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->horizontalLayout_slider->addWidget(rangeSlider);
     rangeSlider->setRange(0, 1000);
     rangeSlider->setValues(0, 1000);
+    rangeSlider->setPlayValue(0);
+    rangeSlider->setEnabled(false);
 
 
     //スライダー
@@ -704,10 +706,6 @@ void MainWindow::play_audio(QByteArray pcm)
 //1フレーム戻しボタン制御
 void MainWindow::back1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
     emit send_manual_back1frame();
 }
 
@@ -736,10 +734,6 @@ void MainWindow::switch_resume_pause(){
 //1フレーム送りボタン制御
 void MainWindow::go1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
     emit send_manual_go1frame();
 }
 
@@ -747,10 +741,6 @@ void MainWindow::go1frame_pushbutton_control(){
 void MainWindow::stop_pushbutton_control(){
     emit send_manual_slider(0);
     ui->play_pushButton->setText("||");
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
     emit send_manual_resumeplayback();
 }
 
@@ -758,10 +748,6 @@ void MainWindow::stop_pushbutton_control(){
 void MainWindow::back30s_pushbutton_control(){
     int seek = FrameNo-VideoInfo.fps*30;
     if(seek<0) seek = 0;
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
     emit send_manual_high_res_slider(seek);
 }
 
@@ -769,10 +755,6 @@ void MainWindow::back30s_pushbutton_control(){
 void MainWindow::back10s_pushbutton_control(){
     int seek = FrameNo-VideoInfo.fps*10;
     if(seek<0) seek = 0;
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
     emit send_manual_high_res_slider(seek);
 }
 
@@ -780,10 +762,6 @@ void MainWindow::back10s_pushbutton_control(){
 void MainWindow::back3s_pushbutton_control(){
     int seek = FrameNo-VideoInfo.fps*3;
     if(seek<0) seek = 0;
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
     emit send_manual_high_res_slider(seek);
 }
 
@@ -791,10 +769,6 @@ void MainWindow::back3s_pushbutton_control(){
 void MainWindow::go3s_pushbutton_control(){
     int seek = FrameNo+VideoInfo.fps*3;
     if(seek>VideoInfo.max_framesNo) seek = VideoInfo.max_framesNo;
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
     emit send_manual_high_res_slider(seek);
 }
 
@@ -802,10 +776,6 @@ void MainWindow::go3s_pushbutton_control(){
 void MainWindow::go10s_pushbutton_control(){
     int seek = FrameNo+VideoInfo.fps*10;
     if(seek>VideoInfo.max_framesNo) seek = VideoInfo.max_framesNo;
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
     emit send_manual_high_res_slider(seek);
 }
 
@@ -813,10 +783,6 @@ void MainWindow::go10s_pushbutton_control(){
 void MainWindow::go30s_pushbutton_control(){
     int seek = FrameNo+VideoInfo.fps*30;
     if(seek>VideoInfo.max_framesNo) seek = VideoInfo.max_framesNo;
-
-    //変な操作されないようにUI無効化
-    UI_control(false);
-
     emit send_manual_high_res_slider(seek);
 }
 
@@ -837,7 +803,7 @@ void MainWindow::slider_start_control(int value){
 }
 
 //UIの有効無効制御
-void MainWindow::UI_control(bool flag){
+void MainWindow::heavy_process_UI_control(bool flag){
     ui->back1frame_pushButton->setEnabled(flag);
     ui->reverse_pushButton->setEnabled(flag);
     ui->play_pushButton->setEnabled(flag);
@@ -855,6 +821,7 @@ void MainWindow::UI_control(bool flag){
     ui->action_filter_gausian->setEnabled(flag);
     ui->action_filter_averaging->setEnabled(flag);
     ui->action_audio_low_laytency->setEnabled(flag);
+    rangeSlider->setEnabled(flag);
 }
 
 //GPU利用可否の判定
@@ -906,7 +873,7 @@ void MainWindow::init_decodethread_complete(){
     ui->actionOpenFile->setEnabled(true);
     ui->info->setEnabled(true);
     ui->actionCloseFile->setEnabled(true);
-    UI_control(true);
+    heavy_process_UI_control(true);
     ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
     ui->play_pushButton->setText("||");
 
@@ -925,6 +892,7 @@ void MainWindow::init_decodethread_complete(){
 
     rangeSlider->setRange(0, VideoInfo.max_framesNo);
     rangeSlider->setValues(0, VideoInfo.max_framesNo);
+    rangeSlider->setPlayValue(0);
 
     qDebug() << "Framerate:" << VideoInfo.fps;
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
@@ -956,7 +924,7 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
 
         //1フレーム戻しが入っている場合はUI有効に
         if(!decodestream->back1frame_flag){
-            UI_control(true);
+            heavy_process_UI_control(true);
         }
 
         //UIの制御
@@ -1014,6 +982,7 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio, Qt::QueuedConnection);
 
         QObject::connect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::init_decodethread_complete);
+        QObject::connect(decodestream, &decode_thread::heavy_process_signal, this, &MainWindow::heavy_process_UI_control);
 
         QObject::connect(ui->back1frame_pushButton, &QPushButton::clicked, this, &MainWindow::back1frame_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->reverse_pushButton, &QPushButton::clicked, this, &MainWindow::reverse_pushbutton_control, Qt::QueuedConnection);
@@ -1029,6 +998,7 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(rangeSlider, &RangeSlider::playValueChanged, this, &MainWindow::slider_control, Qt::QueuedConnection);
         QObject::connect(rangeSlider, &RangeSlider::rangeEndChanged, this, &MainWindow::slider_end_control, Qt::QueuedConnection);
         QObject::connect(rangeSlider, &RangeSlider::rangeStartChanged, this, &MainWindow::slider_start_control, Qt::QueuedConnection);
+        QObject::connect(rangeSlider, &RangeSlider::playValueReleaseChanged, decodestream, &decode_thread::high_res_sliderPlayback, Qt::QueuedConnection);
         //QObject::connect(ui->Live_horizontalSlider, &QSlider::sliderMoved, this, &MainWindow::slider_control, Qt::QueuedConnection);
         QObject::connect(this, &MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
         QObject::connect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
@@ -1077,7 +1047,7 @@ void MainWindow::stop_decode_thread(){
         //UI設定
         ui->actionCloseFile->setEnabled(false);
         ui->info->setEnabled(false);
-        UI_control(false);
+        heavy_process_UI_control(false);
         ui->play_pushButton->setText("▶");
         ui->label_time->setText(QString::asprintf("00:00:00/00:00:00"));
         QFont font = ui->label_time->font();
@@ -1089,6 +1059,7 @@ void MainWindow::stop_decode_thread(){
         QObject::disconnect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio);
 
         QObject::disconnect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::init_decodethread_complete);
+        QObject::disconnect(decodestream, &decode_thread::heavy_process_signal, this, &MainWindow::heavy_process_UI_control);
 
         QObject::disconnect(ui->back1frame_pushButton, &QPushButton::clicked, this, &MainWindow::back1frame_pushbutton_control);
         QObject::disconnect(ui->reverse_pushButton, &QPushButton::clicked, this, &MainWindow::reverse_pushbutton_control);
@@ -1104,6 +1075,7 @@ void MainWindow::stop_decode_thread(){
         QObject::disconnect(rangeSlider, &RangeSlider::playValueChanged, this, &MainWindow::slider_control);
         QObject::disconnect(rangeSlider, &RangeSlider::rangeStartChanged, this, &MainWindow::slider_start_control);
         QObject::disconnect(rangeSlider, &RangeSlider::rangeEndChanged, this, &MainWindow::slider_end_control);
+        QObject::disconnect(rangeSlider, &RangeSlider::playValueReleaseChanged, decodestream, &decode_thread::high_res_sliderPlayback);
         QObject::disconnect(ui->Live_horizontalSlider, &QSlider::sliderMoved, this, &MainWindow::slider_control);
         QObject::disconnect(this, &MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
         QObject::disconnect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
@@ -1189,14 +1161,12 @@ void MainWindow::encode_set(){
     glWidget->encode_mode(encode_state);
     decodestream->encode_state = encode_state;
 
-    //現在のフレーム位置を記憶
-    Now_Frame = slider_No;
-
     //停止/再生速度を最大に、エンコードは最速でやるため
     emit send_manual_pause();
 
-    encodeSetting->slider(0,VideoInfo.max_framesNo);
+    encodeSetting->slider(0,VideoInfo.end_range_framesNo-VideoInfo.start_range_framesNo);
     encodeSetting->show();
+    qDebug()<<VideoInfo.end_range_framesNo-VideoInfo.start_range_framesNo;
 }
 
 //エンコード開始
@@ -1209,7 +1179,7 @@ void MainWindow::start_encode(){
         timer.start();
 
         //終了検知
-        bool wasCanceled=false;
+        wasCanceled=false;
         connect(encodeSetting, &encode_setting::signal_encode_stop, this, [&]() {
             wasCanceled=true;
         }, Qt::SingleShotConnection);
@@ -1222,36 +1192,17 @@ void MainWindow::start_encode(){
         encode_state = STATE_ENCODING;
         decodestream->encode_state = encode_state;
         glWidget->encode_mode(encode_state);
-        glWidget->MaxFrame = VideoInfo.max_framesNo;
+        glWidget->MinFrame = VideoInfo.start_range_framesNo;
+        glWidget->MaxFrame = VideoInfo.end_range_framesNo;
         emit decode_please();
 
         //FrameNoが0なことを確認
-        emit send_manual_slider(0);
-        while (slider_No != 0) {
-            QThread::msleep(1);
-            QCoreApplication::processEvents();
-        }
+        emit send_manual_high_res_slider(VideoInfo.start_range_framesNo);
         emit send_manual_resumeplayback();
 
-        // 処理ループ内で更新
-        while(true) {
-            //qDebug()<<slider_No<<":"<<VideoInfo.max_framesNo;
-            encodeSetting->progress_bar(slider_No);
-
-            if (wasCanceled){
-                glWidget->MaxFrame=slider_No;
-                break;
-            }
-
-            // if(slider_No>=VideoInfo.max_framesNo){
-            //     glWidget->encode_maxFrame(slider_No);
-            //     break;
-            // }
-
-            QCoreApplication::processEvents();
-        }
-
+        //修了処理
         connect(glWidget, &GLWidget::encode_finished, this, [=]() {
+            wasCanceled=true;
             emit send_manual_pause();
 
             encode_state=STATE_ENCODE_READY;
@@ -1262,10 +1213,24 @@ void MainWindow::start_encode(){
             double seconds = timer.nsecsElapsed() / 1e9;
             QString encode_time = QString::number(seconds, 'f', 3)+"秒";
             encodeSetting->encode_end(encode_time);
-
         }, Qt::SingleShotConnection);
-
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+
+        // 処理ループ内で更新
+        while(true) {
+            encodeSetting->progress_bar(glWidget->encode_FrameCount);
+
+            if (wasCanceled){
+                glWidget->MaxFrame=slider_No;
+                break;
+            }
+
+            if(glWidget->encode_FrameCount>(glWidget->MaxFrame-glWidget->MinFrame)){
+                break;
+            }
+
+            QCoreApplication::processEvents();
+        }
     }
 }
 
@@ -1274,8 +1239,6 @@ void MainWindow::finished_encode(){
     encode_state = STATE_NOT_ENCODE;
     glWidget->encode_mode(encode_state);
     decodestream->encode_state = encode_state;
-    slider_No = Now_Frame;
     emit decode_please();
-    emit send_manual_slider(Now_Frame);
     emit send_manual_resumeplayback();
 }

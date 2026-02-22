@@ -50,6 +50,7 @@ signals:
     void decode_end();
     void decode_error(QString error);
     void drop_decode();
+    void heavy_process_signal(bool flag);
 
 public slots:
     void sliderPlayback(int value);
