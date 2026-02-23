@@ -16,21 +16,20 @@ MainWindow::MainWindow(QWidget *parent)
     //MainWindow
     ui->setupUi(this);
 
-    CSS_Design();
-
-    GLwidgetInitialized();
-
     //スライダー
     rangeSlider = new RangeSlider(this);
     ui->horizontalLayout_slider->addWidget(rangeSlider);
+    rangeSlider->setParent(ui->centralwidget);
     rangeSlider->setRange(0, 1000);
     rangeSlider->setValues(0, 1000);
     rangeSlider->setPlayValue(0);
     rangeSlider->setEnabled(false);
 
+    CSS_Design();
+    GLwidgetInitialized();
 
     //スライダー
-    ui->Live_horizontalSlider->setFixedHeight(20);
+    rangeSlider->setFixedHeight(20);
     ui->back1frame_pushButton->setFixedWidth(30);
     ui->back1frame_pushButton->setFixedHeight(26);
     ui->play_pushButton->setFixedWidth(30);
@@ -55,8 +54,14 @@ MainWindow::MainWindow(QWidget *parent)
     ui->go30s_pushButton->setFixedWidth(30);
     ui->go30s_pushButton->setFixedHeight(26);
 
-    ui->label_time->setFixedWidth(132);
-    ui->label_time->setFixedHeight(26);
+    ui->label_play_time->setFixedWidth(240);
+    ui->label_play_time->setFixedHeight(26);
+    ui->label_start_time->setFixedWidth(240);
+    ui->label_start_time->setFixedHeight(26);
+    ui->label_end_time->setFixedWidth(240);
+    ui->label_end_time->setFixedHeight(26);
+    ui->label_range_time->setFixedWidth(240);
+    ui->label_range_time->setFixedHeight(26);
     ui->pushButton_speed->setFixedWidth(30);
     ui->pushButton_speed->setFixedHeight(26);
     ui->pushButton_volume->setFixedWidth(30);
@@ -461,7 +466,7 @@ void MainWindow::CSS_Design(){
 
 
     //スライダー
-    ui->Live_horizontalSlider->setStyleSheet(R"(
+    rangeSlider->setStyleSheet(R"(
         QSlider::groove:horizontal {
             height: 6px;
             background: rgba(255,255,255,40);
@@ -483,7 +488,25 @@ void MainWindow::CSS_Design(){
         )");
 
     //再生時間表示
-    ui->label_time->setStyleSheet(R"(
+    ui->label_start_time->setStyleSheet(R"(
+        QLabel {
+            color: rgba(220,220,220,200);
+            font-family: Consolas;
+        }
+        )");
+    ui->label_play_time->setStyleSheet(R"(
+        QLabel {
+            color: rgba(220,220,220,200);
+            font-family: Consolas;
+        }
+        )");
+    ui->label_end_time->setStyleSheet(R"(
+        QLabel {
+            color: rgba(220,220,220,200);
+            font-family: Consolas;
+        }
+        )");
+    ui->label_range_time->setStyleSheet(R"(
         QLabel {
             color: rgba(220,220,220,200);
             font-family: Consolas;
@@ -522,8 +545,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
     ui->openGLContainer->setGeometry(0, 0, window_width, window_height-89); // 位置とサイズを指定
 
-    ui->Live_horizontalSlider->setFixedWidth(window_width-421);
-    ui->Live_horizontalSlider->setGeometry(208, window_height-49,window_width-286,window_height-5);
+    rangeSlider->setFixedWidth(window_width-285);
+    rangeSlider->setGeometry(209, window_height-50,window_width-286,window_height-5);
 
     ui->reverse_pushButton->setGeometry(26, window_height-83,99,window_height-5);
     ui->back1frame_pushButton->setGeometry(59, window_height-83,66,window_height-5);
@@ -540,9 +563,12 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
     ui->pushButton_speed->setGeometry(window_width-71, window_height-83,window_width-41,window_height-5);
     ui->pushButton_volume->setGeometry(window_width-38, window_height-83,window_width-60,window_height-5);
-    ui->label_time->setGeometry(window_width-191, window_height-82,window_width-261,window_height-5);
+    ui->label_start_time->setGeometry(window_width-1030, window_height-80,window_width-261,window_height-5);
+    ui->label_play_time->setGeometry(window_width-790, window_height-80,window_width-261,window_height-5);
+    ui->label_end_time->setGeometry(window_width-570, window_height-80,window_width-261,window_height-5);
+    ui->label_range_time->setGeometry(window_width-330, window_height-80,window_width-261,window_height-5);
 
-    setMinimumSize(QSize(640, 480));\
+    setMinimumSize(QSize(640, 480));
     glWidget->GLresize();
 }
 
@@ -570,7 +596,7 @@ void MainWindow::toggleFullScreen()
         container->activateWindow();
 
         //UIを隠す
-        ui->Live_horizontalSlider->hide();
+        rangeSlider->hide();
         ui->back1frame_pushButton->hide();
         ui->reverse_pushButton->hide();
         ui->play_pushButton->hide();
@@ -582,7 +608,10 @@ void MainWindow::toggleFullScreen()
         ui->go3s_pushButton->hide();
         ui->go10s_pushButton->hide();
         ui->go30s_pushButton->hide();
-        ui->label_time->hide();
+        ui->label_start_time->hide();
+        ui->label_play_time->hide();
+        ui->label_end_time->hide();
+        ui->label_range_time->hide();
         ui->pushButton_volume->hide();
         ui->pushButton_speed->hide();
         // ui->comboBox_speed->hide();
@@ -614,7 +643,7 @@ void MainWindow::toggleFullScreen()
         container->showNormal();
 
         //UIを再表示
-        ui->Live_horizontalSlider->show();
+        rangeSlider->show();
         ui->back1frame_pushButton->show();
         ui->reverse_pushButton->show();
         ui->play_pushButton->show();
@@ -626,7 +655,10 @@ void MainWindow::toggleFullScreen()
         ui->go3s_pushButton->show();
         ui->go10s_pushButton->show();
         ui->go30s_pushButton->show();
-        ui->label_time->show();
+        ui->label_start_time->show();
+        ui->label_play_time->show();
+        ui->label_end_time->show();
+        ui->label_range_time->show();
         ui->pushButton_volume->show();
         ui->pushButton_speed->show();
 
@@ -792,14 +824,60 @@ void MainWindow::slider_control(int value){
     ui->play_pushButton->setText("▶");
 }
 
-void MainWindow::slider_end_control(int value){
-    emit send_manual_range_end_slider(value);
-    ui->play_pushButton->setText("▶");
+void MainWindow::slider_start_control(int value){
+    //時間を計算 時:分:秒
+    double start_time = value/VideoInfo.fps;
+    int start_hour = start_time / 3600;
+    int start_minute = (int(start_time) % 3600) / 60;
+    int start_second = fmod(start_time, 60.0);
+
+    //時間を計算 時:分:秒
+    double range_time = VideoInfo.end_range_framesNo/VideoInfo.fps-value/VideoInfo.fps;
+    int range_hour = range_time / 3600;
+    int range_minute = (int(range_time) % 3600) / 60;
+    int range_second = fmod(range_time, 60.0);
+
+    if (start_hour > 0) {
+        ui->label_start_time->setText(QString::asprintf("開始:%02d:%02d:%02d(%d Frames)", start_hour, start_minute, start_second, value));
+    }else{
+        ui->label_start_time->setText(QString::asprintf("開始:%02d:%02d(%d Frames)", start_minute, start_second, value));
+    }
+
+    if (range_hour > 0) {
+        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d:%02d(%d Frames)", range_hour, range_minute, range_second, VideoInfo.end_range_framesNo-value));
+    }else{
+        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d(%d Frames)", range_minute, range_second, VideoInfo.end_range_framesNo-value));
+    }
+
+    emit send_manual_range_start_slider(value);
 }
 
-void MainWindow::slider_start_control(int value){
-    emit send_manual_range_start_slider(value);
-    ui->play_pushButton->setText("▶");
+void MainWindow::slider_end_control(int value){
+    //時間を計算 時:分:秒
+    double end_time = value/VideoInfo.fps;
+    int end_hour = end_time / 3600;
+    int end_minute = (int(end_time) % 3600) / 60;
+    int end_second = fmod(end_time, 60.0);
+
+    //時間を計算 時:分:秒
+    double range_time = value/VideoInfo.fps-VideoInfo.start_range_framesNo/VideoInfo.fps;
+    int range_hour = range_time / 3600;
+    int range_minute = (int(range_time) % 3600) / 60;
+    int range_second = fmod(range_time, 60.0);
+
+    if (end_hour > 0) {
+        ui->label_end_time->setText(QString::asprintf("終了:%02d:%02d:%02d(%d Frames)", end_hour, end_minute, end_second, value));
+    }else{
+        ui->label_end_time->setText(QString::asprintf("終了:%02d:%02d(%d Frames)", end_minute, end_second, value));
+    }
+
+    if (range_hour > 0) {
+        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d:%02d(%d Frames)", range_hour, range_minute, range_second, value-VideoInfo.start_range_framesNo));
+    }else{
+        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d(%d Frames)", range_minute, range_second, value-VideoInfo.start_range_framesNo));
+    }
+
+    emit send_manual_range_end_slider(value);
 }
 
 //UIの有効無効制御
@@ -815,7 +893,6 @@ void MainWindow::heavy_process_UI_control(bool flag){
     ui->go3s_pushButton->setEnabled(flag);
     ui->go10s_pushButton->setEnabled(flag);
     ui->go30s_pushButton->setEnabled(flag);
-    ui->Live_horizontalSlider->setEnabled(flag);
     ui->actionFileSave->setEnabled(flag);
     ui->action_filter_sobel->setEnabled(flag);
     ui->action_filter_gausian->setEnabled(flag);
@@ -874,22 +951,45 @@ void MainWindow::init_decodethread_complete(){
     ui->info->setEnabled(true);
     ui->actionCloseFile->setEnabled(true);
     heavy_process_UI_control(true);
-    ui->Live_horizontalSlider->setRange(0, VideoInfo.max_framesNo);
-    ui->play_pushButton->setText("||");
 
     //時間の桁数に応じてフォント調整
     if (VideoInfo.max_hour > 0) {
-        QFont font = ui->label_time->font();
-        font.setPointSize(8);   // 文字サイズ
-        ui->label_time->setFont(font);
-        ui->label_time->setText(QString::asprintf("00:00:00/%02d:%02d:%02d", VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
+        QFont font_start = ui->label_start_time->font();
+        QFont font_play = ui->label_play_time->font();
+        QFont font_end = ui->label_end_time->font();
+        QFont font_range = ui->label_range_time->font();
+        font_start.setPointSize(8);   // 文字サイズ
+        font_play.setPointSize(8);   // 文字サイズ
+        font_end.setPointSize(8);   // 文字サイズ
+        font_range.setPointSize(8);   // 文字サイズ
+        ui->label_start_time->setFont(font_start);
+        ui->label_play_time->setFont(font_play);
+        ui->label_end_time->setFont(font_end);
+        ui->label_range_time->setFont(font_range);
+        ui->label_start_time->setText(QString::asprintf("開始:%02d:%02d:%02d(%d Frames)", 0, 0, 0, 0));
+        ui->label_play_time->setText(QString::asprintf("再生:%02d:%02d:%02d(%d Frames)", 0, 0, 0, 0));
+        ui->label_end_time->setText(QString::asprintf("終了:%02d:%02d:%02d(%d Frames)", VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second, VideoInfo.max_framesNo));
+        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d:%02d(%d Frames)", VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second, VideoInfo.max_framesNo));
     }else {
-        QFont font = ui->label_time->font();
-        font.setPointSize(12);   // 文字サイズ
-        ui->label_time->setFont(font);
-        ui->label_time->setText(QString::asprintf("00:00/%02d:%02d", VideoInfo.max_minute, VideoInfo.max_second));
+        QFont font_start = ui->label_start_time->font();
+        QFont font_play = ui->label_play_time->font();
+        QFont font_end = ui->label_end_time->font();
+        QFont font_range = ui->label_range_time->font();
+        font_start.setPointSize(11);   // 文字サイズ
+        font_play.setPointSize(11);   // 文字サイズ
+        font_end.setPointSize(11);   // 文字サイズ
+        font_range.setPointSize(11);   // 文字サイズ
+        ui->label_start_time->setFont(font_start);
+        ui->label_play_time->setFont(font_play);
+        ui->label_end_time->setFont(font_end);
+        ui->label_range_time->setFont(font_range);
+        ui->label_start_time->setText(QString::asprintf("開始:%02d:%02d:%02d(%d Frames)", 0, 0, 0, 0));
+        ui->label_play_time->setText(QString::asprintf("再生:%02d:%02d:%02d(%d Frames)", 0, 0, 0, 0));
+        ui->label_end_time->setText(QString::asprintf("終了:%02d:%02d:%02d(%d Frames)", VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second, VideoInfo.max_framesNo));
+        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d:%02d(%d Frames)", VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second, VideoInfo.max_framesNo));
     }
 
+    ui->play_pushButton->setText("||");
     rangeSlider->setRange(0, VideoInfo.max_framesNo);
     rangeSlider->setValues(0, VideoInfo.max_framesNo);
     rangeSlider->setPlayValue(0);
@@ -917,9 +1017,9 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
 
         //再生時間表示
         if (VideoInfo.max_hour > 0) {
-            ui->label_time->setText(QString::asprintf("%02d:%02d:%02d/%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second, VideoInfo.max_hour, VideoInfo.max_minute, VideoInfo.max_second));
+            ui->label_play_time->setText(QString::asprintf("再生:%02d:%02d:%02d(%d Frames)", Frame.hour, Frame.minute, Frame.second, Frame.FrameNo));
         }else {
-            ui->label_time->setText(QString::asprintf("%02d:%02d/%02d:%02d", Frame.minute, Frame.second, VideoInfo.max_minute, VideoInfo.max_second));
+            ui->label_play_time->setText(QString::asprintf("再生:%02d:%02d(%d Frames)", Frame.minute, Frame.second,Frame.FrameNo));
         }
 
         //1フレーム戻しが入っている場合はUI有効に
@@ -928,7 +1028,7 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
         }
 
         //UIの制御
-        if (!ui->Live_horizontalSlider->isSliderDown()&&encode_state==STATE_NOT_ENCODE) {
+        if (encode_state==STATE_NOT_ENCODE) {
             //ui->Live_horizontalSlider->setValue(Frame.FrameNo);
             rangeSlider->setPlayValue(Frame.FrameNo);
         }
@@ -1049,10 +1149,22 @@ void MainWindow::stop_decode_thread(){
         ui->info->setEnabled(false);
         heavy_process_UI_control(false);
         ui->play_pushButton->setText("▶");
-        ui->label_time->setText(QString::asprintf("00:00:00/00:00:00"));
-        QFont font = ui->label_time->font();
-        font.setPointSize(8);   // 文字サイズ
-        ui->label_time->setFont(font);
+        ui->label_start_time->setText(QString::asprintf("開始:00:00:00(0 Frames)"));
+        ui->label_play_time->setText(QString::asprintf("再生:00:00:00(0 Frames)"));
+        ui->label_end_time->setText(QString::asprintf("終了:00:00:00(0 Frames)"));
+        ui->label_range_time->setText(QString::asprintf("再生範囲:00:00:00(0 Frames)"));
+        QFont font_start = ui->label_start_time->font();
+        QFont font_play = ui->label_play_time->font();
+        QFont font_end = ui->label_end_time->font();
+        QFont font_range = ui->label_range_time->font();
+        font_start.setPointSize(8);   // 文字サイズ
+        font_play.setPointSize(8);   // 文字サイズ
+        font_end.setPointSize(8);   // 文字サイズ
+        font_range.setPointSize(8);   // 文字サイズ
+        ui->label_start_time->setFont(font_start);
+        ui->label_play_time->setFont(font_play);
+        ui->label_end_time->setFont(font_end);
+        ui->label_range_time->setFont(font_range);
 
         //Disconnect
         QObject::disconnect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
@@ -1076,7 +1188,6 @@ void MainWindow::stop_decode_thread(){
         QObject::disconnect(rangeSlider, &RangeSlider::rangeStartChanged, this, &MainWindow::slider_start_control);
         QObject::disconnect(rangeSlider, &RangeSlider::rangeEndChanged, this, &MainWindow::slider_end_control);
         QObject::disconnect(rangeSlider, &RangeSlider::playValueReleaseChanged, decodestream, &decode_thread::high_res_sliderPlayback);
-        QObject::disconnect(ui->Live_horizontalSlider, &QSlider::sliderMoved, this, &MainWindow::slider_control);
         QObject::disconnect(this, &MainWindow::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
         QObject::disconnect(this, &MainWindow::send_manual_pause, decodestream, &decode_thread::pausePlayback);
         QObject::disconnect(this, &MainWindow::send_manual_reverse, decodestream, &decode_thread::reversePlayback);

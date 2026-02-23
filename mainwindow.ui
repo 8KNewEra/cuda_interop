@@ -20,22 +20,6 @@
    <string>CUDA Master VideoViewer</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <widget class="QSlider" name="Live_horizontalSlider">
-    <property name="enabled">
-     <bool>false</bool>
-    </property>
-    <property name="geometry">
-     <rect>
-      <x>280</x>
-      <y>672</y>
-      <width>791</width>
-      <height>20</height>
-     </rect>
-    </property>
-    <property name="orientation">
-     <enum>Qt::Orientation::Horizontal</enum>
-    </property>
-   </widget>
    <widget class="QPushButton" name="play_pushButton">
     <property name="enabled">
      <bool>false</bool>
@@ -97,12 +81,12 @@
      </rect>
     </property>
    </widget>
-   <widget class="QLabel" name="label_time">
+   <widget class="QLabel" name="label_play_time">
     <property name="geometry">
      <rect>
-      <x>1078</x>
-      <y>667</y>
-      <width>91</width>
+      <x>671</x>
+      <y>637</y>
+      <width>111</width>
       <height>26</height>
      </rect>
     </property>
@@ -112,7 +96,7 @@
      </font>
     </property>
     <property name="text">
-     <string>00:00:00/00:00:00</string>
+     <string>再生:00:00:00(0 Frames)</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignCenter</set>
@@ -327,12 +311,75 @@
     <property name="geometry">
      <rect>
       <x>240</x>
-      <y>640</y>
+      <y>664</y>
       <width>921</width>
       <height>31</height>
      </rect>
     </property>
     <layout class="QHBoxLayout" name="horizontalLayout_slider"/>
+   </widget>
+   <widget class="QLabel" name="label_start_time">
+    <property name="geometry">
+     <rect>
+      <x>571</x>
+      <y>637</y>
+      <width>111</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>8</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>開始:00:00:00(0 Frames)</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_end_time">
+    <property name="geometry">
+     <rect>
+      <x>781</x>
+      <y>637</y>
+      <width>111</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>8</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>終了:00:00:00(0 Frames)</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_range_time">
+    <property name="geometry">
+     <rect>
+      <x>890</x>
+      <y>638</y>
+      <width>111</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>8</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>再生範囲:00:00:00(0 Frames)</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignVCenter</set>
+    </property>
    </widget>
   </widget>
   <widget class="QMenuBar" name="menuBar">
