@@ -433,28 +433,20 @@ void nvgpudecode::get_decode_image(){
 
 //映像シングルストリーム
 void nvgpudecode::get_singledecode_image() {
-    //qDebug()<<"1フレーム読み込み";
+    //qDebug()<<"1フレーム読み込み"<<Frame.FrameNo;
     // ----------- シーク処理 -----------
-    if (slider_No != Frame.FrameNo || video_reverse_flag || Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>VideoInfo.end_range_framesNo) {
+    if (slider_No != Frame.FrameNo || video_reverse_flag || Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>=VideoInfo.end_range_framesNo) {
         if (video_reverse_flag) {
             slider_No--;
             if (slider_No < VideoInfo.start_range_framesNo)
                 slider_No = VideoInfo.end_range_framesNo;
         }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
-            //停止時は始端固定
-            if(video_play_flag){
-                high_res_seek_frame(VideoInfo.end_range_framesNo);
-            }else{
-                high_res_seek_frame(VideoInfo.start_range_framesNo);
-            }
+            //始端終端を超えた場合は始端または終端にシーク、始端終端どっちに飛ばすかはhigh_res_seek_frame()に委ねる
+            high_res_seek_frame(Frame.FrameNo);
             return;
-        }else if(Frame.FrameNo>VideoInfo.end_range_framesNo){
-            //停止時は終端固定
-            if(video_play_flag){
-                high_res_seek_frame(VideoInfo.start_range_framesNo);
-            }else{
-                high_res_seek_frame(VideoInfo.end_range_framesNo);
-            }
+        }else if(Frame.FrameNo>=VideoInfo.end_range_framesNo){
+            //終端は始端に戻すので+1
+            high_res_seek_frame(Frame.FrameNo+1);
             return;
         }
 
@@ -531,26 +523,18 @@ void nvgpudecode::get_multidecode_image() {
     int got_count = 0;
 
     //----------- シーク処理 -----------
-    if (slider_No != Frame.FrameNo || video_reverse_flag || Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>VideoInfo.end_range_framesNo) {
+    if (slider_No != Frame.FrameNo || video_reverse_flag || Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>=VideoInfo.end_range_framesNo) {
         if (video_reverse_flag) {
             slider_No--;
             if (slider_No < VideoInfo.start_range_framesNo)
                 slider_No = VideoInfo.end_range_framesNo;
         }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
-            //停止時は始端固定
-            if(video_play_flag){
-                high_res_seek_frame(VideoInfo.end_range_framesNo);
-            }else{
-                high_res_seek_frame(VideoInfo.start_range_framesNo);
-            }
+            //始端終端を超えた場合は始端または終端にシーク、始端終端どっちに飛ばすかはhigh_res_seek_frame()に委ねる
+            high_res_seek_frame(Frame.FrameNo);
             return;
-        }else if(Frame.FrameNo>VideoInfo.end_range_framesNo){
-            //停止時は終端固定
-            if(video_play_flag){
-                high_res_seek_frame(VideoInfo.start_range_framesNo);
-            }else{
-                high_res_seek_frame(VideoInfo.end_range_framesNo);
-            }
+        }else if(Frame.FrameNo>=VideoInfo.end_range_framesNo){
+            //終端は始端に戻すので+1
+            high_res_seek_frame(Frame.FrameNo+1);
             return;
         }
 
@@ -797,6 +781,24 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
 
 //高精度シーク
 void nvgpudecode::high_res_seek_frame(int targetFrameNo){
+    //0より低い、最大フレーム数より多い数値が来た場合は修正
+    if(targetFrameNo<VideoInfo.start_range_framesNo){
+        if(video_play_flag){
+            targetFrameNo = VideoInfo.end_range_framesNo;
+        }else{
+            //停止時は始端固定
+            targetFrameNo = VideoInfo.start_range_framesNo;
+        }
+    }
+    if(targetFrameNo>VideoInfo.end_range_framesNo){
+        if(video_play_flag){
+            targetFrameNo = VideoInfo.start_range_framesNo;
+        }else{
+            //停止時は終端固定
+            targetFrameNo = VideoInfo.end_range_framesNo;
+        }
+    }
+
     if(vd.size()==0){
         return;
     }else if(vd.size()==1){
@@ -809,14 +811,6 @@ void nvgpudecode::high_res_seek_frame(int targetFrameNo){
 //高精度シークシングルストリーム
 void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
     emit heavy_process_signal(false);
-
-    //0より低い、最大フレーム数より多い数値が来た場合は修正
-    if(targetFrameNo<VideoInfo.start_range_framesNo){
-        targetFrameNo = VideoInfo.end_range_framesNo;
-    }
-    if(targetFrameNo>VideoInfo.end_range_framesNo){
-        targetFrameNo = VideoInfo.start_range_framesNo;
-    }
 
     // ----------- シーク処理 -----------
     avcodec_flush_buffers(vd[0].codec_ctx);
@@ -890,14 +884,6 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 //高精度シークマルチストリーム
 void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
     emit heavy_process_signal(false);
-
-    //0より低い、最大フレーム数より多い数値が来た場合は修正
-    if(targetFrameNo<VideoInfo.start_range_framesNo){
-        targetFrameNo = VideoInfo.end_range_framesNo;
-    }
-    if(targetFrameNo>VideoInfo.end_range_framesNo){
-        targetFrameNo = VideoInfo.start_range_framesNo;
-    }
 
     // ----------- シーク処理 -----------
     // ビデオ/オーディオの両方 flush
