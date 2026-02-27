@@ -49,7 +49,7 @@ private:
     int valueFromPixelPos(int pos) const;
     QRect handleRect(int value) const;
 
-    int m_minSpacing = 5;   // 値ベースの最小間隔
+    int m_minSpacing = 1;   // 値ベースの最小間隔
     int m_minPixelSpacing = 14;  // ハンドル直径より少し大きめ
 
     bool m_userInteraction = false;

@@ -406,6 +406,8 @@ bool nvgpudecode::get_last_frame_pts() {
         double time = last_pts * av_q2d(tb);
         qDebug() << "Last PTS:" << last_pts << " (" << time << "sec)";
         VideoInfo.max_framesNo = fmt_ctx->streams[vd[0].stream_index]->duration/VideoInfo.pts_per_frame-1;
+        VideoInfo.start_range_framesNo = 0;
+        VideoInfo.end_range_framesNo = VideoInfo.max_framesNo;
         Frame.FrameNo = VideoInfo.max_framesNo;
 
         //最大時間を計算 時:分:秒
@@ -798,6 +800,9 @@ void nvgpudecode::high_res_seek_frame(int targetFrameNo){
             targetFrameNo = VideoInfo.end_range_framesNo;
         }
     }
+    if(VideoInfo.fps<VideoInfo.max_framesNo){
+        emit heavy_process_signal(false);
+    }
 
     if(vd.size()==0){
         return;
@@ -810,8 +815,6 @@ void nvgpudecode::high_res_seek_frame(int targetFrameNo){
 
 //高精度シークシングルストリーム
 void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
-    emit heavy_process_signal(false);
-
     // ----------- シーク処理 -----------
     avcodec_flush_buffers(vd[0].codec_ctx);
     if (audio_ctx)
@@ -883,8 +886,6 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
 //高精度シークマルチストリーム
 void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
-    emit heavy_process_signal(false);
-
     // ----------- シーク処理 -----------
     // ビデオ/オーディオの両方 flush
     if (audio_ctx)
