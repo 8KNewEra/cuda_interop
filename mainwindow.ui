@@ -26,7 +26,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>102</x>
+      <x>124</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -42,7 +42,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>180</x>
+      <x>202</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -61,7 +61,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>62</x>
+      <x>84</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -151,7 +151,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>124</x>
+      <x>146</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -170,7 +170,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>85</x>
+      <x>107</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -189,7 +189,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>141</x>
+      <x>163</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -208,7 +208,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>24</x>
+      <x>46</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -227,7 +227,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>161</x>
+      <x>183</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -246,7 +246,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>199</x>
+      <x>221</x>
       <y>667</y>
       <width>30</width>
       <height>27</height>
@@ -270,7 +270,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>47</x>
+      <x>69</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -289,7 +289,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>10</x>
+      <x>30</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -310,9 +310,9 @@
    <widget class="QWidget" name="horizontalLayoutWidget">
     <property name="geometry">
      <rect>
-      <x>240</x>
+      <x>290</x>
       <y>664</y>
-      <width>921</width>
+      <width>871</width>
       <height>31</height>
      </rect>
     </property>
@@ -379,6 +379,44 @@
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignVCenter</set>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="cutend_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>242</x>
+      <y>636</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">▶|</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="cutstart_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>8</x>
+      <y>636</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">|◀</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
     </property>
    </widget>
   </widget>
