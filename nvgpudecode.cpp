@@ -769,7 +769,6 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
         Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = Frame.FrameNo;
     }
-    if(back1FrameNo<0)back1FrameNo=0;
     seek_flag = false;
 
     //時刻を算出

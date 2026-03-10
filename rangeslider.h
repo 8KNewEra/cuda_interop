@@ -47,7 +47,15 @@ private:
 
     int pixelPosFromValue(int value) const;
     int valueFromPixelPos(int pos) const;
-    QRect handleRect(int value) const;
+
+    //ハンドル
+    int playWidth = 8;
+    int handleWidth = 12;
+    int handleHeight = 18;
+    int playHeight = 40;
+    QRect handleRectPlay(int value) const;
+    QRect handleRectStart(int value) const;
+    QRect handleRectEnd(int value) const;
 
     int m_minSpacing = 1;   // 値ベースの最小間隔
     int m_minPixelSpacing = 14;  // ハンドル直径より少し大きめ

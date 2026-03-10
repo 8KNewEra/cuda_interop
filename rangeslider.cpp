@@ -113,25 +113,50 @@ void RangeSlider::setValues(int start, int end)
 
 int RangeSlider::pixelPosFromValue(int value) const
 {
-    if (m_max == m_min) return 0;
+    if (m_max == m_min)
+        return handleWidth;
+
+    int sliderMin = handleWidth;
+    int sliderMax = width() - handleWidth;
 
     double ratio = double(value - m_min) / (m_max - m_min);
-    return int(ratio * width());
+
+    return sliderMin + int(ratio * (sliderMax - sliderMin));
 }
 
 int RangeSlider::valueFromPixelPos(int pos) const
 {
-    if (width() == 0) return m_min;
+    int sliderMin = handleWidth;
+    int sliderMax = width() - handleWidth;
 
-    double ratio = double(pos) / width();
+    pos = qBound(sliderMin, pos, sliderMax);
+
+    double ratio = double(pos - sliderMin) / (sliderMax - sliderMin);
+
     return m_min + int(ratio * (m_max - m_min));
 }
 
-QRect RangeSlider::handleRect(int value) const
+QRect RangeSlider::handleRectPlay(int value) const
 {
     int x = pixelPosFromValue(value);
-    int handleWidth = 14;
-    return QRect(x - handleWidth/2, height()/2 - 10, handleWidth, 20);
+
+    int y = height()/2 - playHeight/2;
+
+    return QRect(x - playWidth/2, y, playWidth, playHeight);
+}
+
+QRect RangeSlider::handleRectStart(int value) const
+{
+    int x = pixelPosFromValue(value);
+    return QRect(x - handleWidth, height()/2 - handleHeight/2,
+                 handleWidth, handleHeight);
+}
+
+QRect RangeSlider::handleRectEnd(int value) const
+{
+    int x = pixelPosFromValue(value);
+    return QRect(x, height()/2 - handleHeight/2,
+                 handleWidth, handleHeight);
 }
 
 void RangeSlider::paintEvent(QPaintEvent*)
@@ -145,41 +170,53 @@ void RangeSlider::paintEvent(QPaintEvent*)
     int endPos   = pixelPosFromValue(m_end);
     int playPos  = pixelPosFromValue(m_play);
 
+    int sliderY = h/2 - 3;
+
     // 背景バー
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(120,120,120));
-    p.drawRect(0, h/2 - 3, width(), 6);
+    p.setBrush(QColor(255,255,255,40));
+    p.drawRoundedRect(handleWidth, sliderY,
+                      width()-handleWidth*2, 6, 3,3);
 
     // 範囲
-    p.setBrush(QColor(50,150,255));
-    p.drawRect(startPos, h/2 - 4, endPos - startPos, 8);
+    p.setBrush(QColor(90,170,255));
+    p.drawRoundedRect(startPos, sliderY,
+                      endPos - startPos, 6, 3,3);
 
-    // 再生位置ライン
-    p.setPen(QPen(Qt::red, 2));
-    p.drawLine(playPos, 0, playPos, height());
-
-    // ハンドル
-    p.setPen(Qt::NoPen);
-
+    // start ハンドル
     p.setBrush(Qt::white);
-    p.drawEllipse(handleRect(m_start));
+    p.drawRoundedRect(handleRectStart(m_start),6,6);
 
-    p.setBrush(Qt::white);
-    p.drawEllipse(handleRect(m_end));
+    // end ハンドル
+    p.drawRoundedRect(handleRectEnd(m_end),6,6);
 
-    // playハンドル
+    // play ヘッド（棒）
     p.setBrush(Qt::red);
-    p.drawEllipse(handleRect(m_play));
+    p.drawRoundedRect(handleRectPlay(m_play),2,2);
+
+    // ▲ 再生三角マーカー
+    // int triTop = 0;
+    // int triBottom = 20;
+
+    // QPolygon triangle;
+
+    // triangle << QPoint(playPos, triTop)
+    //          << QPoint(playPos - 14, triBottom)
+    //          << QPoint(playPos + 14, triBottom);
+
+    // p.setBrush(Qt::red);
+    // p.setPen(Qt::NoPen);
+    // p.drawPolygon(triangle);
 }
 
 void RangeSlider::mousePressEvent(QMouseEvent* event)
 {
     // play優先
-    if (handleRect(m_play).contains(event->pos()))
+    if (handleRectPlay(m_play).contains(event->pos()))
         m_activeHandle = PlayHandle;
-    else if (handleRect(m_start).contains(event->pos()))
+    else if (handleRectStart(m_start).contains(event->pos()))
         m_activeHandle = StartHandle;
-    else if (handleRect(m_end).contains(event->pos()))
+    else if (handleRectEnd(m_end).contains(event->pos()))
         m_activeHandle = EndHandle;
     else
         m_activeHandle = NoHandle;

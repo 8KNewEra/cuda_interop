@@ -791,9 +791,10 @@ void MainWindow::go1frame_pushbutton_control(){
 
 //停止ボタン制御
 void MainWindow::stop_pushbutton_control(){
+    rangeSlider->setStartValue(0);
+    rangeSlider->setEndValue(VideoInfo.max_framesNo);
     emit send_manual_slider(0);
-    ui->play_pushButton->setText("||");
-    emit send_manual_resumeplayback();
+    ui->play_pushButton->setText("▶");
 }
 
 //現在のフレームを終端
