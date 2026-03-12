@@ -49,10 +49,10 @@ private:
     int valueFromPixelPos(int pos) const;
 
     //ハンドル
-    int playWidth = 8;
-    int handleWidth = 12;
-    int handleHeight = 18;
-    int playHeight = 40;
+    int playWidth = 5;
+    int playHeight = 36;
+    int handleWidth = 14;
+    int handleHeight = 24;
     QRect handleRectPlay(int value) const;
     QRect handleRectStart(int value) const;
     QRect handleRectEnd(int value) const;

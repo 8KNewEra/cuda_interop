@@ -29,7 +29,7 @@ MainWindow::MainWindow(QWidget *parent)
     GLwidgetInitialized();
 
     //スライダー
-    rangeSlider->setFixedHeight(20);
+    rangeSlider->setFixedHeight(36);
     ui->cutstart_pushButton->setFixedWidth(30);
     ui->cutstart_pushButton->setFixedHeight(26);
     ui->back1frame_pushButton->setFixedWidth(30);
@@ -553,7 +553,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->openGLContainer->setGeometry(0, 0, window_width, window_height-89); // 位置とサイズを指定
 
     rangeSlider->setFixedWidth(window_width-321);
-    rangeSlider->setGeometry(242, window_height-50,window_width-286,window_height-5);
+    rangeSlider->setGeometry(242, window_height-62,window_width-286,window_height-5);
 
     ui->cutstart_pushButton->setGeometry(8, window_height-83,198,window_height-5);
     ui->reverse_pushButton->setGeometry(41, window_height-83,99,window_height-5);
@@ -570,12 +570,12 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->go10s_pushButton->setGeometry(154, window_height-53,231,window_height-5);
     ui->go30s_pushButton->setGeometry(187, window_height-53,231,window_height-5);
 
-    ui->pushButton_speed->setGeometry(window_width-71, window_height-83,window_width-41,window_height-5);
-    ui->pushButton_volume->setGeometry(window_width-38, window_height-83,window_width-60,window_height-5);
-    ui->label_start_time->setGeometry(window_width-1030, window_height-80,window_width-261,window_height-5);
-    ui->label_play_time->setGeometry(window_width-790, window_height-80,window_width-261,window_height-5);
-    ui->label_end_time->setGeometry(window_width-570, window_height-80,window_width-261,window_height-5);
-    ui->label_range_time->setGeometry(window_width-330, window_height-80,window_width-261,window_height-5);
+    ui->pushButton_speed->setGeometry(window_width-71, window_height-89,window_width-41,window_height-5);
+    ui->pushButton_volume->setGeometry(window_width-38, window_height-89,window_width-60,window_height-5);
+    ui->label_start_time->setGeometry(window_width-1030, window_height-89,window_width-261,window_height-5);
+    ui->label_play_time->setGeometry(window_width-790, window_height-89,window_width-261,window_height-5);
+    ui->label_end_time->setGeometry(window_width-570, window_height-89,window_width-261,window_height-5);
+    ui->label_range_time->setGeometry(window_width-330, window_height-89,window_width-261,window_height-5);
 
     setMinimumSize(QSize(640, 480));
     glWidget->GLresize();

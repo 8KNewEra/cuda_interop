@@ -140,9 +140,10 @@ QRect RangeSlider::handleRectPlay(int value) const
 {
     int x = pixelPosFromValue(value);
 
-    int y = height()/2 - playHeight/2;
+    int hitWidth = 16;   // 当たり判定幅
+    int hitHeight = height();
 
-    return QRect(x - playWidth/2, y, playWidth, playHeight);
+    return QRect(x - hitWidth/2, 0, hitWidth, hitHeight);
 }
 
 QRect RangeSlider::handleRectStart(int value) const
@@ -191,22 +192,20 @@ void RangeSlider::paintEvent(QPaintEvent*)
     p.drawRoundedRect(handleRectEnd(m_end),6,6);
 
     // play ヘッド（棒）
+    QRect hit = handleRectPlay(m_play);
+
+    int playWidth = 5;  // 見た目の幅
+
+    QRect drawRect(
+        hit.center().x() - playWidth/2,
+        0,
+        playWidth,
+        height()
+        );
+
     p.setBrush(Qt::red);
-    p.drawRoundedRect(handleRectPlay(m_play),2,2);
-
-    // ▲ 再生三角マーカー
-    // int triTop = 0;
-    // int triBottom = 20;
-
-    // QPolygon triangle;
-
-    // triangle << QPoint(playPos, triTop)
-    //          << QPoint(playPos - 14, triBottom)
-    //          << QPoint(playPos + 14, triBottom);
-
-    // p.setBrush(Qt::red);
-    // p.setPen(Qt::NoPen);
-    // p.drawPolygon(triangle);
+    p.setPen(Qt::NoPen);
+    p.drawRoundedRect(drawRect,2,2);
 }
 
 void RangeSlider::mousePressEvent(QMouseEvent* event)
