@@ -108,6 +108,7 @@ private:
     void slider_control(int value);
     void slider_start_control(int value);
     void slider_end_control(int value);
+    void range_label_control(int range_time,int FrameNo);
     void heavy_process_UI_control(bool flag);
     bool pause_flag = false;
     bool reverse_flag = false;

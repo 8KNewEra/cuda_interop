@@ -503,7 +503,7 @@ void MainWindow::CSS_Design(){
         )");
     ui->label_play_time->setStyleSheet(R"(
         QLabel {
-            color: rgba(220,220,220,200);
+            color: rgba(255,100,100,200);
             font-family: Consolas;
         }
         )");
@@ -795,6 +795,7 @@ void MainWindow::stop_pushbutton_control(){
     rangeSlider->setEndValue(VideoInfo.max_framesNo);
     emit send_manual_slider(0);
     ui->play_pushButton->setText("▶");
+    range_label_control(VideoInfo.max_framesNo/VideoInfo.fps,VideoInfo.max_framesNo);
 }
 
 //現在のフレームを終端
@@ -860,21 +861,12 @@ void MainWindow::slider_start_control(int value){
     int start_second = fmod(start_time, 60.0);
 
     //時間を計算 時:分:秒
-    double range_time = VideoInfo.end_range_framesNo/VideoInfo.fps-value/VideoInfo.fps;
-    int range_hour = range_time / 3600;
-    int range_minute = (int(range_time) % 3600) / 60;
-    int range_second = fmod(range_time, 60.0);
+    range_label_control(VideoInfo.end_range_framesNo/VideoInfo.fps-value/VideoInfo.fps,VideoInfo.end_range_framesNo-value);
 
     if (start_hour > 0) {
         ui->label_start_time->setText(QString::asprintf("開始:%02d:%02d:%02d(%d Frames)", start_hour, start_minute, start_second, value));
     }else{
         ui->label_start_time->setText(QString::asprintf("開始:%02d:%02d(%d Frames)", start_minute, start_second, value));
-    }
-
-    if (range_hour > 0) {
-        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d:%02d(%d Frames)", range_hour, range_minute, range_second, VideoInfo.end_range_framesNo-value));
-    }else{
-        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d(%d Frames)", range_minute, range_second, VideoInfo.end_range_framesNo-value));
     }
 
     emit send_manual_range_start_slider(value);
@@ -888,10 +880,7 @@ void MainWindow::slider_end_control(int value){
     int end_second = fmod(end_time, 60.0);
 
     //時間を計算 時:分:秒
-    double range_time = value/VideoInfo.fps-VideoInfo.start_range_framesNo/VideoInfo.fps;
-    int range_hour = range_time / 3600;
-    int range_minute = (int(range_time) % 3600) / 60;
-    int range_second = fmod(range_time, 60.0);
+    range_label_control(value/VideoInfo.fps-VideoInfo.start_range_framesNo/VideoInfo.fps,value-VideoInfo.start_range_framesNo);
 
     if (end_hour > 0) {
         ui->label_end_time->setText(QString::asprintf("終了:%02d:%02d:%02d(%d Frames)", end_hour, end_minute, end_second, value));
@@ -899,13 +888,20 @@ void MainWindow::slider_end_control(int value){
         ui->label_end_time->setText(QString::asprintf("終了:%02d:%02d(%d Frames)", end_minute, end_second, value));
     }
 
-    if (range_hour > 0) {
-        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d:%02d(%d Frames)", range_hour, range_minute, range_second, value-VideoInfo.start_range_framesNo));
-    }else{
-        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d(%d Frames)", range_minute, range_second, value-VideoInfo.start_range_framesNo));
-    }
-
     emit send_manual_range_end_slider(value);
+}
+
+void MainWindow::range_label_control(int range_time,int FrameNo){
+    //qDebug()<<range_time<<":"<<FrameNo;
+    int range_hour = range_time / 3600;
+    int range_minute = (int(range_time) % 3600) / 60;
+    int range_second = fmod(range_time, 60.0);
+
+    if (range_hour > 0) {
+        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d:%02d(%d Frames)", range_hour, range_minute, range_second, FrameNo));
+    }else{
+        ui->label_range_time->setText(QString::asprintf("再生範囲:%02d:%02d(%d Frames)", range_minute, range_second, FrameNo));
+    }
 }
 
 //UIの有効無効制御

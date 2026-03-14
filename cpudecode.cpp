@@ -419,6 +419,8 @@ bool cpudecode::get_last_frame_pts() {
         double time = last_pts * av_q2d(tb);
         qDebug() << "Last PTS:" << last_pts << " (" << time << "sec)";
         VideoInfo.max_framesNo = fmt_ctx->streams[vd[0].stream_index]->duration/VideoInfo.pts_per_frame-1;
+        VideoInfo.start_range_framesNo = 0;
+        VideoInfo.end_range_framesNo = VideoInfo.max_framesNo;
         Frame.FrameNo = VideoInfo.max_framesNo;
 
         //最大時間を計算 時:分:秒
@@ -435,12 +437,21 @@ bool cpudecode::get_last_frame_pts() {
 
 //映像ストリーム取得
 void cpudecode::get_decode_image(){
+    //qDebug()<<"1フレーム読み込み"<<Frame.FrameNo;
     // ----------- シーク処理 -----------
-    if (slider_No != Frame.FrameNo || video_reverse_flag) {
+    if (slider_No != Frame.FrameNo || video_reverse_flag || Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>=VideoInfo.end_range_framesNo) {
         if (video_reverse_flag) {
             slider_No--;
-            if (slider_No < 0)
-                slider_No = VideoInfo.max_framesNo;
+            if (slider_No < VideoInfo.start_range_framesNo)
+                slider_No = VideoInfo.end_range_framesNo;
+        }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
+            //始端終端を超えた場合は始端または終端にシーク、始端終端どっちに飛ばすかはhigh_res_seek_frame()に委ねる
+            high_res_seek_frame(Frame.FrameNo);
+            return;
+        }else if(Frame.FrameNo>=VideoInfo.end_range_framesNo){
+            //終端は始端に戻すので+1
+            high_res_seek_frame(Frame.FrameNo+1);
+            return;
         }
 
         avcodec_flush_buffers(vd[0].codec_ctx);
@@ -458,32 +469,30 @@ void cpudecode::get_decode_image(){
     // ----------- パケット読み込みループ -----------
     while (true) {
         int ret = av_read_frame(fmt_ctx, packet);
+
         // ---------- EOF ----------
         if (ret < 0) {
+
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
             if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                gpu_upload();
                 av_packet_unref(packet);
                 break;
             }
 
             // 終端→先頭に戻ってループ
-            uint64_t seek_frame;
-            if (Frame.FrameNo < VideoInfo.max_framesNo - 1) {
-                seek_frame = Frame.FrameNo + 1;
+            if (Frame.FrameNo < VideoInfo.end_range_framesNo - 1) {
+                avcodec_flush_buffers(vd[0].codec_ctx);
+                if (audio_ctx)
+                    avcodec_flush_buffers(audio_ctx);
+
+                av_seek_frame(fmt_ctx, vd[0].stream_index,
+                              (Frame.FrameNo + 1) * VideoInfo.pts_per_frame,
+                              AVSEEK_FLAG_ANY);
             } else {
                 emit decode_end();
-                seek_frame = 0;
+                high_res_seek_frame(VideoInfo.start_range_framesNo);
             }
-
-            avcodec_flush_buffers(vd[0].codec_ctx);
-            if (audio_ctx)
-                avcodec_flush_buffers(audio_ctx);
-
-            av_seek_frame(fmt_ctx, vd[0].stream_index,
-                          seek_frame * VideoInfo.pts_per_frame,
-                          AVSEEK_FLAG_ANY);
 
             av_packet_unref(packet);
             continue;
@@ -500,15 +509,16 @@ void cpudecode::get_decode_image(){
         if (packet->stream_index == vd[0].stream_index) {
             if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                    gpu_upload();
                     av_packet_unref(packet);
                     break;
                 }
             }
         }
-
         av_packet_unref(packet);
     }
+
+    gpu_upload();
+    av_packet_unref(packet);
 }
 
 //オーディオ
@@ -662,7 +672,6 @@ void cpudecode::gpu_upload(){
     cudaEventSynchronize(events);
 
     //フレーム番号取得
-    //フレーム番号取得
     if(seek_flag){
         Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = Frame.FrameNo;
@@ -675,7 +684,6 @@ void cpudecode::gpu_upload(){
         Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = Frame.FrameNo;
     }
-    if(back1FrameNo<0)back1FrameNo=0;
     seek_flag = false;
 
     emit send_decode_image(Frame,false,video_reverse_flag);
@@ -684,11 +692,24 @@ void cpudecode::gpu_upload(){
 //高精度シーク
 void cpudecode::high_res_seek_frame(int targetFrameNo){
     //0より低い、最大フレーム数より多い数値が来た場合は修正
-    if(targetFrameNo<0){
-        targetFrameNo = 0;
+    if(targetFrameNo<VideoInfo.start_range_framesNo){
+        if(video_play_flag){
+            targetFrameNo = VideoInfo.end_range_framesNo;
+        }else{
+            //停止時は始端固定
+            targetFrameNo = VideoInfo.start_range_framesNo;
+        }
     }
-    if(targetFrameNo>VideoInfo.max_framesNo){
-        targetFrameNo = VideoInfo.max_framesNo;
+    if(targetFrameNo>VideoInfo.end_range_framesNo){
+        if(video_play_flag){
+            targetFrameNo = VideoInfo.start_range_framesNo;
+        }else{
+            //停止時は終端固定
+            targetFrameNo = VideoInfo.end_range_framesNo;
+        }
+    }
+    if(VideoInfo.fps<VideoInfo.max_framesNo){
+        emit heavy_process_signal(false);
     }
 
     // ----------- シーク処理 -----------
@@ -706,7 +727,7 @@ void cpudecode::high_res_seek_frame(int targetFrameNo){
     if(FrameNo<0){
         FrameNo = 0;
     }
-    while(true){
+    while(!thread_stop_flag){
         while (true) {
             int ret = av_read_frame(fmt_ctx, packet);
 
@@ -720,7 +741,7 @@ void cpudecode::high_res_seek_frame(int targetFrameNo){
 
                 // 終端→先頭に戻ってループ
                 uint64_t seek_frame{};
-                if (Frame.FrameNo < VideoInfo.max_framesNo - 1) {
+                if (Frame.FrameNo < VideoInfo.end_range_framesNo - 1) {
                     seek_frame = Frame.FrameNo + 1;
                 }
 
@@ -759,3 +780,4 @@ void cpudecode::high_res_seek_frame(int targetFrameNo){
         av_packet_unref(packet);
     }
 }
+

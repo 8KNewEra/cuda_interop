@@ -260,9 +260,9 @@ void RangeSlider::mouseMoveEvent(QMouseEvent* event)
 void RangeSlider::mouseReleaseEvent(QMouseEvent*)
 {
     //Playスライダーの場合のみ
-    if(m_activeHandle == PlayHandle){
-        emit playValueReleaseChanged(m_play);
-    }
+    // if(m_activeHandle == PlayHandle){
+    //     emit playValueReleaseChanged(m_play);
+    // }
     m_userInteraction = false;
     m_activeHandle = NoHandle;
 }
