@@ -66,6 +66,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->label_end_time->setFixedHeight(26);
     ui->label_range_time->setFixedWidth(240);
     ui->label_range_time->setFixedHeight(26);
+    ui->label_range_time->hide();
     ui->pushButton_speed->setFixedWidth(30);
     ui->pushButton_speed->setFixedHeight(26);
     ui->pushButton_volume->setFixedWidth(30);
@@ -294,6 +295,8 @@ void MainWindow::GLwidgetInitialized(){
             ui->pushButton_speed->setText(text);
             videoSpeed->hide();
             videoSpeed->hideTimer.stop();
+
+            ui->label_range_time->hide();
         },Qt::QueuedConnection);
     });
 
@@ -572,9 +575,9 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
     ui->pushButton_speed->setGeometry(window_width-71, window_height-89,window_width-41,window_height-5);
     ui->pushButton_volume->setGeometry(window_width-38, window_height-89,window_width-60,window_height-5);
-    ui->label_start_time->setGeometry(window_width-1030, window_height-89,window_width-261,window_height-5);
-    ui->label_play_time->setGeometry(window_width-790, window_height-89,window_width-261,window_height-5);
-    ui->label_end_time->setGeometry(window_width-570, window_height-89,window_width-261,window_height-5);
+    ui->label_start_time->setGeometry(window_width-970, window_height-89,window_width-261,window_height-5);
+    ui->label_play_time->setGeometry(window_width-670, window_height-89,window_width-261,window_height-5);
+    ui->label_end_time->setGeometry(window_width-370, window_height-89,window_width-261,window_height-5);
     ui->label_range_time->setGeometry(window_width-330, window_height-89,window_width-261,window_height-5);
 
     setMinimumSize(QSize(640, 480));
@@ -671,7 +674,7 @@ void MainWindow::toggleFullScreen()
         ui->label_start_time->show();
         ui->label_play_time->show();
         ui->label_end_time->show();
-        ui->label_range_time->show();
+        //ui->label_range_time->show();
         ui->pushButton_volume->show();
         ui->pushButton_speed->show();
 
@@ -1016,6 +1019,7 @@ void MainWindow::init_decodethread_complete(){
     }
 
     ui->play_pushButton->setText("||");
+    ui->label_range_time->hide();
     rangeSlider->setRange(0, VideoInfo.max_framesNo);
     rangeSlider->setValues(0, VideoInfo.max_framesNo);
     rangeSlider->setPlayValue(0);
