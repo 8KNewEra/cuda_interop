@@ -7,6 +7,9 @@ RangeSlider::RangeSlider(QWidget* parent)
     : QWidget(parent)
 {
     setMinimumHeight(30);
+
+    //マウス追跡
+    setMouseTracking(true);
 }
 
 void RangeSlider::setRange(int min, int max)
@@ -140,7 +143,7 @@ QRect RangeSlider::handleRectPlay(int value) const
 {
     int x = pixelPosFromValue(value);
 
-    int hitWidth = 16;   // 当たり判定幅
+    int hitWidth = 12;   // 当たり判定幅
     int hitHeight = height();
 
     return QRect(x - hitWidth/2, 0, hitWidth, hitHeight);
@@ -210,15 +213,36 @@ void RangeSlider::paintEvent(QPaintEvent*)
 
 void RangeSlider::mousePressEvent(QMouseEvent* event)
 {
+    int value = valueFromPixelPos(event->pos().x());
+
     // play優先
     if (handleRectPlay(m_play).contains(event->pos()))
         m_activeHandle = PlayHandle;
+
     else if (handleRectStart(m_start).contains(event->pos()))
         m_activeHandle = StartHandle;
+
     else if (handleRectEnd(m_end).contains(event->pos()))
         m_activeHandle = EndHandle;
+
+    // ★スライダーバークリック → シーク
     else
+    {
+        if (value >= m_start && value <= m_end)
+        {
+            m_play = value;
+            emit playValueChanged(m_play);
+            emit playValueReleaseChanged(m_play);
+            update();
+        }
+
         m_activeHandle = NoHandle;
+        return;
+    }
+
+    // ドラッグカーソル
+    if (m_activeHandle != NoHandle)
+        setCursor(Qt::PointingHandCursor);
 
     if (m_activeHandle == PlayHandle)
         m_userInteraction = true;
@@ -226,10 +250,31 @@ void RangeSlider::mousePressEvent(QMouseEvent* event)
 
 void RangeSlider::mouseMoveEvent(QMouseEvent* event)
 {
+    int value = valueFromPixelPos(event->pos().x());
+
+    // ★ドラッグ中
+    if (m_activeHandle != NoHandle)
+    {
+        setCursor(Qt::PointingHandCursor);
+    }
+    else
+    {
+        // ★ハンドル or 範囲バーなら指カーソル
+        if (handleRectPlay(m_play).contains(event->pos()) ||
+            handleRectStart(m_start).contains(event->pos()) ||
+            handleRectEnd(m_end).contains(event->pos()) ||
+            (value >= m_start && value <= m_end))
+        {
+            setCursor(Qt::PointingHandCursor);
+        }
+        else
+        {
+            setCursor(Qt::ArrowCursor);
+        }
+    }
+
     if (m_activeHandle == NoHandle)
         return;
-
-    int value = valueFromPixelPos(event->pos().x());
 
     switch (m_activeHandle)
     {
@@ -259,10 +304,13 @@ void RangeSlider::mouseMoveEvent(QMouseEvent* event)
 
 void RangeSlider::mouseReleaseEvent(QMouseEvent*)
 {
-    //Playスライダーの場合のみ
-    // if(m_activeHandle == PlayHandle){
-    //     emit playValueReleaseChanged(m_play);
-    // }
+    if(m_activeHandle == PlayHandle){
+        emit playValueReleaseChanged(m_play);
+    }
+
+    //マウスカーソルを元に戻す
+    setCursor(Qt::ArrowCursor);  // ★戻す
+
     m_userInteraction = false;
     m_activeHandle = NoHandle;
 }

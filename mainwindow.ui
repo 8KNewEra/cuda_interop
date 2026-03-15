@@ -394,7 +394,7 @@
      </rect>
     </property>
     <property name="text">
-     <string extracomment="eeeeeeeeee">▶|</string>
+     <string extracomment="eeeeeeeeee">]</string>
     </property>
     <property name="checkable">
      <bool>false</bool>
@@ -413,7 +413,7 @@
      </rect>
     </property>
     <property name="text">
-     <string extracomment="eeeeeeeeee">|◀</string>
+     <string extracomment="eeeeeeeeee">[</string>
     </property>
     <property name="checkable">
      <bool>false</bool>
