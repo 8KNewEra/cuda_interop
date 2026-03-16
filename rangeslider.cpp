@@ -51,6 +51,9 @@ void RangeSlider::setStartValue(int value)
     {
         m_play = m_start;
         playChanged = true;
+
+        //一旦マウス追跡解除
+        setMouseTracking(false);
     }
 
     update();
@@ -76,6 +79,9 @@ void RangeSlider::setEndValue(int value)
     {
         m_play = m_end;
         playChanged = true;
+
+        //一旦マウス追跡解除
+        setMouseTracking(false);
     }
 
     update();
@@ -107,6 +113,7 @@ void RangeSlider::setValues(int start, int end)
 
     m_start = qBound(m_min, start, m_max);
     m_end   = qBound(m_min, end, m_max);
+    m_play = qBound(m_start, m_play, m_end);  // ★追加
 
     update();
 
@@ -250,6 +257,9 @@ void RangeSlider::mousePressEvent(QMouseEvent* event)
 
 void RangeSlider::mouseMoveEvent(QMouseEvent* event)
 {
+    //マウス追跡開始
+    setMouseTracking(true);
+
     int value = valueFromPixelPos(event->pos().x());
 
     // ★ドラッグ中
@@ -302,15 +312,15 @@ void RangeSlider::mouseMoveEvent(QMouseEvent* event)
     update();
 }
 
+void RangeSlider::leaveEvent(QEvent *)
+{
+    if (m_activeHandle == NoHandle)   // ドラッグ中は戻さない
+        setCursor(Qt::ArrowCursor);
+}
+
 void RangeSlider::mouseReleaseEvent(QMouseEvent*)
 {
-    if(m_activeHandle == PlayHandle){
-        emit playValueReleaseChanged(m_play);
-    }
-
-    //マウスカーソルを元に戻す
-    setCursor(Qt::ArrowCursor);  // ★戻す
-
+    if(m_activeHandle == PlayHandle)emit playValueReleaseChanged(m_play);
     m_userInteraction = false;
     m_activeHandle = NoHandle;
 }
