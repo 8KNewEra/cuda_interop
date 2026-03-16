@@ -77,7 +77,7 @@ protected:
     //デコード周り
     virtual bool initialized_ffmpeg()=0;
     virtual void get_decode_image()=0;
-    virtual void high_res_seek_frame(int FrameNo)=0;
+    virtual void high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)=0;
     const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     bool get_last_frame_pts();

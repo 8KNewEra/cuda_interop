@@ -274,11 +274,11 @@ void decode_thread::processFrame() {
     //1フレーム戻し
     if(back1frame_flag){
         if(back1FrameNo <= 0&&Frame.FrameNo==0){
-            high_res_seek_frame(VideoInfo.end_range_framesNo);
+            high_res_seek_frame(VideoInfo.end_range_framesNo,true);
         }else if(back1FrameNo < VideoInfo.start_range_framesNo){
-            high_res_seek_frame(VideoInfo.end_range_framesNo);
+            high_res_seek_frame(VideoInfo.end_range_framesNo,true);
         }else{
-            high_res_seek_frame(back1FrameNo);
+            high_res_seek_frame(back1FrameNo,true);
         }
         back1frame_flag = false;
         return;
@@ -286,7 +286,7 @@ void decode_thread::processFrame() {
 
     //高精度スライダー
     if(high_res_slider_flag){
-        high_res_seek_frame(high_res_sliderNo);
+        high_res_seek_frame(high_res_sliderNo,true);
         high_res_slider_flag = false;
         return;
     }
@@ -294,9 +294,9 @@ void decode_thread::processFrame() {
     //1フレーム送り
     if(go1frame_flag){
         if(Frame.FrameNo >= VideoInfo.max_framesNo){
-            high_res_seek_frame(VideoInfo.start_range_framesNo);
+            high_res_seek_frame(VideoInfo.start_range_framesNo,true);
         }else if(Frame.FrameNo >= VideoInfo.end_range_framesNo){
-            high_res_seek_frame(VideoInfo.start_range_framesNo);
+            high_res_seek_frame(VideoInfo.start_range_framesNo,true);
         }else{
             get_decode_image();
         }

@@ -427,11 +427,11 @@ void avidecode::get_decode_image(){
                 slider_No = VideoInfo.end_range_framesNo;
         }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
             //始端終端を超えた場合は始端または終端にシーク、始端終端どっちに飛ばすかはhigh_res_seek_frame()に委ねる
-            high_res_seek_frame(Frame.FrameNo);
+            high_res_seek_frame(Frame.FrameNo,false);
             return;
         }else if(Frame.FrameNo>=VideoInfo.end_range_framesNo){
             //終端は始端に戻すので+1
-            high_res_seek_frame(Frame.FrameNo+1);
+            high_res_seek_frame(Frame.FrameNo+1,false);
             return;
         }
 
@@ -472,7 +472,7 @@ void avidecode::get_decode_image(){
                               AVSEEK_FLAG_ANY);
             } else {
                 emit decode_end();
-                high_res_seek_frame(VideoInfo.start_range_framesNo);
+                high_res_seek_frame(VideoInfo.start_range_framesNo,false);
             }
 
             av_packet_unref(packet);
@@ -650,7 +650,7 @@ void avidecode::gpu_upload(){
 }
 
 //高精度シーク
-void avidecode::high_res_seek_frame(int targetFrameNo){
+void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
     //0より低い、最大フレーム数より多い数値が来た場合は修正
     if(targetFrameNo<VideoInfo.start_range_framesNo){
         if(video_play_flag){
@@ -668,7 +668,8 @@ void avidecode::high_res_seek_frame(int targetFrameNo){
             targetFrameNo = VideoInfo.end_range_framesNo;
         }
     }
-    if(VideoInfo.fps<VideoInfo.max_framesNo){
+    if(heavy_UI_flag){
+        //UIはfalse
         emit heavy_process_signal(false);
     }
 
