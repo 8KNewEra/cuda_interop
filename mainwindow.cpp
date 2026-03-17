@@ -29,7 +29,7 @@ MainWindow::MainWindow(QWidget *parent)
     GLwidgetInitialized();
 
     //スライダー
-    rangeSlider->setFixedHeight(36);
+    rangeSlider->setFixedHeight(38);
     ui->cutstart_pushButton->setFixedWidth(30);
     ui->cutstart_pushButton->setFixedHeight(26);
     ui->back1frame_pushButton->setFixedWidth(30);

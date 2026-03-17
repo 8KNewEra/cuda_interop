@@ -441,7 +441,7 @@ void nvgpudecode::get_singledecode_image() {
         // ----------- 逆再生、通常シーク処理 -----------
         if (video_reverse_flag) {
             slider_No--;
-            if (Frame.FrameNo <= VideoInfo.start_range_framesNo){
+            if (Frame.FrameNo-1 < VideoInfo.start_range_framesNo){
                 high_res_seek_frame(Frame.FrameNo-1,false);
                 return;
             }
@@ -457,7 +457,7 @@ void nvgpudecode::get_singledecode_image() {
 
         Frame.FrameNo = slider_No;
         seek_flag = true;
-    }else if(Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>=VideoInfo.end_range_framesNo){
+    }else if(Frame.FrameNo+1 > VideoInfo.end_range_framesNo){
         // ----------- 範囲外シーク処理 -----------
         //終端、始端に戻す
         if(!video_reverse_flag){
@@ -531,7 +531,7 @@ void nvgpudecode::get_multidecode_image() {
         // ----------- 逆再生、通常シーク処理 -----------
         if (video_reverse_flag) {
             slider_No--;
-            if (Frame.FrameNo <= VideoInfo.start_range_framesNo){
+            if (Frame.FrameNo-1 < VideoInfo.start_range_framesNo){
                 high_res_seek_frame(Frame.FrameNo-1,false);
                 return;
             }
@@ -549,7 +549,7 @@ void nvgpudecode::get_multidecode_image() {
 
         Frame.FrameNo = slider_No;
         seek_flag = true;
-    }else if(Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>=VideoInfo.end_range_framesNo){
+    }else if(Frame.FrameNo+1 > VideoInfo.end_range_framesNo){
         // ----------- 範囲外シーク処理 -----------
         //終端、始端に戻す
         if(!video_reverse_flag){

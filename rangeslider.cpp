@@ -45,23 +45,18 @@ void RangeSlider::setStartValue(int value)
 
     m_start = value;
 
-    bool playChanged = false;
-
     if (m_play < m_start)
     {
         m_play = m_start;
-        playChanged = true;
+        m_playChanged = true;
 
         //一旦マウス追跡解除
         setMouseTracking(false);
+        emit playValueChanged(m_play);
     }
 
     update();
-
-    emit rangeStartChanged(m_start);
-
-    if (playChanged)
-        emit playValueChanged(m_play);
+    emit rangeStartChanged(m_start);     
 }
 
 void RangeSlider::setEndValue(int value)
@@ -73,23 +68,18 @@ void RangeSlider::setEndValue(int value)
 
     m_end = value;
 
-    bool playChanged = false;
-
     if (m_play > m_end)
     {
         m_play = m_end;
-        playChanged = true;
+        m_playChanged = true;
 
         //一旦マウス追跡解除
         setMouseTracking(false);
+        emit playValueChanged(m_play);
     }
 
     update();
-
-    emit rangeEndChanged(m_end);
-
-    if (playChanged)
-        emit playValueChanged(m_play);
+    emit rangeEndChanged(m_end);   
 }
 
 void RangeSlider::setPlayValue(int value)
@@ -204,7 +194,7 @@ void RangeSlider::paintEvent(QPaintEvent*)
     // play ヘッド（棒）
     QRect hit = handleRectPlay(m_play);
 
-    int playWidth = 5;  // 見た目の幅
+    int playWidth = 6;  // 見た目の幅
 
     QRect drawRect(
         hit.center().x() - playWidth/2,
@@ -320,7 +310,8 @@ void RangeSlider::leaveEvent(QEvent *)
 
 void RangeSlider::mouseReleaseEvent(QMouseEvent*)
 {
-    if(m_activeHandle == PlayHandle)emit playValueReleaseChanged(m_play);
+    if(m_activeHandle == PlayHandle||m_playChanged)emit playValueReleaseChanged(m_play);
+    m_playChanged = false;
     m_userInteraction = false;
     m_activeHandle = NoHandle;
 }

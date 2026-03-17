@@ -273,7 +273,11 @@ void decode_thread::processFrame() {
 
     //1フレーム戻し
     if(back1frame_flag){
-        high_res_seek_frame(back1FrameNo,true);
+        if(Frame.FrameNo-1 < VideoInfo.start_range_framesNo){
+            high_res_seek_frame(Frame.FrameNo-1,true);
+        }else{
+            high_res_seek_frame(back1FrameNo,true);
+        }
         back1frame_flag = false;
         return;
     }
@@ -287,7 +291,11 @@ void decode_thread::processFrame() {
 
     //1フレーム送り
     if(go1frame_flag){
-        get_decode_image();
+        if(Frame.FrameNo+1 > VideoInfo.end_range_framesNo){
+            high_res_seek_frame(Frame.FrameNo+1,true);
+        }else{
+            get_decode_image();
+        }
         go1frame_flag = false;
         return;
     }

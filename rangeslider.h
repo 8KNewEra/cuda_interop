@@ -51,14 +51,15 @@ private:
 
     //ハンドル
     int playWidth = 5;
-    int playHeight = 36;
-    int handleWidth = 14;
+    int playHeight = 38;
+    int handleWidth = 16;
     int handleHeight = 24;
     QRect handleRectPlay(int value) const;
     QRect handleRectStart(int value) const;
     QRect handleRectEnd(int value) const;
 
-    int m_minSpacing = 1;   // 値ベースの最小間隔
+    bool m_playChanged = false;
+    int m_minSpacing = 0;   // 値ベースの最小間隔
     int m_minPixelSpacing = 14;  // ハンドル直径より少し大きめ
 
     bool m_userInteraction = false;
