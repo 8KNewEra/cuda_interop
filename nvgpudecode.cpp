@@ -405,7 +405,7 @@ bool nvgpudecode::get_last_frame_pts() {
         AVRational tb = fmt_ctx->streams[vd[0].stream_index]->time_base;
         double time = last_pts * av_q2d(tb);
         qDebug() << "Last PTS:" << last_pts << " (" << time << "sec)";
-        VideoInfo.max_framesNo = fmt_ctx->streams[vd[0].stream_index]->duration/VideoInfo.pts_per_frame-1;
+        VideoInfo.max_framesNo = last_pts/VideoInfo.pts_per_frame;;
         VideoInfo.start_range_framesNo = 0;
         VideoInfo.end_range_framesNo = VideoInfo.max_framesNo;
         Frame.FrameNo = VideoInfo.max_framesNo;
@@ -436,20 +436,15 @@ void nvgpudecode::get_decode_image(){
 //映像シングルストリーム
 void nvgpudecode::get_singledecode_image() {
     //qDebug()<<"1フレーム読み込み"<<Frame.FrameNo;
-    // ----------- シーク処理 -----------
-    if (slider_No != Frame.FrameNo || video_reverse_flag || Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>=VideoInfo.end_range_framesNo) {
+    //----------- シーク処理 -----------
+    if (slider_No != Frame.FrameNo || video_reverse_flag) {
+        // ----------- 逆再生、通常シーク処理 -----------
         if (video_reverse_flag) {
             slider_No--;
-            if (slider_No < VideoInfo.start_range_framesNo)
-                slider_No = VideoInfo.end_range_framesNo;
-        }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
-            //始端終端を超えた場合は始端または終端にシーク、始端終端どっちに飛ばすかはhigh_res_seek_frame()に委ねる
-            high_res_seek_frame(Frame.FrameNo,false);
-            return;
-        }else if(Frame.FrameNo>=VideoInfo.end_range_framesNo){
-            //終端は始端に戻すので+1
-            high_res_seek_frame(Frame.FrameNo+1,false);
-            return;
+            if (Frame.FrameNo <= VideoInfo.start_range_framesNo){
+                high_res_seek_frame(Frame.FrameNo-1,false);
+                return;
+            }
         }
 
         avcodec_flush_buffers(vd[0].codec_ctx);
@@ -462,6 +457,13 @@ void nvgpudecode::get_singledecode_image() {
 
         Frame.FrameNo = slider_No;
         seek_flag = true;
+    }else if(Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>=VideoInfo.end_range_framesNo){
+        // ----------- 範囲外シーク処理 -----------
+        //終端、始端に戻す
+        if(!video_reverse_flag){
+            high_res_seek_frame(Frame.FrameNo+1,false);
+            return;
+        }
     }
 
     // ----------- パケット読み込みループ -----------
@@ -525,19 +527,14 @@ void nvgpudecode::get_multidecode_image() {
     int got_count = 0;
 
     //----------- シーク処理 -----------
-    if (slider_No != Frame.FrameNo || video_reverse_flag || Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>=VideoInfo.end_range_framesNo) {
+    if (slider_No != Frame.FrameNo || video_reverse_flag) {
+        // ----------- 逆再生、通常シーク処理 -----------
         if (video_reverse_flag) {
             slider_No--;
-            if (slider_No < VideoInfo.start_range_framesNo)
-                slider_No = VideoInfo.end_range_framesNo;
-        }else if(Frame.FrameNo<VideoInfo.start_range_framesNo){
-            //始端終端を超えた場合は始端または終端にシーク、始端終端どっちに飛ばすかはhigh_res_seek_frame()に委ねる
-            high_res_seek_frame(Frame.FrameNo,false);
-            return;
-        }else if(Frame.FrameNo>=VideoInfo.end_range_framesNo){
-            //終端は始端に戻すので+1
-            high_res_seek_frame(Frame.FrameNo+1,false);
-            return;
+            if (Frame.FrameNo <= VideoInfo.start_range_framesNo){
+                high_res_seek_frame(Frame.FrameNo-1,false);
+                return;
+            }
         }
 
         if (audio_ctx)
@@ -552,6 +549,13 @@ void nvgpudecode::get_multidecode_image() {
 
         Frame.FrameNo = slider_No;
         seek_flag = true;
+    }else if(Frame.FrameNo<VideoInfo.start_range_framesNo || Frame.FrameNo>=VideoInfo.end_range_framesNo){
+        // ----------- 範囲外シーク処理 -----------
+        //終端、始端に戻す
+        if(!video_reverse_flag){
+            high_res_seek_frame(Frame.FrameNo+1,false);
+            return;
+        }
     }
 
     while (got_count < vd.size()) {
@@ -761,7 +765,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
         Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = Frame.FrameNo;
         back1FrameNo = Frame.FrameNo-1;
-    }else if(back1frame_flag){
+    }else if(back1frame_flag||high_res_slider_flag){
         Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = Frame.FrameNo;
     }else{
@@ -784,20 +788,22 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
 void nvgpudecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
     //0より低い、最大フレーム数より多い数値が来た場合は修正
     if(targetFrameNo<VideoInfo.start_range_framesNo){
-        if(video_play_flag){
+        if(video_play_flag||back1frame_flag){
             targetFrameNo = VideoInfo.end_range_framesNo;
         }else{
-            //停止時は始端固定
+            //停止時は始端固定 3、10、30秒送りの場合で範囲外の場合は始端に待機させる
             targetFrameNo = VideoInfo.start_range_framesNo;
         }
-    }
-    if(targetFrameNo>VideoInfo.end_range_framesNo){
-        if(video_play_flag){
+    }else if(targetFrameNo>VideoInfo.end_range_framesNo){
+        if(video_play_flag||go1frame_flag){
             targetFrameNo = VideoInfo.start_range_framesNo;
         }else{
-            //停止時は終端固定
+            //停止時は終端固定 3、10、30秒送りの場合で範囲外の場合は終端に待機させる
             targetFrameNo = VideoInfo.end_range_framesNo;
         }
+    }else if(Frame.FrameNo < 0){
+        //0以下の処理
+        targetFrameNo = VideoInfo.end_range_framesNo;
     }
     if(heavy_UI_flag){
         //UIはfalse
