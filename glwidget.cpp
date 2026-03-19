@@ -36,14 +36,24 @@ GLWidget::~GLWidget() {
         glDeleteFramebuffers(1, &fbo);
         fbo = 0;
     }
-    if (stream) {
-        cudaStreamSynchronize(stream);
-        cudaStreamDestroy(stream);
-        stream = nullptr;
+
+    if (interop_stream) {
+        cudaStreamSynchronize(interop_stream);
+        cudaStreamDestroy(interop_stream);
+        interop_stream = nullptr;
     }
-    if (e) {
-        cudaEventDestroy(e);
-        e = nullptr;
+    if (interop_event) {
+        cudaEventDestroy(interop_event);
+        interop_event = nullptr;
+    }
+    if (hist_stream) {
+        cudaStreamSynchronize(hist_stream);
+        cudaStreamDestroy(hist_stream);
+        hist_stream = nullptr;
+    }
+    if (hist_event) {
+        cudaEventDestroy(hist_event);
+        hist_event = nullptr;
     }
 
     if (cudaResource_hist) {
@@ -173,8 +183,10 @@ void GLWidget::initializeGL()
     getCudaCapabilityForOpenGLGPU();
 
     //stream
-    cudaStreamCreate(&stream);
-    cudaEventCreate(&e);
+    cudaStreamCreate(&interop_stream);
+    cudaEventCreate(&interop_event);
+    cudaStreamCreate(&hist_stream);
+    cudaEventCreate(&hist_event);
 
     // === 初期化完了 ===
     fpsTimer.start();
@@ -643,15 +655,9 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
     //OpenGL用テクスチャに変換してOpenGL転送
     size_t widthBytes = width_ * 4;
     if (widthBytes <= Frame.decode_pitch) {
-        cudaMemcpy2DToArray(
-            array,
-            0, 0,
-            Frame.d_decode_rgba,
-            Frame.decode_pitch,
-            widthBytes,
-            height_,
-            cudaMemcpyDeviceToDevice
-            );
+        cudaMemcpy2DToArrayAsync(array,0, 0,Frame.d_decode_rgba,Frame.decode_pitch,widthBytes,height_,cudaMemcpyDeviceToDevice,interop_stream);
+        cudaEventRecord(interop_event, interop_stream);
+        cudaEventSynchronize(interop_event);
     } else {
         qDebug() << "Invalid pitch: widthBytes > pitch!";
         return;
@@ -696,7 +702,9 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     //OpenGL用テクスチャに変換してOpenGL転送
     size_t widthBytes = width_ * 4;
     if (widthBytes <= Frame.encode_pitch) {
-        cudaMemcpy2DFromArray(Frame.d_encode_rgba, Frame.encode_pitch, array, 0, 0, widthBytes, height_, cudaMemcpyDeviceToDevice);
+        cudaMemcpy2DFromArrayAsync(Frame.d_encode_rgba, Frame.encode_pitch, array, 0, 0, widthBytes, height_, cudaMemcpyDeviceToDevice, interop_stream);
+        cudaEventRecord(interop_event, interop_stream);
+        cudaEventSynchronize(interop_event);
     } else {
         qDebug() << "Invalid pitch: widthBytes > pitch!";
         return;
@@ -858,7 +866,7 @@ void GLWidget::histgram_Analysys(){
         CUDA_IMG_Proc->histogram_status(d_hist_data,d_hist_stats);
         // cudaEventRecord(e, 0);
         // cudaStreamWaitEvent(stream, e, 0);
-        cudaMemcpyAsync(&h_hist_stats, d_hist_stats,sizeof(HistStats),cudaMemcpyDeviceToHost,stream);
+        cudaMemcpyAsync(&h_hist_stats, d_hist_stats,sizeof(HistStats),cudaMemcpyDeviceToHost,hist_stream);
     }
 
     //OpenGL VBO転送

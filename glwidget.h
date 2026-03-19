@@ -71,6 +71,8 @@ private:
     cudaGraphicsResource* cudaResource_hist=nullptr;
     cudaGraphicsResource* cudaResource_hist_draw=nullptr;
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
+    cudaStream_t interop_stream = nullptr;
+    cudaEvent_t interop_event = nullptr;
 
     //OpenGL周り
     bool initialize_completed_flag=false;
@@ -119,8 +121,8 @@ private:
     int fpsCount = 0;
 
     //ヒストグラム
-    cudaStream_t stream = nullptr;
-    cudaEvent_t e = nullptr;
+    cudaStream_t hist_stream = nullptr;
+    cudaEvent_t hist_event = nullptr;
     HistData* d_hist_data = nullptr;
     HistStats* d_hist_stats = nullptr;
     HistData h_hist_data;
