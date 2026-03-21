@@ -26,7 +26,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>124</x>
+      <x>162</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -42,7 +42,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>202</x>
+      <x>278</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -61,7 +61,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>84</x>
+      <x>122</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -151,7 +151,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>146</x>
+      <x>182</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -170,7 +170,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>107</x>
+      <x>143</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -189,7 +189,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>163</x>
+      <x>201</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -208,7 +208,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>46</x>
+      <x>84</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -227,7 +227,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>183</x>
+      <x>219</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -246,7 +246,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>221</x>
+      <x>257</x>
       <y>667</y>
       <width>30</width>
       <height>27</height>
@@ -270,7 +270,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>69</x>
+      <x>105</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -289,7 +289,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>30</x>
+      <x>66</x>
       <y>668</y>
       <width>30</width>
       <height>26</height>
@@ -310,9 +310,9 @@
    <widget class="QWidget" name="horizontalLayoutWidget">
     <property name="geometry">
      <rect>
-      <x>290</x>
+      <x>360</x>
       <y>664</y>
-      <width>871</width>
+      <width>801</width>
       <height>31</height>
      </rect>
     </property>
@@ -387,7 +387,7 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>242</x>
+      <x>316</x>
       <y>636</y>
       <width>30</width>
       <height>26</height>
@@ -414,6 +414,92 @@
     </property>
     <property name="text">
      <string extracomment="eeeeeeeeee">[</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="backstartframe_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>46</x>
+      <y>636</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">|◀</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="goendframe_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>240</x>
+      <y>636</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">▶|</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="back60s_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>28</x>
+      <y>668</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>8</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">-60s</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="go60s_pushButton">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>295</x>
+      <y>667</y>
+      <width>30</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>8</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">+60s</string>
     </property>
     <property name="checkable">
      <bool>false</bool>

@@ -93,18 +93,22 @@ private:
 
     //再生・一時停止・スライダー
     void cutstart_pushbutton_control();
+    void backstartframe_pushbutton_control();
     void back1frame_pushbutton_control();
     void reverse_pushbutton_control();
     void switch_resume_pause();
     void go1frame_pushbutton_control();
+    void goendframe_pushbutton_control();
     void stop_pushbutton_control();
     void cutend_pushbutton_control();
+    void back60s_pushbutton_control();
     void back30s_pushbutton_control();
     void back10s_pushbutton_control();
     void back3s_pushbutton_control();
     void go3s_pushbutton_control();
     void go10s_pushbutton_control();
     void go30s_pushbutton_control();
+    void go60s_pushbutton_control();
     void slider_control(int value);
     void slider_start_control(int value);
     void slider_end_control(int value);

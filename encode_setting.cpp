@@ -72,7 +72,7 @@ encode_setting::encode_setting(QWidget *parent)
     //タイルエンコードプロファイル
     {
         QStringList tile_items;
-        tile_items <<"stream_x1"<<"stream_x2"<<"stream_x4"<<"stream_x8";
+        tile_items <<"1 Tile (通常)"<<"2 Tiles (2 × 1)"<<"4 Tiles (2 × 2)"<<"8 Tiles (4 × 2)";
         ui->comboBox_tile->addItems(tile_items);
         QObject::connect(ui->comboBox_tile, &QComboBox::currentIndexChanged, this, [&](int index) {
             settings.encode_tile = settingmap[index].encode_tile;

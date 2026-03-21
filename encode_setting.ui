@@ -261,7 +261,7 @@
      </font>
     </property>
     <property name="text">
-     <string>Tiled Multi-Stream</string>
+     <string>Tile Based Encoding</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignCenter</set>

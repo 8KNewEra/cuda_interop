@@ -694,7 +694,6 @@ void cpudecode::gpu_upload(){
 //高精度シーク
 void cpudecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
     //0より低い、最大フレーム数より多い数値が来た場合は修正
-    //0より低い、最大フレーム数より多い数値が来た場合は修正
     if(targetFrameNo<VideoInfo.start_range_framesNo){
         if(video_play_flag||back1frame_flag){
             targetFrameNo = VideoInfo.end_range_framesNo;
