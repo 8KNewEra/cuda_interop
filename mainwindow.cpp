@@ -571,7 +571,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
     ui->openGLContainer->setGeometry(0, 0, window_width, window_height-89); // 位置とサイズを指定
 
-    rangeSlider->setFixedWidth(window_width-387);
+    int slider_length = window_width-387;
+    rangeSlider->setFixedWidth(slider_length);
     rangeSlider->setGeometry(308, window_height-62,window_width-286,window_height-5);
 
     ui->cutstart_pushButton->setGeometry(8, window_height-83,198,window_height-5);
@@ -593,14 +594,14 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->go30s_pushButton->setGeometry(220, window_height-53,231,window_height-5);
     ui->go60s_pushButton->setGeometry(253, window_height-53,231,window_height-5);
 
-    ui->pushButton_speed->setGeometry(window_width-71, window_height-89,window_width-41,window_height-5);
-    ui->pushButton_volume->setGeometry(window_width-38, window_height-89,window_width-60,window_height-5);
-    ui->label_start_time->setGeometry(window_width-970, window_height-89,window_width-261,window_height-5);
-    ui->label_play_time->setGeometry(window_width-670, window_height-89,window_width-261,window_height-5);
-    ui->label_end_time->setGeometry(window_width-370, window_height-89,window_width-261,window_height-5);
-    ui->label_range_time->setGeometry(window_width-330, window_height-89,window_width-261,window_height-5);
+    ui->pushButton_speed->setGeometry(window_width-71, window_height-83,41,window_height-5);
+    ui->pushButton_volume->setGeometry(window_width-38, window_height-83,41,window_height-5);
+    ui->label_start_time->setGeometry(slider_length*0.5-38, window_height-89,41,window_height-5);
+    ui->label_play_time->setGeometry(slider_length*0.5+187, window_height-89,41,window_height-5);
+    ui->label_end_time->setGeometry(slider_length*0.5+412, window_height-89,41,window_height-5);
+    ui->label_range_time->setGeometry(window_width-340, window_height-89,41,window_height-5);
 
-    setMinimumSize(QSize(640, 480));
+    setMinimumSize(QSize(990, 540));
     glWidget->GLresize();
 }
 
