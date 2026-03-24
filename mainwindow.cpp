@@ -49,23 +49,6 @@ MainWindow::MainWindow(QWidget *parent)
     ui->cutend_pushButton->setFixedWidth(30);
     ui->cutend_pushButton->setFixedHeight(26);
 
-    ui->back3s_pushButton->setFixedWidth(30);
-    ui->back3s_pushButton->setFixedHeight(26);
-    ui->back10s_pushButton->setFixedWidth(30);
-    ui->back10s_pushButton->setFixedHeight(26);
-    ui->back30s_pushButton->setFixedWidth(30);
-    ui->back30s_pushButton->setFixedHeight(26);
-    ui->back60s_pushButton->setFixedWidth(30);
-    ui->back60s_pushButton->setFixedHeight(26);
-    ui->go3s_pushButton->setFixedWidth(30);
-    ui->go3s_pushButton->setFixedHeight(26);
-    ui->go10s_pushButton->setFixedWidth(30);
-    ui->go10s_pushButton->setFixedHeight(26);
-    ui->go30s_pushButton->setFixedWidth(30);
-    ui->go30s_pushButton->setFixedHeight(26);
-    ui->go60s_pushButton->setFixedWidth(30);
-    ui->go60s_pushButton->setFixedHeight(26);
-
     ui->label_play_time->setFixedWidth(240);
     ui->label_play_time->setFixedHeight(26);
     ui->label_start_time->setFixedWidth(240);
@@ -167,6 +150,13 @@ MainWindow::MainWindow(QWidget *parent)
     ui->info->setIcon(makeWhiteIcon(QIcon::fromTheme("dialog-information")));
     ui->actionCloseFile->setIcon(makeWhiteIcon(QIcon::fromTheme("edit-clear")));
     ui->actionFileSave->setIcon(makeWhiteIcon(QIcon::fromTheme("document-print")));
+
+    //ジャンプ機能、lineedit
+    QStringList jumpmode_items;
+    jumpmode_items << "秒" << "フレーム"<<"任意フレーム";
+    ui->jumpmode_comboBox->addItems(jumpmode_items);
+    ui->jumpvalue_lineEdit->setValidator(new QIntValidator(0, 999999, ui->jumpvalue_lineEdit));
+    ui->jumpvalue_lineEdit->setText(QString::number(1));
 
     //ダークUI
     HWND hwnd = (HWND)winId();
@@ -459,14 +449,6 @@ void MainWindow::CSS_Design(){
     ui->cutend_pushButton->setStyleSheet(transportStyle);
     ui->pushButton_speed->setStyleSheet(transportStyle);
     ui->pushButton_volume->setStyleSheet(transportStyle);
-    ui->back60s_pushButton->setStyleSheet(transportStyle);
-    ui->back30s_pushButton->setStyleSheet(transportStyle);
-    ui->back10s_pushButton->setStyleSheet(transportStyle);
-    ui->back3s_pushButton->setStyleSheet(transportStyle);
-    ui->go3s_pushButton->setStyleSheet(transportStyle);
-    ui->go10s_pushButton->setStyleSheet(transportStyle);
-    ui->go30s_pushButton->setStyleSheet(transportStyle);
-    ui->go60s_pushButton->setStyleSheet(transportStyle);
     ui->cutstart_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->backstartframe_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->back1frame_pushButton->setFocusPolicy(Qt::NoFocus);
@@ -476,14 +458,6 @@ void MainWindow::CSS_Design(){
     ui->goendframe_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->stop_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->cutend_pushButton->setFocusPolicy(Qt::NoFocus);
-    ui->back60s_pushButton->setFocusPolicy(Qt::NoFocus);
-    ui->back30s_pushButton->setFocusPolicy(Qt::NoFocus);
-    ui->back10s_pushButton->setFocusPolicy(Qt::NoFocus);
-    ui->back3s_pushButton->setFocusPolicy(Qt::NoFocus);
-    ui->go3s_pushButton->setFocusPolicy(Qt::NoFocus);
-    ui->go10s_pushButton->setFocusPolicy(Qt::NoFocus);
-    ui->go30s_pushButton->setFocusPolicy(Qt::NoFocus);
-    ui->go60s_pushButton->setFocusPolicy(Qt::NoFocus);
 
     ui->pushButton_volume->setFocusPolicy(Qt::NoFocus);
     ui->pushButton_volume->setIcon(
@@ -585,15 +559,6 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->stop_pushButton->setGeometry(239, window_height-83,198,window_height-5);
     ui->cutend_pushButton->setGeometry(272, window_height-83,198,window_height-5);
 
-    ui->back60s_pushButton->setGeometry(22, window_height-53,33,window_height-5);
-    ui->back30s_pushButton->setGeometry(55, window_height-53,33,window_height-5);
-    ui->back10s_pushButton->setGeometry(88, window_height-53,33,window_height-5);
-    ui->back3s_pushButton->setGeometry(121, window_height-53,33,window_height-5);
-    ui->go3s_pushButton->setGeometry(154, window_height-53,231,window_height-5);
-    ui->go10s_pushButton->setGeometry(187, window_height-53,231,window_height-5);
-    ui->go30s_pushButton->setGeometry(220, window_height-53,231,window_height-5);
-    ui->go60s_pushButton->setGeometry(253, window_height-53,231,window_height-5);
-
     ui->pushButton_speed->setGeometry(window_width-71, window_height-83,41,window_height-5);
     ui->pushButton_volume->setGeometry(window_width-38, window_height-83,41,window_height-5);
     ui->label_start_time->setGeometry(slider_length*0.5-38, window_height-89,41,window_height-5);
@@ -639,14 +604,6 @@ void MainWindow::toggleFullScreen()
         ui->goendframe_pushButton->hide();
         ui->stop_pushButton->hide();
         ui->cutend_pushButton->hide();
-        ui->back60s_pushButton->hide();
-        ui->back30s_pushButton->hide();
-        ui->back10s_pushButton->hide();
-        ui->back3s_pushButton->hide();
-        ui->go3s_pushButton->hide();
-        ui->go10s_pushButton->hide();
-        ui->go30s_pushButton->hide();
-        ui->go60s_pushButton->hide();
         ui->label_start_time->hide();
         ui->label_play_time->hide();
         ui->label_end_time->hide();
@@ -692,14 +649,6 @@ void MainWindow::toggleFullScreen()
         ui->goendframe_pushButton->show();
         ui->stop_pushButton->show();
         ui->cutend_pushButton->show();
-        ui->back60s_pushButton->show();
-        ui->back30s_pushButton->show();
-        ui->back10s_pushButton->show();
-        ui->back3s_pushButton->show();
-        ui->go3s_pushButton->show();
-        ui->go10s_pushButton->show();
-        ui->go30s_pushButton->show();
-        ui->go60s_pushButton->show();
         ui->label_start_time->show();
         ui->label_play_time->show();
         ui->label_end_time->show();
@@ -797,7 +746,36 @@ void MainWindow::backstartframe_pushbutton_control(){
 //1フレーム戻しボタン制御
 void MainWindow::back1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
-    emit send_manual_back1frame();
+    emit send_manual_pause();
+
+    if(ui->jumpvalue_lineEdit->text().isEmpty()){
+        if(jumpMode == JUMP_MODE_SECOND){
+            ui->jumpvalue_lineEdit->setText(QString::number(1));
+            jumpValueSecond = 1;
+        }else if(jumpMode == JUMP_MODE_FRAME){
+            ui->jumpvalue_lineEdit->setText(QString::number(1));
+            jumpValueFrame = 1;
+        }else if(jumpMode == JUMP_MODE_FRAMENO){
+            ui->jumpvalue_lineEdit->setText(QString::number(FrameNo));
+            jumpValueFrameNo = FrameNo;
+        }
+    }
+
+    int seek{};
+    if(jumpMode == JUMP_MODE_SECOND){
+        seek = FrameNo-VideoInfo.fps*jumpValueSecond;
+        emit send_manual_high_res_slider(seek);
+    }else if(jumpMode == JUMP_MODE_FRAME){
+        if(jumpValueFrame == 1){
+            emit send_manual_back1frame();
+        }else{
+            seek = FrameNo-jumpValueFrame;
+            emit send_manual_high_res_slider(seek);
+        }
+    }else if(jumpMode == JUMP_MODE_FRAMENO){
+        seek = jumpValueFrameNo;
+        emit send_manual_high_res_slider(seek);
+    }
 }
 
 //逆再生
@@ -825,7 +803,36 @@ void MainWindow::switch_resume_pause(){
 //1フレーム送りボタン制御
 void MainWindow::go1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
-    emit send_manual_go1frame();
+    emit send_manual_pause();
+
+    if(ui->jumpvalue_lineEdit->text().isEmpty()){
+        if(jumpMode == JUMP_MODE_SECOND){
+            ui->jumpvalue_lineEdit->setText(QString::number(1));
+            jumpValueSecond = 1;
+        }else if(jumpMode == JUMP_MODE_FRAME){
+            ui->jumpvalue_lineEdit->setText(QString::number(1));
+            jumpValueFrame = 1;
+        }else if(jumpMode == JUMP_MODE_FRAMENO){
+            ui->jumpvalue_lineEdit->setText(QString::number(FrameNo));
+            jumpValueFrameNo = FrameNo;
+        }
+    }
+
+    int seek{};
+    if(jumpMode == JUMP_MODE_SECOND){
+        seek = FrameNo+VideoInfo.fps*jumpValueSecond;
+        emit send_manual_high_res_slider(seek);
+    }else if(jumpMode == JUMP_MODE_FRAME){
+        if(jumpValueFrame == 1){
+            emit send_manual_go1frame();
+        }else{
+            seek = FrameNo+jumpValueFrame;
+            emit send_manual_high_res_slider(seek);
+        }
+    }else if(jumpMode == JUMP_MODE_FRAMENO){
+        seek = jumpValueFrameNo;
+        emit send_manual_high_res_slider(seek);
+    }
 }
 
 //終端へジャンプするボタン制御
@@ -951,6 +958,44 @@ void MainWindow::slider_end_control(int value){
     emit send_manual_range_end_slider(value);
 }
 
+void MainWindow::get_jump_value(){
+    if(ui->jumpvalue_lineEdit->text().isEmpty()) return;
+
+    int value = ui->jumpvalue_lineEdit->text().toInt();
+    if(jumpMode == JUMP_MODE_SECOND){
+        if (value < 1) value = 1;
+        if (value > VideoInfo.max_framesNo/VideoInfo.fps) value = VideoInfo.max_framesNo/VideoInfo.fps;
+        jumpValueSecond = value;
+    }else if(jumpMode == JUMP_MODE_FRAME){
+        if (value < 1) value = 1;
+        if (value > VideoInfo.max_framesNo) value = VideoInfo.max_framesNo;
+        jumpValueFrame = value;
+    }
+    else if(jumpMode == JUMP_MODE_FRAMENO){
+        if (value < 0) value = 0;
+        if (value > VideoInfo.max_framesNo) value = VideoInfo.max_framesNo;
+        jumpValueFrameNo = value;
+    }
+
+    ui->jumpvalue_lineEdit->setText(QString::number(value));
+    qDebug()<<value;
+}
+
+void MainWindow::switch_jump_mode(int value){
+    if(value == 0){
+        jumpMode = JUMP_MODE_SECOND;
+        ui->jumpvalue_lineEdit->setText(QString::number(jumpValueSecond));
+    }else if(value == 1){
+        jumpMode = JUMP_MODE_FRAME;
+        ui->jumpvalue_lineEdit->setText(QString::number(jumpValueFrame));
+    }else if(value == 2){
+        jumpMode = JUMP_MODE_FRAMENO;
+        ui->jumpvalue_lineEdit->setText(QString::number(jumpValueFrameNo));
+    }
+
+    qDebug()<<"switch_jump_mode"<<value;
+}
+
 void MainWindow::range_label_control(int range_time,int FrameNo){
     //qDebug()<<range_time<<":"<<FrameNo;
     int range_hour = range_time / 3600;
@@ -975,14 +1020,6 @@ void MainWindow::heavy_process_UI_control(bool flag){
     ui->goendframe_pushButton->setEnabled(flag);
     ui->stop_pushButton->setEnabled(flag);
     ui->cutend_pushButton->setEnabled(flag);
-    ui->back60s_pushButton->setEnabled(flag);
-    ui->back30s_pushButton->setEnabled(flag);
-    ui->back10s_pushButton->setEnabled(flag);
-    ui->back3s_pushButton->setEnabled(flag);
-    ui->go3s_pushButton->setEnabled(flag);
-    ui->go10s_pushButton->setEnabled(flag);
-    ui->go30s_pushButton->setEnabled(flag);
-    ui->go60s_pushButton->setEnabled(flag);
     ui->actionFileSave->setEnabled(flag);
     ui->action_filter_sobel->setEnabled(flag);
     ui->action_filter_gausian->setEnabled(flag);
@@ -1184,14 +1221,8 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(ui->goendframe_pushButton, &QPushButton::clicked, this, &MainWindow::goendframe_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->stop_pushButton, &QPushButton::clicked, this, &MainWindow::stop_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->cutend_pushButton, &QPushButton::clicked, this, &MainWindow::cutend_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->back60s_pushButton, &QPushButton::clicked, this, &MainWindow::back60s_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->back30s_pushButton, &QPushButton::clicked, this, &MainWindow::back30s_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->back10s_pushButton, &QPushButton::clicked, this, &MainWindow::back10s_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->back3s_pushButton, &QPushButton::clicked, this, &MainWindow::back3s_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->go3s_pushButton, &QPushButton::clicked, this, &MainWindow::go3s_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->go10s_pushButton, &QPushButton::clicked, this, &MainWindow::go10s_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->go30s_pushButton, &QPushButton::clicked, this, &MainWindow::go30s_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->go60s_pushButton, &QPushButton::clicked, this, &MainWindow::go60s_pushbutton_control, Qt::QueuedConnection);
+        QObject::connect(ui->jumpvalue_lineEdit, &QLineEdit::textChanged, this, &MainWindow::get_jump_value, Qt::QueuedConnection);
+        QObject::connect(ui->jumpmode_comboBox, &QComboBox::currentIndexChanged, this, &MainWindow::switch_jump_mode, Qt::QueuedConnection);
         QObject::connect(rangeSlider, &RangeSlider::playValueChanged, this, &MainWindow::slider_control, Qt::QueuedConnection);
         QObject::connect(rangeSlider, &RangeSlider::rangeEndChanged, this, &MainWindow::slider_end_control, Qt::QueuedConnection);
         QObject::connect(rangeSlider, &RangeSlider::rangeStartChanged, this, &MainWindow::slider_start_control, Qt::QueuedConnection);
@@ -1279,14 +1310,8 @@ void MainWindow::stop_decode_thread(){
         QObject::disconnect(ui->goendframe_pushButton, &QPushButton::clicked, this, &MainWindow::goendframe_pushbutton_control);
         QObject::disconnect(ui->stop_pushButton, &QPushButton::clicked, this, &MainWindow::stop_pushbutton_control);
         QObject::disconnect(ui->cutend_pushButton, &QPushButton::clicked, this, &MainWindow::cutend_pushbutton_control);
-        QObject::disconnect(ui->back60s_pushButton, &QPushButton::clicked, this, &MainWindow::back60s_pushbutton_control);
-        QObject::disconnect(ui->back30s_pushButton, &QPushButton::clicked, this, &MainWindow::back30s_pushbutton_control);
-        QObject::disconnect(ui->back10s_pushButton, &QPushButton::clicked, this, &MainWindow::back10s_pushbutton_control);
-        QObject::disconnect(ui->back3s_pushButton, &QPushButton::clicked, this, &MainWindow::back3s_pushbutton_control);
-        QObject::disconnect(ui->go3s_pushButton, &QPushButton::clicked, this, &MainWindow::go3s_pushbutton_control);
-        QObject::disconnect(ui->go10s_pushButton, &QPushButton::clicked, this, &MainWindow::go10s_pushbutton_control);
-        QObject::disconnect(ui->go30s_pushButton, &QPushButton::clicked, this, &MainWindow::go30s_pushbutton_control);
-        QObject::disconnect(ui->go30s_pushButton, &QPushButton::clicked, this, &MainWindow::go60s_pushbutton_control);
+        QObject::disconnect(ui->jumpvalue_lineEdit, &QLineEdit::textChanged, this, &MainWindow::get_jump_value);
+        QObject::disconnect(ui->jumpmode_comboBox, &QComboBox::currentIndexChanged, this, &MainWindow::switch_jump_mode);
         QObject::disconnect(rangeSlider, &RangeSlider::playValueChanged, this, &MainWindow::slider_control);
         QObject::disconnect(rangeSlider, &RangeSlider::rangeStartChanged, this, &MainWindow::slider_start_control);
         QObject::disconnect(rangeSlider, &RangeSlider::rangeEndChanged, this, &MainWindow::slider_end_control);

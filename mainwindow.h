@@ -31,6 +31,12 @@
 
 extern int g_audio_vol;
 
+enum e_jump_mode{
+    JUMP_MODE_SECOND,
+    JUMP_MODE_FRAME,
+    JUMP_MODE_FRAMENO
+};
+
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class MainWindow;
@@ -114,10 +120,18 @@ private:
     void slider_end_control(int value);
     void range_label_control(int range_time,int FrameNo);
     void heavy_process_UI_control(bool flag);
+    void switch_jump_mode(int value);
+    void get_jump_value();
+    RangeSlider *rangeSlider;
+    int jumpValueSecond = 1;
+    int jumpValueFrame = 1;
+    int jumpValueFrameNo = 0;
+    e_jump_mode jumpMode = JUMP_MODE_SECOND;
+
+    //再生、一時停止ステータス
     bool pause_flag = false;
     bool reverse_flag = false;
     int FrameNo = 0;
-    RangeSlider *rangeSlider;
 
     //fpsスレッド
     void start_fps_thread(double target_fps);
