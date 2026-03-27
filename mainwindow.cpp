@@ -62,6 +62,10 @@ MainWindow::MainWindow(QWidget *parent)
     ui->pushButton_speed->setFixedHeight(26);
     ui->pushButton_volume->setFixedWidth(30);
     ui->pushButton_volume->setFixedHeight(26);
+    ui->jumpmode_comboBox->setFixedWidth(70);
+    ui->jumpmode_comboBox->setFixedHeight(22);
+    ui->jumpvalue_lineEdit->setFixedWidth(65);
+    ui->jumpvalue_lineEdit->setFixedHeight(22);
     // ui->comboBox_speed->setFixedWidth(55);
     // ui->comboBox_speed->setFixedHeight(26);
     // ui->label_speed->setFixedWidth(85);
@@ -545,25 +549,28 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
     ui->openGLContainer->setGeometry(0, 0, window_width, window_height-89); // 位置とサイズを指定
 
-    int slider_length = window_width-387;
+    int slider_length = window_width-325;
     rangeSlider->setFixedWidth(slider_length);
-    rangeSlider->setGeometry(308, window_height-62,window_width-286,window_height-5);
+    rangeSlider->setGeometry(245, window_height-62,window_width-286,window_height-5);
 
     ui->cutstart_pushButton->setGeometry(8, window_height-83,198,window_height-5);
     ui->backstartframe_pushButton->setGeometry(41, window_height-83,165,window_height-5);
-    ui->back1frame_pushButton->setGeometry(74, window_height-83,66,window_height-5);
-    ui->reverse_pushButton->setGeometry(107, window_height-83,99,window_height-5);
-    ui->play_pushButton->setGeometry(140, window_height-83,132,window_height-5);
-    ui->go1frame_pushButton->setGeometry(173, window_height-83,165,window_height-5);
-    ui->goendframe_pushButton->setGeometry(206, window_height-83,165,window_height-5);
-    ui->stop_pushButton->setGeometry(239, window_height-83,198,window_height-5);
-    ui->cutend_pushButton->setGeometry(272, window_height-83,198,window_height-5);
+    ui->reverse_pushButton->setGeometry(74, window_height-83,99,window_height-5);
+    ui->play_pushButton->setGeometry(107, window_height-83,132,window_height-5);
+    ui->goendframe_pushButton->setGeometry(140, window_height-83,165,window_height-5);
+    ui->stop_pushButton->setGeometry(173, window_height-83,198,window_height-5);
+    ui->cutend_pushButton->setGeometry(206, window_height-83,198,window_height-5);
+
+    ui->back1frame_pushButton->setGeometry(18, window_height-53,66,window_height-5);
+    ui->jumpvalue_lineEdit->setGeometry(53, window_height-51,231,window_height-5);
+    ui->jumpmode_comboBox->setGeometry(118, window_height-51,231,window_height-5);
+    ui->go1frame_pushButton->setGeometry(194, window_height-53,165,window_height-5);
 
     ui->pushButton_speed->setGeometry(window_width-71, window_height-83,41,window_height-5);
     ui->pushButton_volume->setGeometry(window_width-38, window_height-83,41,window_height-5);
-    ui->label_start_time->setGeometry(slider_length*0.5-38, window_height-89,41,window_height-5);
-    ui->label_play_time->setGeometry(slider_length*0.5+187, window_height-89,41,window_height-5);
-    ui->label_end_time->setGeometry(slider_length*0.5+412, window_height-89,41,window_height-5);
+    ui->label_start_time->setGeometry(slider_length*0.5-100, window_height-89,41,window_height-5);
+    ui->label_play_time->setGeometry(slider_length*0.5+125, window_height-89,41,window_height-5);
+    ui->label_end_time->setGeometry(slider_length*0.5+350, window_height-89,41,window_height-5);
     ui->label_range_time->setGeometry(window_width-340, window_height-89,41,window_height-5);
 
     setMinimumSize(QSize(990, 540));
