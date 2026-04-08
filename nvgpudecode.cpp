@@ -788,14 +788,14 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
 void nvgpudecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
     //0より低い、最大フレーム数より多い数値が来た場合は修正
     if(targetFrameNo<VideoInfo.start_range_framesNo){
-        if(video_play_flag||back1frame_flag){
+        if(video_play_flag){
             targetFrameNo = VideoInfo.end_range_framesNo;
         }else{
             //停止時は始端固定 3、10、30秒送りの場合で範囲外の場合は始端に待機させる
             targetFrameNo = VideoInfo.start_range_framesNo;
         }
     }else if(targetFrameNo>VideoInfo.end_range_framesNo){
-        if(video_play_flag||go1frame_flag){
+        if(video_play_flag){
             targetFrameNo = VideoInfo.start_range_framesNo;
         }else{
             //停止時は終端固定 3、10、30秒送りの場合で範囲外の場合は終端に待機させる

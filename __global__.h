@@ -153,6 +153,25 @@ private:
     DecodeInfo m_settings;
 };
 
+//デコードフレーム
+struct VideoFrame {
+    //映像
+    uint8_t* d_decode_rgba=nullptr;
+    size_t decode_pitch=0;
+    uint8_t* d_encode_rgba=nullptr;
+    size_t encode_pitch=0;
+    int FrameNo=0;
+
+    //時間
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+
+    //音声
+    QVector<QByteArray> audio_pcm{};
+    QVector<int> audio_pts{};
+};
+
 //UI表示CPUダウンロード用
 struct HistStats {
     int min_r, max_r;
@@ -185,22 +204,11 @@ enum RGBLayout {
     GRB = 5
 };
 
-struct VideoFrame {
-    //映像
-    uint8_t* d_decode_rgba=nullptr;
-    size_t decode_pitch=0;
-    uint8_t* d_encode_rgba=nullptr;
-    size_t encode_pitch=0;
-    int FrameNo=0;
-
-    //時間
-    int hour = 0;
-    int minute = 0;
-    int second = 0;
-
-    //音声
-    QVector<QByteArray> audio_pcm{};
-    QVector<int> audio_pts{};
+//フレームジャンプモード
+enum e_jump_mode{
+    JUMP_MODE_SECOND = 0,
+    JUMP_MODE_FRAME = 1,
+    JUMP_MODE_TARGETFRAME = 2
 };
 
 #endif // __GLOBAL___H

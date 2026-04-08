@@ -6,6 +6,7 @@
 #include "decode_thread.h"
 #include "info_thread.h"
 #include "encode_setting.h"
+#include "jump_edit.h"
 #include "rangeslider.h"
 #include "video_speed.h"
 #define NOMINMAX
@@ -30,12 +31,6 @@
 #pragma comment(lib, "dwmapi.lib")
 
 extern int g_audio_vol;
-
-enum e_jump_mode{
-    JUMP_MODE_SECOND,
-    JUMP_MODE_FRAME,
-    JUMP_MODE_FRAMENO
-};
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -120,7 +115,6 @@ private:
     void slider_end_control(int value);
     void range_label_control(int range_time,int FrameNo);
     void heavy_process_UI_control(bool flag);
-    void switch_jump_mode(int value);
     void get_jump_value();
     RangeSlider *rangeSlider;
     int jumpValueSecond = 1;
@@ -170,6 +164,10 @@ private:
     //再生速度
     video_speed *videoSpeed;
     double video_speed_ratio = 1.0;
+
+    //Frameジャンプ、モード選択
+    jump_edit *jumpEdit;
+    int frame_jump_mode = 0;
 
 private:
     Ui::MainWindow *ui;

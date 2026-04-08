@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>jump_edit</class>
+ <widget class="QWidget" name="jump_edit">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>65</width>
+    <height>78</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <widget class="QPushButton" name="pushButton_targetFrame">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>52</y>
+     <width>57</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <pointsize>7</pointsize>
+    </font>
+   </property>
+   <property name="text">
+    <string>任意フレーム</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_second">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>6</y>
+     <width>57</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>秒</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_Frame">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>29</y>
+     <width>57</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <pointsize>8</pointsize>
+    </font>
+   </property>
+   <property name="text">
+    <string>フレーム</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

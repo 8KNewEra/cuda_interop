@@ -343,19 +343,23 @@
      </rect>
     </property>
    </widget>
-   <widget class="QComboBox" name="jumpmode_comboBox">
+   <widget class="QPushButton" name="jumpedit_pushButton">
+    <property name="enabled">
+     <bool>true</bool>
+    </property>
     <property name="geometry">
      <rect>
-      <x>180</x>
+      <x>170</x>
       <y>670</y>
-      <width>53</width>
-      <height>22</height>
+      <width>30</width>
+      <height>26</height>
      </rect>
     </property>
-    <property name="font">
-     <font>
-      <pointsize>7</pointsize>
-     </font>
+    <property name="text">
+     <string extracomment="eeeeeeeeee">秒</string>
+    </property>
+    <property name="checkable">
+     <bool>false</bool>
     </property>
    </widget>
   </widget>
