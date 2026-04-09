@@ -64,8 +64,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->pushButton_volume->setFixedHeight(26);
     ui->jumpedit_pushButton->setFixedWidth(72);
     ui->jumpedit_pushButton->setFixedHeight(22);
-    ui->jumpvalue_lineEdit->setFixedWidth(65);
-    ui->jumpvalue_lineEdit->setFixedHeight(21);
+    ui->jumpvalue_spinbox->setFixedWidth(65);
+    ui->jumpvalue_spinbox->setFixedHeight(21);
     // ui->comboBox_speed->setFixedWidth(55);
     // ui->comboBox_speed->setFixedHeight(26);
     // ui->label_speed->setFixedWidth(85);
@@ -156,8 +156,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->actionFileSave->setIcon(makeWhiteIcon(QIcon::fromTheme("document-print")));
 
     //ジャンプ機能、lineedit
-    ui->jumpvalue_lineEdit->setValidator(new QIntValidator(0, 999999, ui->jumpvalue_lineEdit));
-    ui->jumpvalue_lineEdit->setText(QString::number(1));
+    ui->jumpvalue_spinbox->setValue(1);           // 初期値
 
     //ダークUI
     HWND hwnd = (HWND)winId();
@@ -327,19 +326,19 @@ void MainWindow::GLwidgetInitialized(){
             // 整数 (1.0, 2.0) は小数1桁
             if (value == JUMP_MODE_SECOND) {
                 jumpMode = JUMP_MODE_SECOND;
-                ui->jumpvalue_lineEdit->setText(QString::number(jumpValueSecond));
+                ui->jumpvalue_spinbox->setValue(jumpValueSecond);
                 text = "秒";
                 QFont font = ui->jumpedit_pushButton->font();
                 font.setPointSize(7);
             }else if(value == JUMP_MODE_FRAME) {
                 jumpMode = JUMP_MODE_FRAME;
-                ui->jumpvalue_lineEdit->setText(QString::number(jumpValueFrame));
+                ui->jumpvalue_spinbox->setValue(jumpValueFrame);
                 text = "フレーム";
                 QFont font = ui->jumpedit_pushButton->font();
                 font.setPointSize(5);
             }else if(value == JUMP_MODE_TARGETFRAME) {
                 jumpMode = JUMP_MODE_TARGETFRAME;
-                ui->jumpvalue_lineEdit->setText(QString::number(jumpValueFrameNo));
+                ui->jumpvalue_spinbox->setValue(jumpValueFrameNo);
                 text = "任意フレーム";
                 QFont font = ui->jumpedit_pushButton->font();
                 font.setPointSize(5);
@@ -575,8 +574,8 @@ void MainWindow::CSS_Design(){
         }
 )";
 
-    ui->jumpvalue_lineEdit->setStyleSheet(inputStyle);
-    ui->jumpvalue_lineEdit->setFocusPolicy(Qt::StrongFocus);
+    ui->jumpvalue_spinbox->setStyleSheet(inputStyle);
+    ui->jumpvalue_spinbox->setFocusPolicy(Qt::StrongFocus);
 
     //スライダー
     rangeSlider->setStyleSheet(R"(
@@ -678,7 +677,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->cutend_pushButton->setGeometry(206, window_height-83,198,window_height-5);
 
     ui->back1frame_pushButton->setGeometry(18, window_height-53,66,window_height-5);
-    ui->jumpvalue_lineEdit->setGeometry(53, window_height-51,231,window_height-5);
+    ui->jumpvalue_spinbox->setGeometry(53, window_height-51,231,window_height-5);
     ui->jumpedit_pushButton->setGeometry(118, window_height-51,231,window_height-5);
     ui->go1frame_pushButton->setGeometry(194, window_height-53,165,window_height-5);
 
@@ -871,13 +870,13 @@ void MainWindow::back1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
     emit send_manual_pause();
 
-    if(ui->jumpvalue_lineEdit->text().isEmpty()){
+    if(ui->jumpvalue_spinbox->text().isEmpty()){
         if(jumpMode == JUMP_MODE_SECOND){
-            ui->jumpvalue_lineEdit->setText(QString::number(jumpMode));
+            ui->jumpvalue_spinbox->setValue(jumpValueSecond);
         }else if(jumpMode == JUMP_MODE_FRAME){
-            ui->jumpvalue_lineEdit->setText(QString::number(jumpValueFrame));
+            ui->jumpvalue_spinbox->setValue(jumpValueFrame);
         }else if(jumpMode == JUMP_MODE_TARGETFRAME){
-            ui->jumpvalue_lineEdit->setText(QString::number(FrameNo));
+            ui->jumpvalue_spinbox->setValue(FrameNo);
             jumpValueFrameNo = FrameNo;
         }
     }
@@ -926,13 +925,13 @@ void MainWindow::go1frame_pushbutton_control(){
     ui->play_pushButton->setText("▶");
     emit send_manual_pause();
 
-    if(ui->jumpvalue_lineEdit->text().isEmpty()){
+    if(ui->jumpvalue_spinbox->text().isEmpty()){
         if(jumpMode == JUMP_MODE_SECOND){
-            ui->jumpvalue_lineEdit->setText(QString::number(jumpMode));
+            ui->jumpvalue_spinbox->setValue(jumpValueSecond);
         }else if(jumpMode == JUMP_MODE_FRAME){
-            ui->jumpvalue_lineEdit->setText(QString::number(jumpValueFrame));
+            ui->jumpvalue_spinbox->setValue(jumpValueFrame);
         }else if(jumpMode == JUMP_MODE_TARGETFRAME){
-            ui->jumpvalue_lineEdit->setText(QString::number(FrameNo));
+            ui->jumpvalue_spinbox->setValue(FrameNo);
             jumpValueFrameNo = FrameNo;
         }
     }
@@ -1078,9 +1077,9 @@ void MainWindow::slider_end_control(int value){
 }
 
 void MainWindow::get_jump_value(){
-    if(ui->jumpvalue_lineEdit->text().isEmpty()) return;
+    if(ui->jumpvalue_spinbox->text().isEmpty()) return;
 
-    int value = ui->jumpvalue_lineEdit->text().toInt();
+    int value = ui->jumpvalue_spinbox->text().toInt();
     if(jumpMode == JUMP_MODE_SECOND){
         if (value < 1) value = 1;
         if (value > VideoInfo.max_framesNo/VideoInfo.fps) value = VideoInfo.max_framesNo/VideoInfo.fps;
@@ -1096,8 +1095,7 @@ void MainWindow::get_jump_value(){
         jumpValueFrameNo = value;
     }
 
-    ui->jumpvalue_lineEdit->setText(QString::number(value));
-    qDebug()<<value;
+    ui->jumpvalue_spinbox->setValue(value);
 }
 
 void MainWindow::range_label_control(int range_time,int FrameNo){
@@ -1325,7 +1323,7 @@ void MainWindow::start_decode_thread(QString filePath) {
         QObject::connect(ui->goendframe_pushButton, &QPushButton::clicked, this, &MainWindow::goendframe_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->stop_pushButton, &QPushButton::clicked, this, &MainWindow::stop_pushbutton_control, Qt::QueuedConnection);
         QObject::connect(ui->cutend_pushButton, &QPushButton::clicked, this, &MainWindow::cutend_pushbutton_control, Qt::QueuedConnection);
-        QObject::connect(ui->jumpvalue_lineEdit, &QLineEdit::textChanged, this, &MainWindow::get_jump_value, Qt::QueuedConnection);
+        QObject::connect(ui->jumpvalue_spinbox, &QSpinBox::textChanged, this, &MainWindow::get_jump_value, Qt::QueuedConnection);
         QObject::connect(rangeSlider, &RangeSlider::playValueChanged, this, &MainWindow::slider_control, Qt::QueuedConnection);
         QObject::connect(rangeSlider, &RangeSlider::rangeEndChanged, this, &MainWindow::slider_end_control, Qt::QueuedConnection);
         QObject::connect(rangeSlider, &RangeSlider::rangeStartChanged, this, &MainWindow::slider_start_control, Qt::QueuedConnection);
@@ -1413,7 +1411,7 @@ void MainWindow::stop_decode_thread(){
         QObject::disconnect(ui->goendframe_pushButton, &QPushButton::clicked, this, &MainWindow::goendframe_pushbutton_control);
         QObject::disconnect(ui->stop_pushButton, &QPushButton::clicked, this, &MainWindow::stop_pushbutton_control);
         QObject::disconnect(ui->cutend_pushButton, &QPushButton::clicked, this, &MainWindow::cutend_pushbutton_control);
-        QObject::disconnect(ui->jumpvalue_lineEdit, &QLineEdit::textChanged, this, &MainWindow::get_jump_value);
+        QObject::disconnect(ui->jumpvalue_spinbox, &QSpinBox::textChanged, this, &MainWindow::get_jump_value);
         QObject::disconnect(rangeSlider, &RangeSlider::playValueChanged, this, &MainWindow::slider_control);
         QObject::disconnect(rangeSlider, &RangeSlider::rangeStartChanged, this, &MainWindow::slider_start_control);
         QObject::disconnect(rangeSlider, &RangeSlider::rangeEndChanged, this, &MainWindow::slider_end_control);

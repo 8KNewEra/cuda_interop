@@ -333,16 +333,6 @@
      <bool>false</bool>
     </property>
    </widget>
-   <widget class="QLineEdit" name="jumpvalue_lineEdit">
-    <property name="geometry">
-     <rect>
-      <x>100</x>
-      <y>670</y>
-      <width>71</width>
-      <height>20</height>
-     </rect>
-    </property>
-   </widget>
    <widget class="QPushButton" name="jumpedit_pushButton">
     <property name="enabled">
      <bool>true</bool>
@@ -360,6 +350,19 @@
     </property>
     <property name="checkable">
      <bool>false</bool>
+    </property>
+   </widget>
+   <widget class="QSpinBox" name="jumpvalue_spinbox">
+    <property name="geometry">
+     <rect>
+      <x>90</x>
+      <y>670</y>
+      <width>81</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="maximum">
+     <number>99999999</number>
     </property>
    </widget>
   </widget>
