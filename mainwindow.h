@@ -6,7 +6,7 @@
 #include "decode_thread.h"
 #include "info_thread.h"
 #include "encode_setting.h"
-#include "jump_edit.h"
+#include "jump_mode.h"
 #include "rangeslider.h"
 #include "video_speed.h"
 #define NOMINMAX
@@ -102,14 +102,6 @@ private:
     void goendframe_pushbutton_control();
     void stop_pushbutton_control();
     void cutend_pushbutton_control();
-    void back60s_pushbutton_control();
-    void back30s_pushbutton_control();
-    void back10s_pushbutton_control();
-    void back3s_pushbutton_control();
-    void go3s_pushbutton_control();
-    void go10s_pushbutton_control();
-    void go30s_pushbutton_control();
-    void go60s_pushbutton_control();
     void slider_control(int value);
     void slider_start_control(int value);
     void slider_end_control(int value);
@@ -120,7 +112,7 @@ private:
     int jumpValueSecond = 1;
     int jumpValueFrame = 1;
     int jumpValueFrameNo = 0;
-    e_jump_mode jumpMode = JUMP_MODE_SECOND;
+    e_jump_mode e_jumpmode = JUMP_MODE_SECOND;
 
     //再生、一時停止ステータス
     bool pause_flag = false;
@@ -166,7 +158,7 @@ private:
     double video_speed_ratio = 1.0;
 
     //Frameジャンプ、モード選択
-    jump_edit *jumpEdit;
+    jump_mode *jumpMode;
     int frame_jump_mode = 0;
 
 private:

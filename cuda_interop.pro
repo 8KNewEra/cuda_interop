@@ -27,7 +27,7 @@ SOURCES += \
     fps_thread.cpp \
     glwidget.cpp \
     info_thread.cpp \
-    jump_edit.cpp \
+    jump_mode.cpp \
     main.cpp \
     mainwindow.cpp \
     nvgpudecode.cpp \
@@ -46,7 +46,7 @@ HEADERS += \
     fps_thread.h \
     glwidget.h \
     info_thread.h \
-    jump_edit.h \
+    jump_mode.h \
     mainwindow.h \
     nvgpudecode.h \
     rangeslider.h \
@@ -56,7 +56,7 @@ HEADERS += \
 FORMS += \
     audio_volume.ui \
     encode_setting.ui \
-    jump_edit.ui \
+    jump_mode.ui \
     mainwindow.ui \
     video_speed.ui
 

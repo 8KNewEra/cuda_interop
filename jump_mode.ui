@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>jump_edit</class>
- <widget class="QWidget" name="jump_edit">
+ <class>jump_mode</class>
+ <widget class="QWidget" name="jump_mode">
   <property name="geometry">
    <rect>
     <x>0</x>

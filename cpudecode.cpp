@@ -688,6 +688,12 @@ void cpudecode::gpu_upload(){
     }
     seek_flag = false;
 
+    //時刻を算出
+    double time = Frame.FrameNo/VideoInfo.fps;
+    Frame.hour = time / 3600;
+    Frame.minute = (int(time) % 3600) / 60;
+    Frame.second = fmod(time, 60.0);
+
     emit send_decode_image(Frame,false,video_reverse_flag);
 }
 

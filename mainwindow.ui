@@ -333,9 +333,9 @@
      <bool>false</bool>
     </property>
    </widget>
-   <widget class="QPushButton" name="jumpedit_pushButton">
+   <widget class="QPushButton" name="jumpmode_pushButton">
     <property name="enabled">
-     <bool>true</bool>
+     <bool>false</bool>
     </property>
     <property name="geometry">
      <rect>
@@ -353,6 +353,9 @@
     </property>
    </widget>
    <widget class="QSpinBox" name="jumpvalue_spinbox">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>90</x>

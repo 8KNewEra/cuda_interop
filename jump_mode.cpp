@@ -1,9 +1,9 @@
-#include "jump_edit.h"
-#include "ui_jump_edit.h"
+#include "jump_mode.h"
+#include "ui_jump_mode.h"
 
-jump_edit::jump_edit(QWidget *parent)
+jump_mode::jump_mode(QWidget *parent)
     : QWidget(parent),
-    ui(new Ui::jump_edit)
+    ui(new Ui::jump_mode)
 {
     ui->setupUi(this);
 
@@ -53,12 +53,12 @@ jump_edit::jump_edit(QWidget *parent)
     });
 }
 
-jump_edit::~jump_edit()
+jump_mode::~jump_mode()
 {
     delete ui;
 }
 
-void jump_edit::paintEvent(QPaintEvent *)
+void jump_mode::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
@@ -74,12 +74,12 @@ void jump_edit::paintEvent(QPaintEvent *)
     p.drawPath(path);
 }
 
-void jump_edit::setAnchorButton(QPushButton* button)
+void jump_mode::setAnchorButton(QPushButton* button)
 {
     anchorButton = button;
 }
 
-void jump_edit::showEvent(QShowEvent *event)
+void jump_mode::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
 
@@ -95,7 +95,7 @@ void jump_edit::showEvent(QShowEvent *event)
 }
 
 
-void jump_edit::enterEvent(QEnterEvent *)
+void jump_mode::enterEvent(QEnterEvent *)
 {
     mouseInside = true;
 
@@ -105,13 +105,13 @@ void jump_edit::enterEvent(QEnterEvent *)
     setWindowOpacity(1.0); // 即表示
 }
 
-void jump_edit::leaveEvent(QEvent *)
+void jump_mode::leaveEvent(QEvent *)
 {
     mouseInside = false;
     hideTimer.start(); // 500ms後にフェード開始
 }
 
-void jump_edit::showPopup()
+void jump_mode::showPopup()
 {
     fadeAnim->stop();
     hideTimer.stop();
@@ -124,7 +124,7 @@ void jump_edit::showPopup()
 }
 
 //既に選択されている場合はその個所の色を変える
-void jump_edit::setCurrentMode(int mode)
+void jump_mode::setCurrentMode(int mode)
 {
     currentMode = mode;
 

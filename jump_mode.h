@@ -1,5 +1,5 @@
-#ifndef JUMP_EDIT_H
-#define JUMP_EDIT_H
+#ifndef JUMP_MODE_H
+#define JUMP_MODE_H
 
 #include "__global__.h"
 #include "qlabel.h"
@@ -13,10 +13,10 @@
 #include "qstyleoption.h"
 
 namespace Ui {
-class jump_edit;
+class jump_mode;
 }
 
-class jump_edit : public QWidget
+class jump_mode : public QWidget
 {
     Q_OBJECT
 
@@ -24,8 +24,8 @@ signals:
     void modeChanged(double value);
 
 public:
-    explicit jump_edit(QWidget *parent = nullptr);
-    ~jump_edit();
+    explicit jump_mode(QWidget *parent = nullptr);
+    ~jump_mode();
 
     void setAnchorButton(QPushButton* button);
     void setCurrentMode(int mode);
@@ -39,7 +39,7 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    Ui::jump_edit *ui;
+    Ui::jump_mode *ui;
     QPushButton* anchorButton = nullptr;
     bool mouseInside = false;
     QPropertyAnimation* fadeAnim = nullptr;

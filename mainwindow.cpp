@@ -62,8 +62,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->pushButton_speed->setFixedHeight(26);
     ui->pushButton_volume->setFixedWidth(30);
     ui->pushButton_volume->setFixedHeight(26);
-    ui->jumpedit_pushButton->setFixedWidth(72);
-    ui->jumpedit_pushButton->setFixedHeight(22);
+    ui->jumpmode_pushButton->setFixedWidth(72);
+    ui->jumpmode_pushButton->setFixedHeight(22);
     ui->jumpvalue_spinbox->setFixedWidth(65);
     ui->jumpvalue_spinbox->setFixedHeight(21);
     // ui->comboBox_speed->setFixedWidth(55);
@@ -298,54 +298,54 @@ void MainWindow::GLwidgetInitialized(){
         },Qt::QueuedConnection);
 
         /* Frameジャンプ、モード選択 */
-        jumpEdit = new jump_edit(this);
-        jumpEdit->setAnchorButton(ui->jumpedit_pushButton);
-        ui->jumpedit_pushButton->installEventFilter(this);
+        jumpMode = new jump_mode(this);
+        jumpMode->setAnchorButton(ui->jumpmode_pushButton);
+        ui->jumpmode_pushButton->installEventFilter(this);
         //Frameジャンプ、モード選択ボタン
-        connect(ui->jumpedit_pushButton, &QPushButton::clicked, this, [this]() {
-            if (!jumpEdit)
+        connect(ui->jumpmode_pushButton, &QPushButton::clicked, this, [this]() {
+            if (!jumpMode)
                 return;
 
             // すでに表示中なら閉じる
-            if (jumpEdit->isVisible()) {
-                jumpEdit->hide();
-                jumpEdit->hideTimer.stop();
+            if (jumpMode->isVisible()) {
+                jumpMode->hide();
+                jumpMode->hideTimer.stop();
             }
             // 非表示なら表示
             else {
-                jumpEdit->setCurrentMode(frame_jump_mode);
-                jumpEdit->showPopup();
+                jumpMode->setCurrentMode(frame_jump_mode);
+                jumpMode->showPopup();
             }
         });
 
         //ボタンシグナル受信
-        connect(jumpEdit, &jump_edit::modeChanged, this,[this](int value) {
+        connect(jumpMode, &jump_mode::modeChanged, this,[this](int value) {
             frame_jump_mode = value;
 
             QString text;
             // 整数 (1.0, 2.0) は小数1桁
             if (value == JUMP_MODE_SECOND) {
-                jumpMode = JUMP_MODE_SECOND;
+                e_jumpmode = JUMP_MODE_SECOND;
                 ui->jumpvalue_spinbox->setValue(jumpValueSecond);
                 text = "秒";
-                QFont font = ui->jumpedit_pushButton->font();
+                QFont font = ui->jumpmode_pushButton->font();
                 font.setPointSize(7);
             }else if(value == JUMP_MODE_FRAME) {
-                jumpMode = JUMP_MODE_FRAME;
+                e_jumpmode = JUMP_MODE_FRAME;
                 ui->jumpvalue_spinbox->setValue(jumpValueFrame);
                 text = "フレーム";
-                QFont font = ui->jumpedit_pushButton->font();
+                QFont font = ui->jumpmode_pushButton->font();
                 font.setPointSize(5);
             }else if(value == JUMP_MODE_TARGETFRAME) {
-                jumpMode = JUMP_MODE_TARGETFRAME;
+                e_jumpmode = JUMP_MODE_TARGETFRAME;
                 ui->jumpvalue_spinbox->setValue(jumpValueFrameNo);
                 text = "任意フレーム";
-                QFont font = ui->jumpedit_pushButton->font();
+                QFont font = ui->jumpmode_pushButton->font();
                 font.setPointSize(5);
             }
-            ui->jumpedit_pushButton->setText(text);
-            jumpEdit->hide();
-            jumpEdit->hideTimer.stop();
+            ui->jumpmode_pushButton->setText(text);
+            jumpMode->hide();
+            jumpMode->hideTimer.stop();
         },Qt::QueuedConnection);
     });
 
@@ -499,7 +499,8 @@ void MainWindow::CSS_Design(){
     ui->stop_pushButton->setStyleSheet(transportStyle);
     ui->cutend_pushButton->setStyleSheet(transportStyle);
     ui->pushButton_speed->setStyleSheet(transportStyle);
-    ui->jumpedit_pushButton->setStyleSheet(transportStyle);
+    ui->pushButton_volume->setStyleSheet(transportStyle);
+    ui->jumpmode_pushButton->setStyleSheet(transportStyle);
     ui->cutstart_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->backstartframe_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->back1frame_pushButton->setFocusPolicy(Qt::NoFocus);
@@ -509,7 +510,7 @@ void MainWindow::CSS_Design(){
     ui->goendframe_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->stop_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->cutend_pushButton->setFocusPolicy(Qt::NoFocus);
-    ui->jumpedit_pushButton->setFocusPolicy(Qt::NoFocus);
+    ui->jumpmode_pushButton->setFocusPolicy(Qt::NoFocus);
 
     ui->pushButton_volume->setFocusPolicy(Qt::NoFocus);
     ui->pushButton_volume->setIcon(
@@ -517,10 +518,10 @@ void MainWindow::CSS_Design(){
         );
     ui->pushButton_volume->setIconSize(QSize(20, 20));
 
-
+    //スピンボックス制御
     QString inputStyle = R"(
-    /* ===== QLineEdit ===== */
-        QLineEdit {
+    /* ===== QSpinBox ===== */
+        QSpinBox {
             background: qlineargradient(
                 x1:0, y1:0, x2:0, y2:1,
                 stop:0 rgba(30,30,30,230),
@@ -532,6 +533,7 @@ void MainWindow::CSS_Design(){
 
             /* 内側の凹み表現 */
             padding: 3px 6px;
+            padding-right: 2px;   /* ★ ボタン領域分広げる */
 
             color: rgb(200,210,220);
             font-family: Consolas;
@@ -539,18 +541,17 @@ void MainWindow::CSS_Design(){
         }
 
         /* 内側ハイライト（上）と影（下） */
-        QLineEdit {
+        QSpinBox {
             border: 1px solid rgba(255,255,255,100);
-
         }
 
         /* Hover */
-        QLineEdit:hover {
+        QSpinBox:hover {
             border: 1px solid rgba(120,150,180,255);
         }
 
         /* Focus */
-        QLineEdit:focus {
+        QSpinBox:focus {
             border: 1px solid rgba(130,190,255,240);
             background: qlineargradient(
                 x1:0, y1:0, x2:0, y2:1,
@@ -561,19 +562,18 @@ void MainWindow::CSS_Design(){
         }
 
         /* 選択範囲 */
-        QLineEdit::selection {
+        QSpinBox::selection {
             background: rgba(100,170,255,200);
             color: white;
         }
 
         /* Disabled */
-        QLineEdit:disabled {
+        QSpinBox:disabled {
             background: rgba(30,30,30,200);
-            border: 1px solid rgba(0,0,0,120);
+            border: 1px solid rgba(120,120,120,120);
             color: rgba(140,140,140,150);
         }
-)";
-
+    )";
     ui->jumpvalue_spinbox->setStyleSheet(inputStyle);
     ui->jumpvalue_spinbox->setFocusPolicy(Qt::StrongFocus);
 
@@ -644,9 +644,9 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     }
 
     //フレームジャンプモード
-    if (obj == ui->jumpedit_pushButton) {
+    if (obj == ui->jumpmode_pushButton) {
         if (event->type() == QEvent::Leave) {
-            jumpEdit->hideTimer.start(); // ← 1秒後に消すか判断
+            jumpMode->hideTimer.start(); // ← 1秒後に消すか判断
         }
     }
 
@@ -678,7 +678,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
     ui->back1frame_pushButton->setGeometry(18, window_height-53,66,window_height-5);
     ui->jumpvalue_spinbox->setGeometry(53, window_height-51,231,window_height-5);
-    ui->jumpedit_pushButton->setGeometry(118, window_height-51,231,window_height-5);
+    ui->jumpmode_pushButton->setGeometry(118, window_height-51,231,window_height-5);
     ui->go1frame_pushButton->setGeometry(194, window_height-53,165,window_height-5);
 
     ui->pushButton_speed->setGeometry(window_width-71, window_height-83,41,window_height-5);
@@ -732,6 +732,8 @@ void MainWindow::toggleFullScreen()
         ui->label_range_time->hide();
         ui->pushButton_volume->hide();
         ui->pushButton_speed->hide();
+        ui->jumpvalue_spinbox->hide();
+        ui->jumpmode_pushButton->hide();
         // ui->comboBox_speed->hide();
 
         glWidget->GLresize();
@@ -777,6 +779,8 @@ void MainWindow::toggleFullScreen()
         //ui->label_range_time->show();
         ui->pushButton_volume->show();
         ui->pushButton_speed->show();
+        ui->jumpvalue_spinbox->show();
+        ui->jumpmode_pushButton->show();
 
         glWidget->GLresize();
 
@@ -871,28 +875,28 @@ void MainWindow::back1frame_pushbutton_control(){
     emit send_manual_pause();
 
     if(ui->jumpvalue_spinbox->text().isEmpty()){
-        if(jumpMode == JUMP_MODE_SECOND){
+        if(e_jumpmode == JUMP_MODE_SECOND){
             ui->jumpvalue_spinbox->setValue(jumpValueSecond);
-        }else if(jumpMode == JUMP_MODE_FRAME){
+        }else if(e_jumpmode == JUMP_MODE_FRAME){
             ui->jumpvalue_spinbox->setValue(jumpValueFrame);
-        }else if(jumpMode == JUMP_MODE_TARGETFRAME){
+        }else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
             ui->jumpvalue_spinbox->setValue(FrameNo);
             jumpValueFrameNo = FrameNo;
         }
     }
 
     int seek{};
-    if(jumpMode == JUMP_MODE_SECOND){
+    if(e_jumpmode == JUMP_MODE_SECOND){
         seek = FrameNo-VideoInfo.fps*jumpValueSecond;
         emit send_manual_high_res_slider(seek);
-    }else if(jumpMode == JUMP_MODE_FRAME){
+    }else if(e_jumpmode == JUMP_MODE_FRAME){
         if(jumpValueFrame == 1){
             emit send_manual_back1frame();
         }else{
             seek = FrameNo-jumpValueFrame;
             emit send_manual_high_res_slider(seek);
         }
-    }else if(jumpMode == JUMP_MODE_TARGETFRAME){
+    }else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
         seek = jumpValueFrameNo;
         emit send_manual_high_res_slider(seek);
     }
@@ -926,28 +930,28 @@ void MainWindow::go1frame_pushbutton_control(){
     emit send_manual_pause();
 
     if(ui->jumpvalue_spinbox->text().isEmpty()){
-        if(jumpMode == JUMP_MODE_SECOND){
+        if(e_jumpmode == JUMP_MODE_SECOND){
             ui->jumpvalue_spinbox->setValue(jumpValueSecond);
-        }else if(jumpMode == JUMP_MODE_FRAME){
+        }else if(e_jumpmode == JUMP_MODE_FRAME){
             ui->jumpvalue_spinbox->setValue(jumpValueFrame);
-        }else if(jumpMode == JUMP_MODE_TARGETFRAME){
+        }else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
             ui->jumpvalue_spinbox->setValue(FrameNo);
             jumpValueFrameNo = FrameNo;
         }
     }
 
     int seek{};
-    if(jumpMode == JUMP_MODE_SECOND){
+    if(e_jumpmode == JUMP_MODE_SECOND){
         seek = FrameNo+VideoInfo.fps*jumpValueSecond;
         emit send_manual_high_res_slider(seek);
-    }else if(jumpMode == JUMP_MODE_FRAME){
+    }else if(e_jumpmode == JUMP_MODE_FRAME){
         if(jumpValueFrame == 1){
             emit send_manual_go1frame();
         }else{
             seek = FrameNo+jumpValueFrame;
             emit send_manual_high_res_slider(seek);
         }
-    }else if(jumpMode == JUMP_MODE_TARGETFRAME){
+    }else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
         seek = jumpValueFrameNo;
         emit send_manual_high_res_slider(seek);
     }
@@ -974,62 +978,6 @@ void MainWindow::cutend_pushbutton_control(){
     emit send_manual_pause();
     ui->play_pushButton->setText("▶");
     rangeSlider->setEndValue(FrameNo);
-}
-
-//60秒戻しボタン制御
-void MainWindow::back60s_pushbutton_control(){
-    int seek = FrameNo-VideoInfo.fps*60;
-    if(seek<VideoInfo.start_range_framesNo) seek = VideoInfo.start_range_framesNo;
-    emit send_manual_high_res_slider(seek);
-}
-
-//30秒戻しボタン制御
-void MainWindow::back30s_pushbutton_control(){
-    int seek = FrameNo-VideoInfo.fps*30;
-    if(seek<VideoInfo.start_range_framesNo) seek = VideoInfo.start_range_framesNo;
-    emit send_manual_high_res_slider(seek);
-}
-
-//10秒戻しボタン制御
-void MainWindow::back10s_pushbutton_control(){
-    int seek = FrameNo-VideoInfo.fps*10;
-    if(seek<VideoInfo.start_range_framesNo) seek = VideoInfo.start_range_framesNo;
-    emit send_manual_high_res_slider(seek);
-}
-
-//3秒戻しボタン制御
-void MainWindow::back3s_pushbutton_control(){
-    int seek = FrameNo-VideoInfo.fps*3;
-    if(seek<VideoInfo.start_range_framesNo) seek = VideoInfo.start_range_framesNo;
-    emit send_manual_high_res_slider(seek);
-}
-
-//3秒送りボタン制御
-void MainWindow::go3s_pushbutton_control(){
-    int seek = FrameNo+VideoInfo.fps*3;
-    if(seek>VideoInfo.end_range_framesNo) seek = VideoInfo.end_range_framesNo;
-    emit send_manual_high_res_slider(seek);
-}
-
-//10秒送りボタン制御
-void MainWindow::go10s_pushbutton_control(){
-    int seek = FrameNo+VideoInfo.fps*10;
-    if(seek>VideoInfo.end_range_framesNo) seek = VideoInfo.end_range_framesNo;
-    emit send_manual_high_res_slider(seek);
-}
-
-//30秒送りボタン制御
-void MainWindow::go30s_pushbutton_control(){
-    int seek = FrameNo+VideoInfo.fps*30;
-    if(seek>VideoInfo.end_range_framesNo) seek = VideoInfo.end_range_framesNo;
-    emit send_manual_high_res_slider(seek);
-}
-
-//60秒送りボタン制御
-void MainWindow::go60s_pushbutton_control(){
-    int seek = FrameNo+VideoInfo.fps*60;
-    if(seek>VideoInfo.end_range_framesNo) seek = VideoInfo.end_range_framesNo;
-    emit send_manual_high_res_slider(seek);
 }
 
 //スライダー操作
@@ -1080,16 +1028,16 @@ void MainWindow::get_jump_value(){
     if(ui->jumpvalue_spinbox->text().isEmpty()) return;
 
     int value = ui->jumpvalue_spinbox->text().toInt();
-    if(jumpMode == JUMP_MODE_SECOND){
+    if(e_jumpmode == JUMP_MODE_SECOND){
         if (value < 1) value = 1;
         if (value > VideoInfo.max_framesNo/VideoInfo.fps) value = VideoInfo.max_framesNo/VideoInfo.fps;
         jumpValueSecond = value;
-    }else if(jumpMode == JUMP_MODE_FRAME){
+    }else if(e_jumpmode == JUMP_MODE_FRAME){
         if (value < 1) value = 1;
         if (value > VideoInfo.max_framesNo) value = VideoInfo.max_framesNo;
         jumpValueFrame = value;
     }
-    else if(jumpMode == JUMP_MODE_TARGETFRAME){
+    else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
         if (value < 0) value = 0;
         if (value > VideoInfo.max_framesNo) value = VideoInfo.max_framesNo;
         jumpValueFrameNo = value;
@@ -1122,6 +1070,8 @@ void MainWindow::heavy_process_UI_control(bool flag){
     ui->goendframe_pushButton->setEnabled(flag);
     ui->stop_pushButton->setEnabled(flag);
     ui->cutend_pushButton->setEnabled(flag);
+    ui->jumpvalue_spinbox->setEnabled(flag);
+    ui->jumpmode_pushButton->setEnabled(flag);
     ui->actionFileSave->setEnabled(flag);
     ui->action_filter_sobel->setEnabled(flag);
     ui->action_filter_gausian->setEnabled(flag);
