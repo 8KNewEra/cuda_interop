@@ -195,6 +195,12 @@ void MainWindow::GLwidgetInitialized(){
     layout->setSpacing(0);
     layout->addWidget(container);
 
+    //ドラッグアンドドロップ有効化
+    ui->centralwidget->setAcceptDrops(true);
+    ui->centralwidget->installEventFilter(this);
+    container->setAcceptDrops(true);
+    container->installEventFilter(this);
+
     // 初期化完了後の処理
     connect(glWidget, &GLWidget::initialized, this, [=]() {
         qDebug() << "GLWidget 初期化完了";
@@ -629,24 +635,85 @@ void MainWindow::CSS_Design(){
 //マウスカーソルホバー処理
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
-    //音量調整
+    // -----------------------------
+    // Drag & Drop (mp4 / avi only)
+    // -----------------------------
+    if (obj == ui->centralwidget || obj == container)
+    {
+        if (event->type() == QEvent::DragEnter)
+        {
+            auto *e = static_cast<QDragEnterEvent*>(event);
+
+            if (e->mimeData()->hasUrls())
+            {
+                QString filePath = e->mimeData()->urls().first().toLocalFile();
+                QFileInfo info(filePath);
+                QString ext = info.suffix().toLower();
+
+                if (ext == "mp4" || ext == "avi")
+                {
+                    e->acceptProposedAction();
+                    return true;
+                }
+            }
+            return true;
+        }
+
+        if (event->type() == QEvent::Drop)
+        {
+            auto *e = static_cast<QDropEvent*>(event);
+
+            if (e->mimeData()->hasUrls())
+            {
+                QString filePath = e->mimeData()->urls().first().toLocalFile();
+                QFileInfo info(filePath);
+                QString ext = info.suffix().toLower();
+
+                if (ext == "mp4" || ext == "avi")
+                {
+                    //対応ファイルを開く
+                    qDebug() << "Dropped file:" << filePath;
+
+                    Close_Video_File();
+                    ui->info->setEnabled(false);
+                    ui->actionOpenFile->setEnabled(false);
+                    start_decode_thread(filePath);
+                }
+                else
+                {
+                    //非対応ファイル、警告
+                    qDebug() << "Unsupported file:" << filePath;
+
+                    QMessageBox::warning(this,
+                                         tr("非対応フォーマット"),
+                                         tr("非対応フォーマットです"),
+                                         QMessageBox::Ok);
+                }
+            }
+            return true;
+        }
+    }
+
+    // -----------------------------
+    // 音量調整
+    // -----------------------------
     if (obj == ui->pushButton_volume) {
         if (event->type() == QEvent::Leave) {
-            audioVolume->hideTimer.start(); // ← 1秒後に消すか判断
+            audioVolume->hideTimer.start();
         }
     }
 
-    //再生速度
+    // 再生速度
     if (obj == ui->pushButton_speed) {
         if (event->type() == QEvent::Leave) {
-            videoSpeed->hideTimer.start(); // ← 1秒後に消すか判断
+            videoSpeed->hideTimer.start();
         }
     }
 
-    //フレームジャンプモード
+    // フレームジャンプモード
     if (obj == ui->jumpmode_pushButton) {
         if (event->type() == QEvent::Leave) {
-            jumpMode->hideTimer.start(); // ← 1秒後に消すか判断
+            jumpMode->hideTimer.start();
         }
     }
 

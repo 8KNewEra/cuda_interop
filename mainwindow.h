@@ -26,6 +26,14 @@
 #include <QShortcut>
 #include <QPointer>
 
+//ドラッグアンドドロップ
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QUrl>
+#include <QFileInfo>
+#include <QDebug>
+
 #include <windows.h>
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
