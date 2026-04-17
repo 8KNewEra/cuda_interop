@@ -1,0 +1,76 @@
+#ifndef SAVE_ENCODE_H
+#define SAVE_ENCODE_H
+
+#include <QThread>
+#include <QObject>
+#include <cuda_runtime.h>
+#include <QDebug>
+#include <QFile>
+#include "src/imageprocess/cuda_imageprocess.h"
+#include "src/main/__global__.h"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+#include <libavutil/audio_fifo.h>
+#include <libswscale/swscale.h>
+#include <libavutil/hwcontext.h>
+#include "libswresample/swresample.h"
+}
+
+extern int g_cudaDeviceID;
+
+struct VideoEncoder {
+    AVCodecContext* codec_ctx = nullptr;
+    AVStream*       stream    = nullptr;
+    AVFrame*        hw_frame  = nullptr;
+    AVBufferRef*    hw_frames_ctx = nullptr;
+};
+
+
+class save_encode
+{
+public:
+    save_encode(int h,int w);
+    ~save_encode();
+    void encode(VideoFrame Frame);
+
+    struct QueuedPacket {
+        AVPacket* pkt;
+        int stream_index;
+    };
+
+private:
+    void initialized_ffmpeg_hardware_context(int i);
+    void initialized_ffmpeg_codec_context(int i,int max_split);
+    int height_,width_;
+
+    // --- FFmpeg 関連 ---
+    AVPacket* packet = nullptr;
+    std::vector<VideoEncoder> ve;   // デフォルトコンストラクタで N 個作成
+    AVFormatContext* fmt_ctx = nullptr;          // 出力ファイルのフォーマットコンテキスト
+    AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
+    int64_t frame_index = 0;                         // PTS 管理用
+
+    //エンコード設定
+    const EncodeSettings& encode_settings = EncodeSettingsManager::getInstance().getSettings();
+    const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
+
+    //CUDA周り
+    CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
+    cudaStream_t stream = nullptr;
+    cudaEvent_t event = nullptr;
+
+    //音声
+    void init_audio_encoder();
+    void encode_audio(VideoFrame Frame);
+    SwrContext* swr_enc = nullptr;
+    AVCodecContext* audio_enc_ctx = nullptr;
+    AVStream*       audio_stream  = nullptr;
+    int64_t         audio_pts     = 0;
+    AVAudioFifo* audio_fifo = nullptr;
+};
+
+#endif // SAVE_ENCODE_H
