@@ -23,7 +23,6 @@ extern "C" {
 }
 
 extern int g_cudaDeviceID;
-extern int g_audio_vol;
 
 struct VideoDecorder {
     AVCodecContext* codec_ctx = nullptr;
@@ -36,10 +35,9 @@ class decode_thread : public QObject {
     Q_OBJECT
 
 public:
-    explicit decode_thread(QString FilePath,bool audio_m,QObject *parent = nullptr);
+    explicit decode_thread(QString FilePath,QObject *parent = nullptr);
     ~decode_thread() override;
     int encode_state=STATE_NOT_ENCODE;
-    bool audio_mode=false;
     bool back1frame_flag = false;
 
 signals:

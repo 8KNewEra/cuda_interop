@@ -660,10 +660,10 @@ void nvgpudecode::get_decode_audio()
 
         //低遅延音声再生
         if (encode_state == STATE_NOT_ENCODE) {
-            if (audio_mode && audioOutput) {
+            if (g_AppSettings.audio_low_laytency_flag && audioOutput) {
                 if (audioSink->bytesFree() >= pcm.size()) {
 
-                    float volume = g_audio_vol / 100.0f;
+                    float volume = g_AppSettings.audio_volume / 100.0f;
 
                     int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
                     int sampleCount = pcm.size() / sizeof(int16_t);

@@ -36,17 +36,12 @@ public:
     void FBO_Rendering(VideoFrame Frame);
     void setShaderUniformEnable();
 
-    bool videoInfo_flag=false;
-    bool histgram_flag=false;
     int MinFrame=0;
     int MaxFrame=0;
     int encode_FrameCount=0;
 
     //画像処理
     bool filter_change_flag = true;
-    int sobelfilterEnabled=0;
-    int gaussianfilterEnabled=0;
-    int averagingfilterEnabled=0;
 
         double fps = 0.0;
 

@@ -17,7 +17,7 @@ extern "C" {
 #include <libavutil/error.h>
 }
 
-decode_thread::decode_thread(QString FilePath,bool audio_m,QObject *parent)
+decode_thread::decode_thread(QString FilePath,QObject *parent)
     : QObject(parent), video_play_flag(true){
     QFileInfo fileInfo(FilePath);
     QString ext = QFileInfo(fileInfo).suffix().toLower();
@@ -30,8 +30,6 @@ decode_thread::decode_thread(QString FilePath,bool audio_m,QObject *parent)
     if(CUDA_IMG_Proc==nullptr){
         CUDA_IMG_Proc=new CUDA_ImageProcess();
     }
-
-    audio_mode=audio_m;
 }
 
 decode_thread::~decode_thread() {

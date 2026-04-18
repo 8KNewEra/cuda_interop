@@ -10,6 +10,7 @@
 #include <QPainterPath>
 #include "qpainter.h"
 #include "qstyleoption.h"
+#include "src/main/__global__.h"
 
 namespace Ui {
 class video_speed;

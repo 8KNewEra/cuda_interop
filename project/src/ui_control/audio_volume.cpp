@@ -22,6 +22,9 @@ audio_volume::audio_volume(QWidget *parent)
     fadeAnim->setStartValue(1.0);
     fadeAnim->setEndValue(0.0);
 
+    //初期値を入れる
+    ui->verticalSlider_volume->setValue(g_AppSettings.audio_volume);
+
     connect(fadeAnim, &QPropertyAnimation::finished, this, [this]() {
         hide();
         setWindowOpacity(1.0); // 次回用に戻す

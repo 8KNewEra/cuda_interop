@@ -136,7 +136,7 @@
      </font>
     </property>
     <property name="text">
-     <string>x 1.0</string>
+     <string/>
     </property>
     <property name="iconSize">
      <size>
@@ -346,7 +346,7 @@
      </rect>
     </property>
     <property name="text">
-     <string extracomment="eeeeeeeeee">秒</string>
+     <string extracomment="eeeeeeeeee"/>
     </property>
     <property name="checkable">
      <bool>false</bool>

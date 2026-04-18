@@ -14,6 +14,52 @@ extern "C" {
 
 
 // エンコード設定の構造体
+struct AppSettings
+{
+    // Path
+    QString decode_path = "D:/output.mp4";
+
+    // Info
+    bool videoInfo_flag = false;
+    bool histgram_flag  = false;
+
+    // Playback
+    double video_speed_ratio = 1.0;
+    int audio_volume = 50;
+    int frame_jump_mode = 0;
+    int jumpValueSecond = 1;
+    int jumpValueFrame = 1;
+    int jumpValueFrameNo = 0;
+    bool audio_low_laytency_flag = false;
+
+    // Filter
+    bool sobelfilterEnabled = false;
+    bool gaussianfilterEnabled = false;
+    bool averagingfilterEnabled = false;
+
+    // Encode setting
+    QString encode_path = "C:/Users/USER/Videos/Captures/test.mp4";
+    QString codec  = "h264_nvenc";
+    QString preset = "p4";
+    QString tune   = "default";
+
+    int b_frames = 0;
+    int gop_size = 15;
+    int encode_tile = 1;
+    int split_encode_mode = 0;
+
+    QString pass_mode = "1pass";
+    QString rc_mode   = "cbr";
+
+    int target_bit_rate = 100000000;
+    int max_bit_rate    = 200000000;
+    int cq = 23;
+};
+
+extern AppSettings g_AppSettings;
+
+
+// エンコード設定の構造体
 struct EncodeSettings {
     std::string Save_Path = "D:/test1.mp4";
 

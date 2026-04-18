@@ -25,6 +25,10 @@ MainWindow::MainWindow(QWidget *parent)
     rangeSlider->setPlayValue(0);
     rangeSlider->setEnabled(false);
 
+    //iniファイルなど
+    logFile = new logfile_control();
+    logFile->save_inifile();
+
     CSS_Design();
     GLwidgetInitialized();
 
@@ -98,11 +102,13 @@ MainWindow::MainWindow(QWidget *parent)
 
     //動画情報
     QObject::connect(ui->action_videoinfo, &QAction::triggered,this, [&](bool flag) {
-        glWidget->videoInfo_flag=flag;
+        g_AppSettings.videoInfo_flag=flag;
     }, Qt::QueuedConnection);
     QObject::connect(ui->action_histgram, &QAction::triggered,this, [&](bool flag) {
-        glWidget->histgram_flag=flag;
+        g_AppSettings.histgram_flag=flag;
     }, Qt::QueuedConnection);
+    ui->action_videoinfo->setChecked(g_AppSettings.videoInfo_flag);
+    ui->action_histgram->setChecked(g_AppSettings.histgram_flag);
 
     QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::Open_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionCloseFile, &QAction::triggered, this, &MainWindow::Close_Video_File,Qt::QueuedConnection);
@@ -111,52 +117,48 @@ MainWindow::MainWindow(QWidget *parent)
     //画像処理
     QObject::connect(ui->action_filter_sobel, &QAction::triggered,this, [&](bool flag) {
         if(flag){
-            glWidget->sobelfilterEnabled=1;
+            g_AppSettings.sobelfilterEnabled=1;
         }else{
-            glWidget->sobelfilterEnabled=0;
+            g_AppSettings.sobelfilterEnabled=0;
         }
         glWidget->filter_change_flag=true;
     }, Qt::QueuedConnection);
 
     QObject::connect(ui->action_filter_gausian, &QAction::triggered,this, [&](bool flag) {
         if(flag){
-            glWidget->gaussianfilterEnabled=1;
+            g_AppSettings.gaussianfilterEnabled=1;
         }else{
-            glWidget->gaussianfilterEnabled=0;
+            g_AppSettings.gaussianfilterEnabled=0;
         }
         glWidget->filter_change_flag=true;
     }, Qt::QueuedConnection);
-
     QObject::connect(ui->action_filter_averaging, &QAction::triggered,this, [&](bool flag) {
         if(flag){
-            glWidget->averagingfilterEnabled=1;
+            g_AppSettings.averagingfilterEnabled=1;
         }else{
-            glWidget->averagingfilterEnabled=0;
+            g_AppSettings.averagingfilterEnabled=0;
         }
         glWidget->filter_change_flag=true;
     }, Qt::QueuedConnection);
-
     QObject::connect(ui->action_audio_low_laytency, &QAction::triggered,this, [&](bool flag) {
         if(run_decode_thread){
             if(flag){
-                audio_mode=true;
-                decodestream->audio_mode=true;
+                g_AppSettings.audio_low_laytency_flag=true;
             }else{
-                audio_mode=false;
-                decodestream->audio_mode=false;
+                g_AppSettings.audio_low_laytency_flag=false;
             }
         }
     }, Qt::QueuedConnection);
+    ui->action_filter_sobel->setChecked(g_AppSettings.sobelfilterEnabled);
+    ui->action_filter_gausian->setChecked(g_AppSettings.gaussianfilterEnabled);
+    ui->action_filter_averaging->setChecked(g_AppSettings.averagingfilterEnabled);
+    ui->action_audio_low_laytency->setChecked(g_AppSettings.audio_low_laytency_flag);
 
     //音量ボタンアイコン設定
-    ui->pushButton_volume->setIcon(style()->standardIcon( QStyle::SP_MediaVolume));
     ui->actionOpenFile->setIcon(makeWhiteIcon(QIcon::fromTheme("document-open")));
     ui->info->setIcon(makeWhiteIcon(QIcon::fromTheme("dialog-information")));
     ui->actionCloseFile->setIcon(makeWhiteIcon(QIcon::fromTheme("edit-clear")));
     ui->actionFileSave->setIcon(makeWhiteIcon(QIcon::fromTheme("document-print")));
-
-    //ジャンプ機能、lineedit
-    ui->jumpvalue_spinbox->setValue(1);           // 初期値
 
     //ダークUI
     HWND hwnd = (HWND)winId();
@@ -171,8 +173,10 @@ MainWindow::~MainWindow()
 
     delete ui;
     delete glWidget;
+    delete logFile;
     ui = nullptr;
     glWidget = nullptr;
+    logFile = nullptr;
 }
 
 //OpenGL初期化
@@ -237,7 +241,7 @@ void MainWindow::GLwidgetInitialized(){
         });
         //スライダー制御シグナル受信
         connect(audioVolume, &audio_volume::volumeChanged,this, [&](int value) {
-            g_audio_vol = value;
+            g_AppSettings.audio_volume = value;
 
             QStyle::StandardPixmap icon;
 
@@ -250,6 +254,7 @@ void MainWindow::GLwidgetInitialized(){
 
             ui->pushButton_volume->setIcon(style()->standardIcon(icon));
         },Qt::QueuedConnection);
+        audioVolume->volumeChanged(g_AppSettings.audio_volume);
 
         /* 再生速度 */
         videoSpeed = new video_speed(this);
@@ -267,28 +272,28 @@ void MainWindow::GLwidgetInitialized(){
             }
             // 非表示なら表示
             else {
-                videoSpeed->setCurrentSpeed(video_speed_ratio);
+                videoSpeed->setCurrentSpeed(g_AppSettings.video_speed_ratio);
                 videoSpeed->showPopup();
             }
         });
         //ボタンシグナル受信
         connect(videoSpeed, &video_speed::speedChanged, this,[this](double value) {
-            video_speed_ratio = value;
+            g_AppSettings.video_speed_ratio = value;
 
             if(fpsstream){
-                fpsstream->change_speed(video_speed_ratio*VideoInfo.fps);
+                fpsstream->change_speed(g_AppSettings.video_speed_ratio*VideoInfo.fps);
             }
 
             QString text;
             // 整数 (1.0, 2.0) は小数1桁
-            if (qFuzzyCompare(video_speed_ratio, qRound(video_speed_ratio))) {
-                text = QString("x %1").arg(video_speed_ratio, 0, 'f', 1);
+            if (qFuzzyCompare(g_AppSettings.video_speed_ratio, qRound(g_AppSettings.video_speed_ratio))) {
+                text = QString("x %1").arg(g_AppSettings.video_speed_ratio, 0, 'f', 1);
                 //フォントサイズをちょっと大きくする
                 QFont font = ui->pushButton_speed->font();
                 font.setPointSize(7);
             } else {
                 // 最大2桁、不要な0削除
-                QString s = QString::number(video_speed_ratio, 'f', 2);
+                QString s = QString::number(g_AppSettings.video_speed_ratio, 'f', 2);
                 s.remove(QRegularExpression("0+$"));
                 s.remove(QRegularExpression("\\.$"));
                 text = "x " + s;
@@ -302,6 +307,7 @@ void MainWindow::GLwidgetInitialized(){
 
             ui->label_range_time->hide();
         },Qt::QueuedConnection);
+        videoSpeed->speedChanged(g_AppSettings.video_speed_ratio);
 
         /* Frameジャンプ、モード選択 */
         jumpMode = new jump_mode(this);
@@ -319,32 +325,32 @@ void MainWindow::GLwidgetInitialized(){
             }
             // 非表示なら表示
             else {
-                jumpMode->setCurrentMode(frame_jump_mode);
+                jumpMode->setCurrentMode(g_AppSettings.frame_jump_mode);
                 jumpMode->showPopup();
             }
         });
 
         //ボタンシグナル受信
         connect(jumpMode, &jump_mode::modeChanged, this,[this](int value) {
-            frame_jump_mode = value;
+            g_AppSettings.frame_jump_mode = value;
 
             QString text;
             // 整数 (1.0, 2.0) は小数1桁
             if (value == JUMP_MODE_SECOND) {
                 e_jumpmode = JUMP_MODE_SECOND;
-                ui->jumpvalue_spinbox->setValue(jumpValueSecond);
+                ui->jumpvalue_spinbox->setValue(g_AppSettings.jumpValueSecond);
                 text = "秒";
                 QFont font = ui->jumpmode_pushButton->font();
                 font.setPointSize(7);
             }else if(value == JUMP_MODE_FRAME) {
                 e_jumpmode = JUMP_MODE_FRAME;
-                ui->jumpvalue_spinbox->setValue(jumpValueFrame);
+                ui->jumpvalue_spinbox->setValue(g_AppSettings.jumpValueFrame);
                 text = "フレーム";
                 QFont font = ui->jumpmode_pushButton->font();
                 font.setPointSize(5);
             }else if(value == JUMP_MODE_TARGETFRAME) {
                 e_jumpmode = JUMP_MODE_TARGETFRAME;
-                ui->jumpvalue_spinbox->setValue(jumpValueFrameNo);
+                ui->jumpvalue_spinbox->setValue(g_AppSettings.jumpValueFrameNo);
                 text = "任意フレーム";
                 QFont font = ui->jumpmode_pushButton->font();
                 font.setPointSize(5);
@@ -353,6 +359,7 @@ void MainWindow::GLwidgetInitialized(){
             jumpMode->hide();
             jumpMode->hideTimer.stop();
         },Qt::QueuedConnection);
+        jumpMode->modeChanged(g_AppSettings.frame_jump_mode);
     });
 
     glWidget->show();
@@ -519,9 +526,6 @@ void MainWindow::CSS_Design(){
     ui->jumpmode_pushButton->setFocusPolicy(Qt::NoFocus);
 
     ui->pushButton_volume->setFocusPolicy(Qt::NoFocus);
-    ui->pushButton_volume->setIcon(
-        style()->standardIcon(QStyle::SP_MediaVolume)
-        );
     ui->pushButton_volume->setIconSize(QSize(20, 20));
 
     //スピンボックス制御
@@ -858,24 +862,29 @@ void MainWindow::toggleFullScreen()
 //ファイルを開く
 void MainWindow::Open_Video_File()
 {
-    // ファイルダイアログを開く
+    QString startDir = QFileInfo(g_AppSettings.decode_path).absolutePath();
+
+    if (startDir.isEmpty() || !QDir(startDir).exists()) {
+        startDir = QDir::homePath();
+    }
+
     QString filePath = QFileDialog::getOpenFileName(
         this,
         tr("動画ファイルを開く"),
-        QDir::homePath(),
+        startDir,
         tr("動画ファイル (*.mp4 *.avi)")
         );
 
     // ファイルが選択されたかどうかを確認
     if (!filePath.isEmpty()) {
         qDebug() << "選択されたファイル:" << filePath;
+        g_AppSettings.decode_path = filePath;
 
         Close_Video_File();
         ui->info->setEnabled(false);
         ui->actionOpenFile->setEnabled(false);
 
-        start_decode_thread(filePath);
-
+        start_decode_thread(g_AppSettings.decode_path);
     } else {
         qDebug() << "ファイル選択がキャンセルされました";
     }
@@ -897,11 +906,11 @@ void MainWindow::Close_Video_File()
 //非同期オーディオ再生
 void MainWindow::play_audio(QByteArray pcm)
 {
-    if (encode_state == STATE_NOT_ENCODE && !audio_mode) {
+    if (encode_state == STATE_NOT_ENCODE && !g_AppSettings.audio_low_laytency_flag) {
         if (audioOutput && audioSink) {
             if (audioSink->bytesFree() >= pcm.size()) {
 
-                float volume = g_audio_vol / 100.0f;
+                float volume = g_AppSettings.audio_volume / 100.0f;
 
                 int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
                 int sampleCount = pcm.size() / sizeof(int16_t);
@@ -943,28 +952,28 @@ void MainWindow::back1frame_pushbutton_control(){
 
     if(ui->jumpvalue_spinbox->text().isEmpty()){
         if(e_jumpmode == JUMP_MODE_SECOND){
-            ui->jumpvalue_spinbox->setValue(jumpValueSecond);
+            ui->jumpvalue_spinbox->setValue(g_AppSettings.jumpValueSecond);
         }else if(e_jumpmode == JUMP_MODE_FRAME){
-            ui->jumpvalue_spinbox->setValue(jumpValueFrame);
+            ui->jumpvalue_spinbox->setValue(g_AppSettings.jumpValueFrame);
         }else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
             ui->jumpvalue_spinbox->setValue(FrameNo);
-            jumpValueFrameNo = FrameNo;
+            g_AppSettings.jumpValueFrameNo = FrameNo;
         }
     }
 
     int seek{};
     if(e_jumpmode == JUMP_MODE_SECOND){
-        seek = FrameNo-VideoInfo.fps*jumpValueSecond;
+        seek = FrameNo-VideoInfo.fps*g_AppSettings.jumpValueSecond;
         emit send_manual_high_res_slider(seek);
     }else if(e_jumpmode == JUMP_MODE_FRAME){
-        if(jumpValueFrame == 1){
+        if(g_AppSettings.jumpValueFrame == 1){
             emit send_manual_back1frame();
         }else{
-            seek = FrameNo-jumpValueFrame;
+            seek = FrameNo-g_AppSettings.jumpValueFrame;
             emit send_manual_high_res_slider(seek);
         }
     }else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
-        seek = jumpValueFrameNo;
+        seek = g_AppSettings.jumpValueFrameNo;
         emit send_manual_high_res_slider(seek);
     }
 }
@@ -998,28 +1007,28 @@ void MainWindow::go1frame_pushbutton_control(){
 
     if(ui->jumpvalue_spinbox->text().isEmpty()){
         if(e_jumpmode == JUMP_MODE_SECOND){
-            ui->jumpvalue_spinbox->setValue(jumpValueSecond);
+            ui->jumpvalue_spinbox->setValue(g_AppSettings.jumpValueSecond);
         }else if(e_jumpmode == JUMP_MODE_FRAME){
-            ui->jumpvalue_spinbox->setValue(jumpValueFrame);
+            ui->jumpvalue_spinbox->setValue(g_AppSettings.jumpValueFrame);
         }else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
             ui->jumpvalue_spinbox->setValue(FrameNo);
-            jumpValueFrameNo = FrameNo;
+            g_AppSettings.jumpValueFrameNo = FrameNo;
         }
     }
 
     int seek{};
     if(e_jumpmode == JUMP_MODE_SECOND){
-        seek = FrameNo+VideoInfo.fps*jumpValueSecond;
+        seek = FrameNo+VideoInfo.fps*g_AppSettings.jumpValueSecond;
         emit send_manual_high_res_slider(seek);
     }else if(e_jumpmode == JUMP_MODE_FRAME){
-        if(jumpValueFrame == 1){
+        if(g_AppSettings.jumpValueFrame == 1){
             emit send_manual_go1frame();
         }else{
-            seek = FrameNo+jumpValueFrame;
+            seek = FrameNo+g_AppSettings.jumpValueFrame;
             emit send_manual_high_res_slider(seek);
         }
     }else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
-        seek = jumpValueFrameNo;
+        seek = g_AppSettings.jumpValueFrameNo;
         emit send_manual_high_res_slider(seek);
     }
 }
@@ -1098,16 +1107,16 @@ void MainWindow::get_jump_value(){
     if(e_jumpmode == JUMP_MODE_SECOND){
         if (value < 1) value = 1;
         if (value > VideoInfo.max_framesNo/VideoInfo.fps) value = VideoInfo.max_framesNo/VideoInfo.fps;
-        jumpValueSecond = value;
+        g_AppSettings.jumpValueSecond = value;
     }else if(e_jumpmode == JUMP_MODE_FRAME){
         if (value < 1) value = 1;
         if (value > VideoInfo.max_framesNo) value = VideoInfo.max_framesNo;
-        jumpValueFrame = value;
+        g_AppSettings.jumpValueFrame = value;
     }
     else if(e_jumpmode == JUMP_MODE_TARGETFRAME){
         if (value < 0) value = 0;
         if (value > VideoInfo.max_framesNo) value = VideoInfo.max_framesNo;
-        jumpValueFrameNo = value;
+        g_AppSettings.jumpValueFrameNo = value;
     }
 
     ui->jumpvalue_spinbox->setValue(value);
@@ -1243,7 +1252,7 @@ void MainWindow::init_decodethread_complete(){
 
     qDebug() << "Framerate:" << VideoInfo.fps;
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
-    start_fps_thread(VideoInfo.fps*video_speed_ratio);
+    start_fps_thread(VideoInfo.fps*g_AppSettings.video_speed_ratio);
     init_async_audio();
     glWidget->GLresize();
 }
@@ -1305,14 +1314,14 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
 void MainWindow::start_decode_thread(QString filePath) {
     if (!run_decode_thread) {
         if(canUseGpuDecode(filePath)){
-            decodestream = new nvgpudecode(filePath,audio_mode);
+            decodestream = new nvgpudecode(filePath);
         }else{
             QString ext = QFileInfo(filePath).suffix().toLower();
             if (ext == "mp4") {
-                decodestream = new cpudecode(filePath, audio_mode);
+                decodestream = new cpudecode(filePath);
             }
             else if (ext == "avi") {
-                decodestream = new avidecode(filePath, audio_mode);
+                decodestream = new avidecode(filePath);
             }else{
                 QMessageBox::warning(this,
                                      tr("ファイルを開けません"),
@@ -1387,7 +1396,6 @@ void MainWindow::start_decode_thread(QString filePath) {
 //デコードスレッド停止
 void MainWindow::stop_decode_thread(){
     if (run_decode_thread) {
-        audio_mode=decodestream->audio_mode;
         run_decode_thread=false;
 
         //UI設定

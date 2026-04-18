@@ -1,14 +1,15 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include "src/ui_control/audio_volume.h"
 #include "src/main/fps_thread.h"
 #include "src/videoprocess/decode_thread.h"
 #include "src/info/info_thread.h"
+#include "src/info/logfile_control.h"
 #include "src/ui_control/encode_setting.h"
 #include "src/ui_control/jump_mode.h"
 #include "src/ui_control/rangeslider.h"
 #include "src/ui_control/video_speed.h"
+#include "src/ui_control/audio_volume.h"
 #define NOMINMAX
 
 #include <QMainWindow>
@@ -37,8 +38,6 @@
 #include <windows.h>
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
-
-extern int g_audio_vol;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -117,9 +116,6 @@ private:
     void heavy_process_UI_control(bool flag);
     void get_jump_value();
     RangeSlider *rangeSlider;
-    int jumpValueSecond = 1;
-    int jumpValueFrame = 1;
-    int jumpValueFrameNo = 0;
     e_jump_mode e_jumpmode = JUMP_MODE_SECOND;
 
     //再生、一時停止ステータス
@@ -156,18 +152,18 @@ private:
     void play_audio(QByteArray pcm);
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
-    bool audio_mode=false;
 
     audio_volume *audioVolume;
     bool audio_slider = false;
 
     //再生速度
     video_speed *videoSpeed;
-    double video_speed_ratio = 1.0;
 
     //Frameジャンプ、モード選択
     jump_mode *jumpMode;
-    int frame_jump_mode = 0;
+
+    //iniファイル
+    logfile_control *logFile;
 
 private:
     Ui::MainWindow *ui;

@@ -62,7 +62,8 @@ HEADERS += \
     $$PWD/src/imageprocess/cuda_imageprocess.h \
     $$PWD/src/main/fps_thread.h \
     $$PWD/src/main/glwidget.h \
-    $$PWD/src/main/mainwindow.h
+    $$PWD/src/main/mainwindow.h \
+    src/main/__global__.h
 
 FORMS += \
     $$PWD/form/audio_volume.ui \

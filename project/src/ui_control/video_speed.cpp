@@ -38,8 +38,8 @@ video_speed::video_speed(QWidget *parent)
         }
     });
 
-    //ボタン
-    setCurrentSpeed(1.0);
+    //ボタン初期設定
+    setCurrentSpeed(g_AppSettings.video_speed_ratio);
 
     //ボタン
     connect(ui->pushButton_025, &QPushButton::clicked, this, [&]() {

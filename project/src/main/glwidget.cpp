@@ -279,7 +279,7 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
 
     //ヒストグラム描画
     {
-        if(histgram_flag){
+        if(g_AppSettings.histgram_flag){
             //ヒストグラムCUDA集計
             histgram_Analysys();
             auto labels = make_nice_y_labels(h_hist_stats.max_y_axis);
@@ -424,7 +424,7 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
 
     //動画情報描画
     {
-        if(videoInfo_flag){
+        if(g_AppSettings.videoInfo_flag){
             painter.setPen(Qt::white);
             painter.setFont(QFont("Consolas", 16));
             painter.drawText(2, 20, "OpenGL Device:" + QString::fromLatin1((const char*)glGetString(GL_RENDERER))+"\n");
@@ -490,13 +490,13 @@ void GLWidget::GLreset(){
 //シェーダーUniform、UI設定変更時
 void GLWidget::setShaderUniformEnable(){
     glUseProgram(Gaussian_shader.progId);
-    glUniform1i(Gaussian_shader.loc_filterEnabled, gaussianfilterEnabled);
+    glUniform1i(Gaussian_shader.loc_filterEnabled, g_AppSettings.gaussianfilterEnabled);
 
     glUseProgram(Sobel_shader.progId);
-    glUniform1i(Sobel_shader.loc_filterEnabled, sobelfilterEnabled);
+    glUniform1i(Sobel_shader.loc_filterEnabled, g_AppSettings.sobelfilterEnabled);
 
     glUseProgram(Averaging_shader.progId);
-    glUniform1i(Averaging_shader.loc_filterEnabled, averagingfilterEnabled);
+    glUniform1i(Averaging_shader.loc_filterEnabled, g_AppSettings.averagingfilterEnabled);
 
     glUseProgram(0);
 }
