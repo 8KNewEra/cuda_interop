@@ -55,7 +55,7 @@ private:
     int64_t frame_index = 0;                         // PTS 管理用
 
     //エンコード設定
-    const EncodeSettings& encode_settings = EncodeSettingsManager::getInstance().getSettings();
+    const EncodeSettings& encodeSettings = EncodeSettingsManager::getInstance().getSettings();
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
     //CUDA周り

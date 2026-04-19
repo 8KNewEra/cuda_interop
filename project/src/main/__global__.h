@@ -1,7 +1,9 @@
 #ifndef __GLOBAL___H
 #define __GLOBAL___H
 
+#include "qcoreapplication.h"
 #include "qobject.h"
+#include <QFileDialog>
 #include <string>
 #include <cuda_runtime.h>
 #define STATE_NOT_ENCODE 0
@@ -13,11 +15,11 @@ extern "C" {
 }
 
 
-// エンコード設定の構造体
+// アプリ設定を保持する構造体
 struct AppSettings
 {
     // Path
-    QString decode_path = "D:/output.mp4";
+    QString decode_path = QDir::homePath();
 
     // Info
     bool videoInfo_flag = false;
@@ -36,24 +38,6 @@ struct AppSettings
     bool sobelfilterEnabled = false;
     bool gaussianfilterEnabled = false;
     bool averagingfilterEnabled = false;
-
-    // Encode setting
-    QString encode_path = "C:/Users/USER/Videos/Captures/test.mp4";
-    QString codec  = "h264_nvenc";
-    QString preset = "p4";
-    QString tune   = "default";
-
-    int b_frames = 0;
-    int gop_size = 15;
-    int encode_tile = 1;
-    int split_encode_mode = 0;
-
-    QString pass_mode = "1pass";
-    QString rc_mode   = "cbr";
-
-    int target_bit_rate = 100000000;
-    int max_bit_rate    = 200000000;
-    int cq = 23;
 };
 
 extern AppSettings g_AppSettings;
@@ -61,25 +45,27 @@ extern AppSettings g_AppSettings;
 
 // エンコード設定の構造体
 struct EncodeSettings {
-    std::string Save_Path = "D:/test1.mp4";
+    // Encode setting
+    QString encode_path = QCoreApplication::applicationDirPath();
+    QString codec  = "h264_nvenc";
+    QString preset = "p4";
+    QString tune   = "default";
 
-    std::string Codec{};
-    std::string rc_mode{};
-    std::string preset{};
-    std::string tune{};
-    std::string split_encode_mode{};
-    std::string pass_mode{};
+    double save_fps{};
+    int b_frames = 0;
+    int gop_size = 15;
+
+    QString split_encode_mode = "0";
+    QString pass_mode = "1pass";
+    QString rc_mode   = "cbr";
+
+    int target_bit_rate = 100000000;
+    int max_bit_rate    = 200000000;
+    int cq = 23;
+
     int encode_tile = 1;
     int width_tile = 1;
     int height_tile = 1;
-
-    int target_bit_rate{};
-    int max_bit_rate{};
-    int cq{};
-
-    int gop_size = 60;
-    int b_frames{};
-    double save_fps{};
 };
 
 // ★書き込みを許可したいクラスをここで「前方宣言」
@@ -105,6 +91,7 @@ public:
 
 private:
     // 3. ★書き込みクラスとして 'encode_setting' を指定
+    friend class logfile_control;
     friend class encode_setting;
 
     // 4.【書き込み用】

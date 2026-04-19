@@ -38,14 +38,10 @@ signals:
 private:
     void closeEvent(QCloseEvent *event);
     Ui::encode_setting *ui;
-    EncodeSettings& settings = EncodeSettingsManager::getInstance().getSettingsNonConst();
+    EncodeSettings& encodeSettings = EncodeSettingsManager::getInstance().getSettingsNonConst();
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
-
-
-    void read_txt();
-    void init_txt();
-    void write_txt();
+    void iniFile_UI_Control();
     int foundIndex(QString key,const QString& item);
     QString file_check(const QString &filePath);
 

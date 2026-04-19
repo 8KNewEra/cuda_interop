@@ -8,9 +8,6 @@ encode_setting::encode_setting(QWidget *parent)
 {
     ui->setupUi(this);
 
-    //設定ファイルが無ければ作成
-    init_txt();
-
     settingmap[0] = {"h264_nvenc","0",0,"p1","default","cbr","1pass",1,1};
     settingmap[1] = {"hevc_nvenc","1",1,"p2","hq","vbr","2pass-quarter-res",15,2};
     settingmap[2] = {"av1_nvenc","",2,"p3","ll","cq","2pass-full-res",30,4};
@@ -27,7 +24,7 @@ encode_setting::encode_setting(QWidget *parent)
     {
         QObject::connect(ui->filesave_pushButton, &QPushButton::clicked, this, [&]() {
             QString filter = "MP4 Files (*.mp4);;All Files (*.*)";
-            QFileInfo fileInfo(QString::fromStdString(settings.Save_Path));
+            QFileInfo fileInfo(encodeSettings.encode_path);
 
             QString fileName = QFileDialog::getSaveFileName(
                 this,
@@ -38,7 +35,7 @@ encode_setting::encode_setting(QWidget *parent)
 
             if (!fileName.isEmpty()) {
                 ui->label_filepath->setText(fileName);
-                settings.Save_Path=fileName.toStdString();
+                encodeSettings.encode_path = fileName;
             }
         }, Qt::QueuedConnection);
     }
@@ -54,7 +51,7 @@ encode_setting::encode_setting(QWidget *parent)
 
         ui->comboBox_codec->addItems(codec_items);
         QObject::connect(ui->comboBox_codec, &QComboBox::currentIndexChanged, this, [&](int index) {
-            settings.Codec= settingmap[index].codec.toStdString();
+            encodeSettings.codec = settingmap[index].codec;
             combo_index_control2();
         }, Qt::QueuedConnection);
     }
@@ -65,7 +62,7 @@ encode_setting::encode_setting(QWidget *parent)
         splitencode_items << "Disable" << "Enable" ;
         ui->comboBox_splitencode->addItems(splitencode_items);
         QObject::connect(ui->comboBox_splitencode, &QComboBox::currentIndexChanged, this, [&](int index) {
-            settings.split_encode_mode=settingmap[index].splitencode_items.toStdString();
+            encodeSettings.split_encode_mode = settingmap[index].splitencode_items;
         }, Qt::QueuedConnection);
     }
 
@@ -75,10 +72,10 @@ encode_setting::encode_setting(QWidget *parent)
         tile_items <<"1 Tile (通常)"<<"2 Tiles (2 × 1)"<<"4 Tiles (2 × 2)"<<"8 Tiles (4 × 2)";
         ui->comboBox_tile->addItems(tile_items);
         QObject::connect(ui->comboBox_tile, &QComboBox::currentIndexChanged, this, [&](int index) {
-            settings.encode_tile = settingmap[index].encode_tile;
+            encodeSettings.encode_tile = settingmap[index].encode_tile;
             tile_split_exchange();
 
-            if(VideoInfo.width*VideoInfo.width_scale/settings.width_tile>4096||VideoInfo.height*VideoInfo.height_scale/settings.height_tile>4096){
+            if(VideoInfo.width*VideoInfo.width_scale/encodeSettings.width_tile>4096||VideoInfo.height*VideoInfo.height_scale/encodeSettings.height_tile>4096){
                 qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
                 if(ui->comboBox_codec->currentIndex()==0){
                     ui->comboBox_codec->setCurrentIndex(1);
@@ -98,13 +95,13 @@ encode_setting::encode_setting(QWidget *parent)
             B_frame_items << "0" << "1"<<"2"<<"3"<<"4"<<"5"<<"6"<<"7";
             ui->comboBox_b_frame->addItems(B_frame_items);
             QObject::connect(ui->comboBox_b_frame, &QComboBox::currentIndexChanged, this, [&](int index) {
-                settings.b_frames = settingmap[index].B_frame_items;
+                encodeSettings.b_frames = settingmap[index].B_frame_items;
             }, Qt::QueuedConnection);
         }else{
             B_frame_items << "0" ;
             ui->comboBox_b_frame->addItems(B_frame_items);
             ui->comboBox_b_frame->setEnabled(false);
-            settings.b_frames=0;
+            encodeSettings.b_frames=0;
         }
     }
 
@@ -114,7 +111,7 @@ encode_setting::encode_setting(QWidget *parent)
         gop_items <<"1"<<"15"<<"30"<<"60"<<"120"<<"250"<<"300";
         ui->comboBox_gop->addItems(gop_items);
         QObject::connect(ui->comboBox_gop, &QComboBox::currentIndexChanged, this, [&](int index) {
-            settings.gop_size = settingmap[index].gop_items;
+            encodeSettings.gop_size = settingmap[index].gop_items;
             combo_index_control2();
         }, Qt::QueuedConnection);
     }
@@ -126,7 +123,7 @@ encode_setting::encode_setting(QWidget *parent)
         preset_items<< "p1 (最速・低品質)"<< "p2"<< "p3"<< "p4"<< "p5"<< "p6"<< "p7 (最高品質・低速)";
         ui->comboBox_preset->addItems(preset_items);
         QObject::connect(ui->comboBox_preset, &QComboBox::currentIndexChanged, this, [&](int index) {
-            settings.preset = settingmap[index].preset_items.toStdString();
+            encodeSettings.preset = settingmap[index].preset_items;
         }, Qt::QueuedConnection);
     }
 
@@ -136,7 +133,7 @@ encode_setting::encode_setting(QWidget *parent)
         profile_items<< "default (汎用)"<< "hq (高品質)"<< "ll (低遅延)"<< "ull (超低遅延)"<< "lossless (可逆圧縮)";
         ui->comboBox_profile->addItems(profile_items);
         QObject::connect(ui->comboBox_profile, &QComboBox::currentIndexChanged, this, [&](int index) {
-            settings.tune = settingmap[index].profile_items.toStdString();
+            encodeSettings.tune = settingmap[index].profile_items;
         }, Qt::QueuedConnection);
     }
 
@@ -156,12 +153,12 @@ encode_setting::encode_setting(QWidget *parent)
         // ターゲットスライダーの範囲を更新
         int target = target_bit_rate;
 
-        if(settings.rc_mode=="vbr"){
+        if(encodeSettings.rc_mode=="vbr"){
             ui->horizontalSlider_targetbitrate->setMaximum(value);
         }
 
         // 現在のターゲットが最大を超えた場合は調整
-        if(target > value&&settings.rc_mode=="vbr"){
+        if(target > value&&encodeSettings.rc_mode=="vbr"){
             target = value;
             target_bit_rate = target;
             ui->horizontalSlider_targetbitrate->setValue(target);
@@ -171,7 +168,7 @@ encode_setting::encode_setting(QWidget *parent)
     //cq
     ui->horizontalSlider_cq->setRange(1, 51);
     QObject::connect(ui->horizontalSlider_cq, &QSlider::valueChanged, this, [&](int value){
-        settings.cq = value;
+        encodeSettings.cq = value;
         ui->label_cq_value->setText(QString::number(value));
     }, Qt::QueuedConnection);
 
@@ -184,7 +181,7 @@ encode_setting::encode_setting(QWidget *parent)
         QObject::connect(ui->comboBox_rc, &QComboBox::currentIndexChanged,this, [&](int index) {
             switch (index) {
                 case 0:
-                    settings.rc_mode = settingmap[index].rc_items.toStdString();
+                    encodeSettings.rc_mode = settingmap[index].rc_items;
                     ui->horizontalSlider_targetbitrate->setEnabled(true);
                     ui->label_targetbitrate->setEnabled(true);
                     ui->label_targetbitrare_value->setEnabled(true);
@@ -197,7 +194,7 @@ encode_setting::encode_setting(QWidget *parent)
                     ui->horizontalSlider_targetbitrate->setRange(1,200);
                     break;
                 case 1:
-                    settings.rc_mode = settingmap[index].rc_items.toStdString();
+                    encodeSettings.rc_mode = settingmap[index].rc_items;
                     ui->horizontalSlider_targetbitrate->setEnabled(true);
                     ui->label_targetbitrate->setEnabled(true);
                     ui->label_targetbitrare_value->setEnabled(true);
@@ -210,7 +207,7 @@ encode_setting::encode_setting(QWidget *parent)
                     ui->horizontalSlider_targetbitrate->setRange(1,max_bit_rate);
                     break;
                 case 2:
-                    settings.rc_mode = settingmap[index].rc_items.toStdString();
+                    encodeSettings.rc_mode = settingmap[index].rc_items;
                     ui->horizontalSlider_targetbitrate->setEnabled(false);
                     ui->label_targetbitrate->setEnabled(false);
                     ui->label_targetbitrare_value->setEnabled(false);
@@ -231,23 +228,23 @@ encode_setting::encode_setting(QWidget *parent)
         pass_items << "1 pass" << "2 pass quarter" << "2 pass full" ;
         ui->comboBox_encodepass->addItems(pass_items);
         QObject::connect(ui->comboBox_encodepass, &QComboBox::currentIndexChanged,this, [&](int index) {
-            settings.pass_mode = settingmap[index].pass_items.toStdString();
+            encodeSettings.pass_mode = settingmap[index].pass_items;
         }, Qt::QueuedConnection);
     }
 
     //エンコードスタート
     QObject::connect(ui->encodeStart_pushbutton, &QPushButton::clicked, this, [&]() {
         //CBRの場合は最大ビットレートもターゲットビットレートを入れる
-        if(settings.rc_mode=="cbr"){
-            settings.max_bit_rate=target_bit_rate*1000*1000;
-            settings.target_bit_rate=target_bit_rate*1000*1000;
+        if(encodeSettings.rc_mode=="cbr"){
+            encodeSettings.max_bit_rate=target_bit_rate*1000*1000;
+            encodeSettings.target_bit_rate=target_bit_rate*1000*1000;
         }else{
-            settings.max_bit_rate=max_bit_rate*1000*1000;
-            settings.target_bit_rate=target_bit_rate*1000*1000;
+            encodeSettings.max_bit_rate=max_bit_rate*1000*1000;
+            encodeSettings.target_bit_rate=target_bit_rate*1000*1000;
         }
 
         //パスが存在するか確認
-        QFileInfo info(QString::fromStdString(settings.Save_Path));
+        QFileInfo info(encodeSettings.encode_path);
         QString dirPath = info.absolutePath();
         QDir dir(dirPath);
 
@@ -260,13 +257,10 @@ encode_setting::encode_setting(QWidget *parent)
         }
 
         //上書きできるか
-        if(VideoInfo.Path==settings.Save_Path){
-            settings.Save_Path = file_check(QString::fromStdString(settings.Save_Path)).toStdString();
-            ui->label_filepath->setText(QString::fromStdString(settings.Save_Path));
+        if(VideoInfo.Path==encodeSettings.encode_path){
+            encodeSettings.encode_path = file_check(encodeSettings.encode_path);
+            ui->label_filepath->setText(encodeSettings.encode_path);
         }
-
-        //設定データ保存
-        write_txt();
 
         //エンコード開始
         emit signal_encode_start();
@@ -293,16 +287,16 @@ encode_setting::encode_setting(QWidget *parent)
         encode_flag=false;
     }, Qt::QueuedConnection);
 
-    read_txt();
-
+    //iniファイルを元に初期値をUIに反映
     {
+        iniFile_UI_Control();
         auto emitIndexChanged = [&](QComboBox* box){
             int idx = box->currentIndex();
             Q_EMIT box->currentIndexChanged(idx);
         };
 
         // 初期値セット
-        ui->label_filepath->setText(QString::fromStdString(settings.Save_Path));
+        ui->label_filepath->setText(encodeSettings.encode_path);
 
         ui->comboBox_codec->setCurrentIndex(combo_index[0]);
         emitIndexChanged(ui->comboBox_codec);
@@ -337,8 +331,8 @@ encode_setting::encode_setting(QWidget *parent)
         ui->horizontalSlider_maxbitrate->setValue(max_bit_rate);
         ui->label_maxbitrate_value->setText(QString::number(max_bit_rate) + " Mbps");
 
-        ui->horizontalSlider_cq->setValue(settings.cq);
-        ui->label_cq_value->setText(QString::number(settings.cq));
+        ui->horizontalSlider_cq->setValue(encodeSettings.cq);
+        ui->label_cq_value->setText(QString::number(encodeSettings.cq));
     }
 }
 
@@ -347,89 +341,28 @@ encode_setting::~encode_setting()
     delete ui;
 }
 
-//設定ファイルがなければ新規作成
-void encode_setting::init_txt(){
-    QFile file("setting.txt");
-    if(!file.exists()){
-        // 新規作成
-        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            QString exeDir = QApplication::applicationDirPath();
-            QString fileName = "output.mp4";
-            QDir dir(exeDir);
-            QString fullPath = dir.filePath(fileName);
-
-            QTextStream out(&file);
-            out << "Save_Path:\"" << fullPath << "\"\n";
-            out << "Codec:\"h264_nvenc\"\n";
-            out << "preset:\"p4\"\n";
-            out << "tune:\"default\"\n";
-            out << "b_frames:\"0\"\n";
-            out << "gop_size:\"15\"\n";
-            out << "encode_tile:1\n";
-            out << "split_encode_mode:\"0\"\n";
-            out << "pass_mode:\"1pass\"\n";
-            out << "rc_mode:\"cbr\"\n";
-            out << "target_bit_rate:100000000\n";
-            out << "max_bit_rate:200000000\n";
-            out << "cq:23\n";
-            file.close();
-            qDebug() << "新しい設定ファイルを作成しました。";
-        }
-    }
-}
-
-//設定ファイルを読み込み
-void encode_setting::read_txt(){
-    QString filePath = "setting.txt";
-    QFile file(filePath);
-
+//初期値をUIに反映する(Combobox)
+void encode_setting::iniFile_UI_Control(){
     // 読み込み
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QTextStream in(&file);
-        while (!in.atEnd()) {
-            QString line = in.readLine().trimmed();
-            if (line.startsWith("Save_Path:")){
-                settings.Save_Path = line.mid(line.indexOf(':') + 1).remove('"').toStdString();
-            }else if (line.startsWith("Codec:")){
-                if(g_prop.major > 8 || (g_prop.major == 8 && g_prop.minor >= 9)){
-                    combo_index[0]=foundIndex("codec",line.split(':')[1].remove('"'));
-                }else{
-                    if(line.split(':')[1].remove('"').toStdString()=="av1_nvenc"){
-                        combo_index[0]=foundIndex("codec","hevc_nvenc");
-                    }else{
-                        combo_index[0]=foundIndex("codec",line.split(':')[1].remove('"'));
-                    }
-                }
-            }else if (line.startsWith("split_encode_mode:")){
-                combo_index[1]=foundIndex("split_encode_mode",line.split(':')[1].remove('"'));
-            }else if (line.startsWith("b_frames:")){
-                combo_index[2]=foundIndex("b_frames",line.split(':')[1].remove('"'));
-            }else if (line.startsWith("preset:")){
-                combo_index[3]=foundIndex("preset",line.split(':')[1].remove('"'));
-            }else if (line.startsWith("tune:")){
-                combo_index[4]=foundIndex("tune",line.split(':')[1].remove('"'));
-            }else if (line.startsWith("rc_mode:")){
-                combo_index[5]=foundIndex("rc_mode",line.split(':')[1].remove('"'));
-            }else if (line.startsWith("pass_mode:")){
-                combo_index[6]=foundIndex("pass_mode",line.split(':')[1].remove('"'));
-            }else if (line.startsWith("gop_size:")){
-                combo_index[7]=foundIndex("gop_size",line.split(':')[1].remove('"'));
-            }else if (line.startsWith("encode_tile:")){
-                combo_index[8]=foundIndex("encode_tile",line.split(':')[1].remove('"'));
-            }else if (line.startsWith("target_bit_rate:")){
-                settings.target_bit_rate = line.split(':')[1].remove('"').toInt();
-                target_bit_rate = settings.target_bit_rate/1000000;
-            }else if (line.startsWith("max_bit_rate:")){
-                settings.max_bit_rate = line.split(':')[1].remove('"').toInt();
-                max_bit_rate = settings.max_bit_rate/1000000;
-            }else if (line.startsWith("cq:")){
-                settings.cq = line.split(':')[1].remove('"').toInt();
-            }
+    if(g_prop.major > 8 || (g_prop.major == 8 && g_prop.minor >= 9)){
+        combo_index[0]=foundIndex("codec",encodeSettings.codec);
+    }else{
+        if(encodeSettings.codec=="av1_nvenc"){
+            combo_index[0]=foundIndex("codec","hevc_nvenc");
+        }else{
+            combo_index[0]=foundIndex("codec",encodeSettings.codec);
         }
-        file.close();
-    } else {
-        qWarning() << "設定ファイルの読み込みに失敗しました。";
     }
+    combo_index[1]=foundIndex("split_encode_mode",encodeSettings.split_encode_mode);
+    combo_index[2]=foundIndex("b_frames",QString::number(encodeSettings.b_frames));
+    combo_index[3]=foundIndex("preset",encodeSettings.preset);
+    combo_index[4]=foundIndex("tune",encodeSettings.tune);
+    combo_index[5]=foundIndex("rc_mode",encodeSettings.rc_mode);
+    combo_index[6]=foundIndex("pass_mode",encodeSettings.pass_mode);
+    combo_index[7]=foundIndex("gop_size",QString::number(encodeSettings.gop_size));
+    combo_index[8]=foundIndex("encode_tile",QString::number(encodeSettings.encode_tile));
+    target_bit_rate = encodeSettings.target_bit_rate/1000000;
+    max_bit_rate = encodeSettings.max_bit_rate/1000000;
 }
 
 //comboボックスのインデックスを取得
@@ -456,30 +389,6 @@ int encode_setting::foundIndex(QString key,const QString& item){
         }
     }
     return -1;
-}
-
-//設定ファイルを書き込み
-void encode_setting::write_txt(){
-    QFile file("setting.txt");
-    //既存データを書き込み
-    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QTextStream out(&file);
-        out << "Save_Path:\"" << QString::fromStdString(settings.Save_Path)<< "\"\n";
-        out << "Codec:\"" << QString::fromStdString(settings.Codec) << "\"\n";
-        out << "preset:\"" << QString::fromStdString(settings.preset) << "\"\n";
-        out << "tune:\"" << QString::fromStdString(settings.tune) << "\"\n";
-        out << "b_frames:\"" << QString::number(settings.b_frames) << "\"\n";
-        out << "gop_size:\"" << QString::number(settings.gop_size) << "\"\n";
-        out << "encode_tile:\"" << QString::number(settings.encode_tile) << "\"\n";
-        out << "split_encode_mode:\"" << QString::fromStdString(settings.split_encode_mode) << "\"\n";
-        out << "pass_mode:\"" << QString::fromStdString(settings.pass_mode) << "\"\n";
-        out << "rc_mode:\"" << QString::fromStdString(settings.rc_mode) << "\"\n";
-        out << "target_bit_rate:\"" << QString::number(target_bit_rate*1000*1000) << "\"\n";
-        out << "max_bit_rate:\"" << QString::number(max_bit_rate*1000*1000) << "\"\n";
-        out << "cq:\"" << QString::number(settings.cq) << "\"\n";
-        file.close();
-        qDebug() << "新しい設定ファイルを追加しました。";
-    }
 }
 
 //ファイルの重複チェック
@@ -591,38 +500,38 @@ void encode_setting::fps_cmbobox_control(){
 
         QObject::connect(ui->comboBox_framerate,&QComboBox::currentIndexChanged,this,[&](int index) {
                              double fps = ui->comboBox_framerate->currentText().toDouble();
-                             settings.save_fps = fps;
+                             encodeSettings.save_fps = fps;
         });
 
         // 初期値を VideoInfo.fps に設定
         ui->comboBox_framerate->setCurrentText(fpsStr);
         ui->comboBox_framerate->blockSignals(false);
-        settings.save_fps=VideoInfo.fps;
+        encodeSettings.save_fps=VideoInfo.fps;
     }
 }
 
 //コーデックに応じて非対応オプションを非表示
 void encode_setting::combo_index_control2(){
-    if(settings.gop_size == 1){
+    if(encodeSettings.gop_size == 1){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),1,7,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,1,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),4,4,true,true);
-    }else if(settings.encode_tile>1){
+    }else if(encodeSettings.encode_tile>1){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),1,7,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),4,4,true,true);
-    }else if(settings.Codec == "h264_nvenc"){
+    }else if(encodeSettings.codec == "h264_nvenc"){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),5,7,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
-    }else if(settings.Codec == "hevc_nvenc"){
+    }else if(encodeSettings.codec == "hevc_nvenc"){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),6,7,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
-    }else if(settings.Codec == "av1_nvenc"){
+    }else if(encodeSettings.codec == "av1_nvenc"){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),4,4,true,true);
@@ -654,7 +563,7 @@ void encode_setting::combo_index_control(QComboBox* comboBox,QListView* view, in
 //タイル数コントロール
 void encode_setting::tile_index_control(){
     //H264チェック
-    if(VideoInfo.width*VideoInfo.width_scale/settings.width_tile>4096||VideoInfo.height*VideoInfo.height_scale/settings.height_tile>4096){
+    if(VideoInfo.width*VideoInfo.width_scale/encodeSettings.width_tile>4096||VideoInfo.height*VideoInfo.height_scale/encodeSettings.height_tile>4096){
         qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
         ui->comboBox_codec->setCurrentIndex(1);
     }else{
@@ -696,18 +605,18 @@ void encode_setting::tile_index_control(){
 
 //タイル数から縦横分割数を変換
 void encode_setting::tile_split_exchange(){
-    int max_size = settings.encode_tile;
+    int max_size = encodeSettings.encode_tile;
     if(max_size==2){
-        settings.width_tile = 2;
-        settings.height_tile  = 1;
+        encodeSettings.width_tile = 2;
+        encodeSettings.height_tile  = 1;
     }else if(max_size==4){
-        settings.width_tile = 2;
-        settings.height_tile  = 2;
+        encodeSettings.width_tile = 2;
+        encodeSettings.height_tile  = 2;
     }else if(max_size==8){
-        settings.width_tile = 4;
-        settings.height_tile  = 2;
+        encodeSettings.width_tile = 4;
+        encodeSettings.height_tile  = 2;
     }else{
-        settings.width_tile = 1;
-        settings.height_tile  = 1;
+        encodeSettings.width_tile = 1;
+        encodeSettings.height_tile  = 1;
     }
 }

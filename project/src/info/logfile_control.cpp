@@ -29,24 +29,23 @@ void logfile_control::load_inifile()
     g_AppSettings.sobelfilterEnabled = settings.value("Filter/sobelfilterEnabled").toBool();
     g_AppSettings.gaussianfilterEnabled = settings.value("Filter/gaussianfilterEnabled").toBool();
     g_AppSettings.averagingfilterEnabled = settings.value("Filter/averagingfilterEnabled").toBool();
-    g_AppSettings.encode_path = settings.value("Encodesetting/encode_path").toString();
-    g_AppSettings.codec = settings.value("Encodesetting/codec").toString();
-    g_AppSettings.preset = settings.value("Encodesetting/preset").toString();
-    g_AppSettings.tune = settings.value("Encodesetting/tune").toString();
-    g_AppSettings.b_frames = settings.value("Encodesetting/b_frames").toInt();
-    g_AppSettings.gop_size = settings.value("Encodesetting/gop_size").toInt();
-    g_AppSettings.encode_tile = settings.value("Encodesetting/encode_tile").toInt();
-    g_AppSettings.split_encode_mode = settings.value("Encodesetting/split_encode_mode").toInt();
-    g_AppSettings.pass_mode = settings.value("Encodesetting/pass_mode").toString();
-    g_AppSettings.rc_mode = settings.value("Encodesetting/rc_mode").toString();
-    g_AppSettings.target_bit_rate = settings.value("Encodesetting/target_bit_rate").toInt();
-    g_AppSettings.max_bit_rate = settings.value("Encodesetting/max_bit_rate").toInt();
-    g_AppSettings.cq = settings.value("Encodesetting/cq").toInt();
+    encodeSettings.encode_path = settings.value("Encodesetting/encode_path").toString();
+    encodeSettings.codec = settings.value("Encodesetting/codec").toString();
+    encodeSettings.preset = settings.value("Encodesetting/preset").toString();
+    encodeSettings.tune = settings.value("Encodesetting/tune").toString();
+    encodeSettings.b_frames = settings.value("Encodesetting/b_frames").toInt();
+    encodeSettings.gop_size = settings.value("Encodesetting/gop_size").toInt();
+    encodeSettings.encode_tile = settings.value("Encodesetting/encode_tile").toInt();
+    encodeSettings.split_encode_mode = settings.value("Encodesetting/split_encode_mode").toString();
+    encodeSettings.pass_mode = settings.value("Encodesetting/pass_mode").toString();
+    encodeSettings.rc_mode = settings.value("Encodesetting/rc_mode").toString();
+    encodeSettings.target_bit_rate = settings.value("Encodesetting/target_bit_rate").toInt();
+    encodeSettings.max_bit_rate = settings.value("Encodesetting/max_bit_rate").toInt();
+    encodeSettings.cq = settings.value("Encodesetting/cq").toInt();
 }
 
 void logfile_control::save_inifile(){
     QSettings settings("setting.ini", QSettings::IniFormat);
-    settings.setValue("Path/decode_path", "D:/output.mp4");
 
     settings.setValue("Path/decode_path", g_AppSettings.decode_path);
     settings.setValue("Info//videoInfo_flag", g_AppSettings.videoInfo_flag);
@@ -61,17 +60,17 @@ void logfile_control::save_inifile(){
     settings.setValue("Filter/sobelfilterEnabled", g_AppSettings.sobelfilterEnabled);
     settings.setValue("Filter/gaussianfilterEnabled", g_AppSettings.gaussianfilterEnabled);
     settings.setValue("Filter/averagingfilterEnabled", g_AppSettings.averagingfilterEnabled);
-    settings.setValue("Encodesetting/encode_path", g_AppSettings.encode_path);
-    settings.setValue("Encodesetting/codec", g_AppSettings.codec);
-    settings.setValue("Encodesetting/preset", g_AppSettings.preset);
-    settings.setValue("Encodesetting/tune", g_AppSettings.tune);
-    settings.setValue("Encodesetting/b_frames", g_AppSettings.b_frames);
-    settings.setValue("Encodesetting/gop_size", g_AppSettings.gop_size);
-    settings.setValue("Encodesetting/encode_tile", g_AppSettings.encode_tile);
-    settings.setValue("Encodesetting/split_encode_mode", g_AppSettings.split_encode_mode);
-    settings.setValue("Encodesetting/pass_mode", g_AppSettings.pass_mode);
-    settings.setValue("Encodesetting/rc_mode", g_AppSettings.rc_mode);
-    settings.setValue("Encodesetting/target_bit_rate", g_AppSettings.target_bit_rate);
-    settings.setValue("Encodesetting/max_bit_rate", g_AppSettings.max_bit_rate);
-    settings.setValue("Encodesetting/cq", g_AppSettings.cq);
+    settings.setValue("Encodesetting/encode_path", encodeSettings.encode_path);
+    settings.setValue("Encodesetting/codec", encodeSettings.codec);
+    settings.setValue("Encodesetting/preset", encodeSettings.preset);
+    settings.setValue("Encodesetting/tune", encodeSettings.tune);
+    settings.setValue("Encodesetting/b_frames", encodeSettings.b_frames);
+    settings.setValue("Encodesetting/gop_size", encodeSettings.gop_size);
+    settings.setValue("Encodesetting/encode_tile", encodeSettings.encode_tile);
+    settings.setValue("Encodesetting/split_encode_mode", encodeSettings.split_encode_mode);
+    settings.setValue("Encodesetting/pass_mode", encodeSettings.pass_mode);
+    settings.setValue("Encodesetting/rc_mode", encodeSettings.rc_mode);
+    settings.setValue("Encodesetting/target_bit_rate", encodeSettings.target_bit_rate);
+    settings.setValue("Encodesetting/max_bit_rate", encodeSettings.max_bit_rate);
+    settings.setValue("Encodesetting/cq", encodeSettings.cq);
 }

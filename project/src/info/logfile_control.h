@@ -15,6 +15,8 @@ public:
 
     void load_inifile();
     void save_inifile();
+
+    EncodeSettings& encodeSettings = EncodeSettingsManager::getInstance().getSettingsNonConst();
 };
 
 #endif // LOGFILE_CONTROL_H

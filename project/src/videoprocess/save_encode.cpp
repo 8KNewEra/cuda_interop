@@ -14,15 +14,15 @@ save_encode::save_encode(int h,int w) {
     if (ret < 0) throw std::runtime_error("Failed to create CUDA device");
 
     // ① FormatContext は1回だけ
-    ret = avformat_alloc_output_context2(&fmt_ctx, nullptr, nullptr, encode_settings.Save_Path.c_str());
+    ret = avformat_alloc_output_context2(&fmt_ctx, nullptr, nullptr, encodeSettings.encode_path.toUtf8().constData());
     if (ret < 0 || !fmt_ctx) throw std::runtime_error("Failed to allocate format context");
 
     // ② Encoder / Stream を複数作る
-    for (int i = 0; i < encode_settings.encode_tile; i++) {
+    for (int i = 0; i < encodeSettings.encode_tile; i++) {
         ve.emplace_back();
 
         initialized_ffmpeg_hardware_context(i);
-        initialized_ffmpeg_codec_context(i,encode_settings.encode_tile);
+        initialized_ffmpeg_codec_context(i,encodeSettings.encode_tile);
 
         // ★ stream 作成だけ
         ve[i].stream = avformat_new_stream(fmt_ctx, nullptr);
@@ -40,7 +40,7 @@ save_encode::save_encode(int h,int w) {
         init_audio_encoder();
 
     // ③ ファイルオープンは1回
-    ret = avio_open(&fmt_ctx->pb, encode_settings.Save_Path.c_str(), AVIO_FLAG_WRITE);
+    ret = avio_open(&fmt_ctx->pb, encodeSettings.encode_path.toUtf8().constData(), AVIO_FLAG_WRITE);
     if (ret < 0) throw std::runtime_error("Failed to open output file");
 
     // ④ ヘッダ書き込みは全 stream 作成後
@@ -210,7 +210,7 @@ save_encode::~save_encode() {
 //コーデックコンテキスト初期化
 void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     //エンコーダの取得とコンテキスト作成
-    const AVCodec* codec = avcodec_find_encoder_by_name(encode_settings.Codec.c_str());
+    const AVCodec* codec = avcodec_find_encoder_by_name(encodeSettings.codec.toUtf8().constData());
     if (!codec) throw std::runtime_error("hevc_nvenc codec not found");
 
     ve[i].codec_ctx = avcodec_alloc_context3(codec);
@@ -234,12 +234,12 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     }
 
     //メタデータ設定
-    ve[i].codec_ctx->width = width_/encode_settings.width_tile;
-    ve[i].codec_ctx->height = height_/encode_settings.height_tile;
+    ve[i].codec_ctx->width = width_/encodeSettings.width_tile;
+    ve[i].codec_ctx->height = height_/encodeSettings.height_tile;
     ve[i].codec_ctx->pix_fmt = hw_pix_fmt;
 
     //フレームレート設定
-    AVRational fps = av_d2q(encode_settings.save_fps, 100000);
+    AVRational fps = av_d2q(encodeSettings.save_fps, 100000);
     ve[i].codec_ctx->framerate = fps;
     ve[i].codec_ctx->time_base = av_inv_q(fps);
 
@@ -251,26 +251,26 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     AVDictionary* opts = nullptr;
 
     // cbr, vbr, cq 切り替え
-    if (encode_settings.rc_mode == "cq") {
+    if (encodeSettings.rc_mode == "cq") {
         // --- CQ モード ---
-        av_dict_set_int(&opts, "cq", encode_settings.cq, 0);
-    } else if (encode_settings.rc_mode == "vbr") {
+        av_dict_set_int(&opts, "cq", encodeSettings.cq, 0);
+    } else if (encodeSettings.rc_mode == "vbr") {
         // --- VBR モード ---
-        ve[i].codec_ctx->bit_rate = encode_settings.target_bit_rate;
-        ve[i].codec_ctx->rc_max_rate = encode_settings.max_bit_rate;
-        ve[i].codec_ctx->rc_buffer_size = encode_settings.max_bit_rate;
-    } else if (encode_settings.rc_mode == "cbr") {
+        ve[i].codec_ctx->bit_rate = encodeSettings.target_bit_rate;
+        ve[i].codec_ctx->rc_max_rate = encodeSettings.max_bit_rate;
+        ve[i].codec_ctx->rc_buffer_size = encodeSettings.max_bit_rate;
+    } else if (encodeSettings.rc_mode == "cbr") {
         // --- CBR モード ---
-        ve[i].codec_ctx->bit_rate = encode_settings.target_bit_rate;
-        ve[i].codec_ctx->rc_max_rate = encode_settings.max_bit_rate;
-        ve[i].codec_ctx->rc_buffer_size = encode_settings.target_bit_rate;
+        ve[i].codec_ctx->bit_rate = encodeSettings.target_bit_rate;
+        ve[i].codec_ctx->rc_max_rate = encodeSettings.max_bit_rate;
+        ve[i].codec_ctx->rc_buffer_size = encodeSettings.target_bit_rate;
     }
 
     // 共通オプション
-    av_dict_set(&opts, "preset", encode_settings.preset.c_str(), 0);
-    av_dict_set(&opts, "tune", encode_settings.tune.c_str(), 0);
-    av_dict_set_int(&opts, "g", encode_settings.gop_size, 0);
-    av_dict_set_int(&opts, "bf", encode_settings.b_frames, 0);
+    av_dict_set(&opts, "preset", encodeSettings.preset.toUtf8().constData(), 0);
+    av_dict_set(&opts, "tune", encodeSettings.tune.toUtf8().constData(), 0);
+    av_dict_set_int(&opts, "g", encodeSettings.gop_size, 0);
+    av_dict_set_int(&opts, "bf", encodeSettings.b_frames, 0);
 
     //分割エンコード使用時
     if(max_split>1){
@@ -280,7 +280,7 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
         av_dict_set(&opts, "async_depth", "1", 0);
     }
 
-    if(encode_settings.split_encode_mode=="0"){
+    if(encodeSettings.split_encode_mode=="0"){
         av_dict_set_int(&opts, "split_encode_mode", 0, 0);
     }else{
         av_dict_set_int(&opts, "split_encode_mode", 3, 0);
@@ -288,10 +288,10 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
 
 
     // 1pass / 2pass 切り替え
-    qDebug()<<encode_settings.pass_mode;
-    if (encode_settings.pass_mode == "2pass-quarter-res") {
+    qDebug()<<encodeSettings.pass_mode;
+    if (encodeSettings.pass_mode == "2pass-quarter-res") {
         av_dict_set_int(&opts, "multipass", 1, 0);
-    } else if (encode_settings.pass_mode == "2pass-full-res") {
+    } else if (encodeSettings.pass_mode == "2pass-full-res") {
         av_dict_set_int(&opts, "multipass", 2, 0);
         qDebug()<<"full";
     } else {
@@ -315,16 +315,16 @@ void save_encode::initialized_ffmpeg_hardware_context(int i) {
     AVHWFramesContext* frames_ctx = (AVHWFramesContext*)(ve[i].hw_frames_ctx->data);
     frames_ctx->format = AV_PIX_FMT_CUDA;
     frames_ctx->sw_format = AV_PIX_FMT_NV12;
-    frames_ctx->width = width_/encode_settings.width_tile;
-    frames_ctx->height = height_/encode_settings.height_tile;
+    frames_ctx->width = width_/encodeSettings.width_tile;
+    frames_ctx->height = height_/encodeSettings.height_tile;
     frames_ctx->initial_pool_size = 10;
     ret = av_hwframe_ctx_init(ve[i].hw_frames_ctx);
     if (ret < 0) throw std::runtime_error("Failed to init frames_ctx");
 
     ve[i].hw_frame = av_frame_alloc();
     ve[i].hw_frame->format = AV_PIX_FMT_CUDA;
-    ve[i].hw_frame->width = width_/encode_settings.width_tile;
-    ve[i].hw_frame->height = height_/encode_settings.height_tile;
+    ve[i].hw_frame->width = width_/encodeSettings.width_tile;
+    ve[i].hw_frame->height = height_/encodeSettings.height_tile;
     ret = av_hwframe_get_buffer(ve[i].hw_frames_ctx, ve[i].hw_frame, 0);
     if (ret < 0) throw std::runtime_error("Failed to alloc hw_frame");
 }
@@ -556,7 +556,7 @@ void save_encode::encode_audio(VideoFrame Frame)
         // ★ PTS は「取り出したサンプル数」基準
         int read_samples = av_audio_fifo_read(audio_fifo,(void**)frame->data,fs);
         frame->pts = audio_pts;
-        audio_pts += (int)(((double)read_samples)*(VideoInfo.fps/encode_settings.save_fps));   // ★ 必ず read_samples で進める
+        audio_pts += (int)(((double)read_samples)*(VideoInfo.fps/encodeSettings.save_fps));   // ★ 必ず read_samples で進める
 
         avcodec_send_frame(audio_enc_ctx, frame);
         av_frame_free(&frame);
