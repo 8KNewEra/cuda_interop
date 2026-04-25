@@ -936,6 +936,7 @@ void MainWindow::cutstart_pushbutton_control(){
     emit send_manual_pause();
     ui->play_pushButton->setText("▶");
     rangeSlider->setStartValue(FrameNo);
+    emit send_manual_high_res_slider(FrameNo);
 }
 
 //始端へジャンプするボタン制御
@@ -1054,6 +1055,7 @@ void MainWindow::cutend_pushbutton_control(){
     emit send_manual_pause();
     ui->play_pushButton->setText("▶");
     rangeSlider->setEndValue(FrameNo);
+    emit send_manual_high_res_slider(FrameNo);
 }
 
 //スライダー操作
@@ -1286,8 +1288,8 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
         //UIの制御
         if (encode_state==STATE_NOT_ENCODE) {
             //ui->Live_horizontalSlider->setValue(Frame.FrameNo);
-            rangeSlider->setPlayValue(Frame.FrameNo);
         }
+        rangeSlider->setPlayValue(Frame.FrameNo);
         slider_No=Frame.FrameNo;
 
         //描画を開始

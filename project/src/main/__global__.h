@@ -46,7 +46,7 @@ extern AppSettings g_AppSettings;
 // エンコード設定の構造体
 struct EncodeSettings {
     // Encode setting
-    QString encode_path = QCoreApplication::applicationDirPath();
+    QString encode_path = QCoreApplication::applicationDirPath()+"/output.mp4";
     QString codec  = "h264_nvenc";
     QString preset = "p4";
     QString tune   = "default";
