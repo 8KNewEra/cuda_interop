@@ -67,6 +67,7 @@ public:
     ~MainWindow();
 
 private:
+    int p2p_test();
     void GLwidgetInitialized();
     QProgressDialog *progress;
 

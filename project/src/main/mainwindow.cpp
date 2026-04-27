@@ -6,12 +6,14 @@
 #include "src/videoprocess/nvgpudecode.h"
 #include "src/ui_control/rangeslider.h"
 #include "src/main/glwidget.h"
+#include <iostream>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
     //qDebug() <<cv::getBuildInformation();
+    //p2p_test();
 
     //MainWindow
     ui->setupUi(this);
@@ -363,6 +365,117 @@ void MainWindow::GLwidgetInitialized(){
     });
 
     glWidget->show();
+}
+
+int MainWindow::p2p_test()
+{
+    int devCount = 0;
+    cudaGetDeviceCount(&devCount);
+
+    if (devCount < 2) {
+        qDebug() << "GPUが2枚以上必要";
+        return -1;
+    }
+
+    int can01 = 0;
+    int can10 = 0;
+
+    cudaDeviceCanAccessPeer(&can01, 0, 1);
+    cudaDeviceCanAccessPeer(&can10, 1, 0);
+
+    qDebug() << "GPU0 -> GPU1 P2P:" << can01;
+    qDebug() << "GPU1 -> GPU0 P2P:" << can10;
+
+    // P2P enable (可能なら)
+    cudaSetDevice(0);
+    cudaError_t err = cudaDeviceEnablePeerAccess(1, 0);
+    if (err == cudaErrorPeerAccessAlreadyEnabled) {
+        qDebug() << "GPU0->GPU1 already enabled";
+    } else if (err != cudaSuccess) {
+        qDebug() << "EnablePeerAccess 0->1 failed:" << cudaGetErrorString(err);
+    } else {
+        qDebug() << "GPU0->GPU1 enabled";
+    }
+
+    cudaSetDevice(1);
+    err = cudaDeviceEnablePeerAccess(0, 0);
+    if (err == cudaErrorPeerAccessAlreadyEnabled) {
+        qDebug() << "GPU1->GPU0 already enabled";
+    } else if (err != cudaSuccess) {
+        qDebug() << "EnablePeerAccess 1->0 failed:" << cudaGetErrorString(err);
+    } else {
+        qDebug() << "GPU1->GPU0 enabled";
+    }
+
+    // テストサイズ（例：8K RGB 8byte?）
+    const size_t size = 15360ULL * 8640ULL * 3ULL * 1ULL; // 8K RGB 1byte
+    double gb = (double)size / (1024.0 * 1024.0 * 1024.0);
+
+    void* d0 = nullptr;
+    void* d1 = nullptr;
+    void* host = nullptr;
+
+    cudaSetDevice(0);
+    cudaMalloc(&d0, size);
+
+    cudaSetDevice(1);
+    cudaMalloc(&d1, size);
+
+    // pinned host malloc（重要：普通mallocだと遅い）
+    cudaMallocHost(&host, size);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    // ==============================
+    // 1) Host staging: GPU0 -> Host -> GPU1
+    // ==============================
+    cudaEventRecord(start);
+
+    cudaMemcpy(host, d0, size, cudaMemcpyDeviceToHost); // GPU0 -> Host
+    cudaMemcpy(d1, host, size, cudaMemcpyHostToDevice); // Host -> GPU1
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float ms_host = 0;
+    cudaEventElapsedTime(&ms_host, start, stop);
+
+    double gbps_host = gb / (ms_host / 1000.0);
+    qDebug() << "[Host staging] GPU0->Host->GPU1:" << ms_host << "GB/s";
+
+    // ==============================
+    // 2) Peer copy: cudaMemcpyPeer
+    // ==============================
+    cudaEventRecord(start);
+
+    cudaMemcpyPeer(d1, 1, d0, 0, size);
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float ms_peer = 0;
+    cudaEventElapsedTime(&ms_peer, start, stop);
+
+    double gbps_peer = gb / (ms_peer / 1000.0);
+    qDebug() << "[cudaMemcpyPeer] GPU0->GPU1:" << ms_peer << "GB/s";
+
+    // cleanup
+    cudaFreeHost(host);
+
+    cudaSetDevice(0);
+    cudaFree(d0);
+
+    cudaSetDevice(1);
+    cudaFree(d1);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    cudaSetDevice(0);
+
+    return 0;
 }
 
 //アイコンを白くする

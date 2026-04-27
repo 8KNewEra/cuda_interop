@@ -8,11 +8,6 @@ save_encode::save_encode(int h,int w) {
     int ret = 0;
     packet = av_packet_alloc();
 
-    //CUDAデバイスコンテキスト
-    QString gpuId = QString::number(g_cudaDeviceID);
-    ret = av_hwdevice_ctx_create(&hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
-    if (ret < 0) throw std::runtime_error("Failed to create CUDA device");
-
     // ① FormatContext は1回だけ
     ret = avformat_alloc_output_context2(&fmt_ctx, nullptr, nullptr, encodeSettings.encode_path.toUtf8().constData());
     if (ret < 0 || !fmt_ctx) throw std::runtime_error("Failed to allocate format context");
@@ -20,6 +15,30 @@ save_encode::save_encode(int h,int w) {
     // ② Encoder / Stream を複数作る
     for (int i = 0; i < encodeSettings.encode_tile; i++) {
         ve.emplace_back();
+
+        //CUDAデバイスコンテキスト
+        QString gpuId{};
+        if(i<2){
+            gpuId = QString::number(0);
+        }else{
+            gpuId = QString::number(1);
+        }
+        qDebug()<<gpuId;
+        ret = av_hwdevice_ctx_create(&ve[i].hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
+        if (ret < 0) throw std::runtime_error("Failed to create CUDA device");
+
+        cudaMallocPitch(
+            &ve[i].d_y,
+            &ve[i].y_pitch,
+            width_/encodeSettings.width_tile,
+            height_/encodeSettings.height_tile
+            );
+        cudaMallocPitch(
+            &ve[i].d_uv,
+            &ve[i].uv_pitch,
+            (width_/encodeSettings.width_tile),
+            (height_/encodeSettings.height_tile)/2
+            );
 
         initialized_ffmpeg_hardware_context(i);
         initialized_ffmpeg_codec_context(i,encodeSettings.encode_tile);
@@ -58,6 +77,9 @@ save_encode::save_encode(int h,int w) {
         &event,
         cudaEventDisableTiming
         );
+
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
 }
 
 save_encode::~save_encode() {
@@ -161,12 +183,11 @@ save_encode::~save_encode() {
             avcodec_free_context(&ve[i].codec_ctx);
             ve[i].codec_ctx = nullptr;
         }
-    }
-
-    //ハードウェアデバイスコンテキストを解放
-    if (hw_device_ctx) {
-        av_buffer_unref(&hw_device_ctx);
-        hw_device_ctx = nullptr;
+        //ハードウェアデバイスコンテキストを解放
+        if (ve[i].hw_device_ctx) {
+            av_buffer_unref(&ve[i].hw_device_ctx);
+            ve[i].hw_device_ctx = nullptr;
+        }
     }
 
     //フォーマットコンテキストと出力ファイルを解放
@@ -244,7 +265,7 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     ve[i].codec_ctx->time_base = av_inv_q(fps);
 
     //初期化された hw_* を参照
-    ve[i].codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+    ve[i].codec_ctx->hw_device_ctx = av_buffer_ref(ve[i].hw_device_ctx);
     ve[i].codec_ctx->hw_frames_ctx = av_buffer_ref(ve[i].hw_frames_ctx);
 
     //ビットレート周りの設定
@@ -275,7 +296,7 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     //分割エンコード使用時
     if(max_split>1){
         av_dict_set(&opts, "rc-lookahead", "0", 0); // lookahead 無効
-        av_dict_set(&opts, "delay", "0", 0);
+        // av_dict_set(&opts, "delay", "0", 0);
         av_dict_set(&opts, "zerolatency", "1", 0);
         av_dict_set(&opts, "async_depth", "1", 0);
     }
@@ -307,7 +328,7 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
 void save_encode::initialized_ffmpeg_hardware_context(int i) {
     int ret = 0;
 
-    ve[i].hw_frames_ctx = av_hwframe_ctx_alloc(hw_device_ctx);
+    ve[i].hw_frames_ctx = av_hwframe_ctx_alloc(ve[i].hw_device_ctx);
     if (!ve[i].hw_frames_ctx){
         throw std::runtime_error("Failed to allocate hw_frames_ctx");
     }
@@ -412,35 +433,44 @@ void save_encode::encode(VideoFrame Frame){
     //本カーネル
     if(ve.size()==1){
         //RGBAをNV12に変換してffmpegへ転送
-        CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].hw_frame->data[0], ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1], ve[0].hw_frame->linesize[1],Frame.d_encode_rgba, Frame.encode_pitch,width_,height_,stream);
+        CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].d_y,ve[0].y_pitch, ve[0].d_uv,ve[0].uv_pitch,Frame.d_encode_rgba, Frame.encode_pitch,width_,height_,stream);
     }else if(ve.size()==2){
         CUDA_IMG_Proc->rgba_to_nv12x2_flip_split(
             Frame.d_encode_rgba,Frame.encode_pitch,
-            ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
-            ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
-            width_,height_,width_/2,height_,stream);
+            ve[0].d_y,ve[0].y_pitch, ve[0].d_uv,ve[0].uv_pitch,
+            ve[1].d_y,ve[1].y_pitch, ve[1].d_uv,ve[1].uv_pitch,
+            width_,height_,
+            width_/encodeSettings.width_tile,
+            height_/encodeSettings.height_tile,
+            stream);
     }else if(ve.size()==4){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
             Frame.d_encode_rgba,Frame.encode_pitch,
-            ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
-            ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
-            ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
-            ve[3].hw_frame->data[0],ve[3].hw_frame->linesize[0], ve[3].hw_frame->data[1],ve[3].hw_frame->linesize[1],
-            width_,height_,width_/2,height_/2,stream);
+            ve[0].d_y,ve[0].y_pitch, ve[0].d_uv,ve[0].uv_pitch,
+            ve[1].d_y,ve[1].y_pitch, ve[1].d_uv,ve[1].uv_pitch,
+            ve[2].d_y,ve[2].y_pitch, ve[2].d_uv,ve[2].uv_pitch,
+            ve[3].d_y,ve[3].y_pitch, ve[3].d_uv,ve[3].uv_pitch,
+            width_,height_,
+            width_/encodeSettings.width_tile,
+            height_/encodeSettings.height_tile,
+            stream);
     }else if(ve.size()==8){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->rgba_to_nv12x8_flip_split(
             Frame.d_encode_rgba,Frame.encode_pitch,
-            ve[0].hw_frame->data[0],ve[0].hw_frame->linesize[0], ve[0].hw_frame->data[1],ve[0].hw_frame->linesize[1],
-            ve[1].hw_frame->data[0],ve[1].hw_frame->linesize[0], ve[1].hw_frame->data[1],ve[1].hw_frame->linesize[1],
-            ve[2].hw_frame->data[0],ve[2].hw_frame->linesize[0], ve[2].hw_frame->data[1],ve[2].hw_frame->linesize[1],
-            ve[3].hw_frame->data[0],ve[3].hw_frame->linesize[0], ve[3].hw_frame->data[1],ve[3].hw_frame->linesize[1],
-            ve[4].hw_frame->data[0],ve[4].hw_frame->linesize[0], ve[4].hw_frame->data[1],ve[4].hw_frame->linesize[1],
-            ve[5].hw_frame->data[0],ve[5].hw_frame->linesize[0], ve[5].hw_frame->data[1],ve[5].hw_frame->linesize[1],
-            ve[6].hw_frame->data[0],ve[6].hw_frame->linesize[0], ve[6].hw_frame->data[1],ve[6].hw_frame->linesize[1],
-            ve[7].hw_frame->data[0],ve[7].hw_frame->linesize[0], ve[7].hw_frame->data[1],ve[7].hw_frame->linesize[1],
-            width_,height_,width_/4,height_/2,stream);
+            ve[0].d_y,ve[0].y_pitch, ve[0].d_uv,ve[0].uv_pitch,
+            ve[1].d_y,ve[1].y_pitch, ve[1].d_uv,ve[1].uv_pitch,
+            ve[2].d_y,ve[2].y_pitch, ve[2].d_uv,ve[2].uv_pitch,
+            ve[3].d_y,ve[3].y_pitch, ve[3].d_uv,ve[3].uv_pitch,
+            ve[4].d_y,ve[4].y_pitch, ve[4].d_uv,ve[4].uv_pitch,
+            ve[5].d_y,ve[5].y_pitch, ve[5].d_uv,ve[5].uv_pitch,
+            ve[6].d_y,ve[6].y_pitch, ve[6].d_uv,ve[6].uv_pitch,
+            ve[7].d_y,ve[7].y_pitch, ve[7].d_uv,ve[7].uv_pitch,
+            width_,height_,
+            width_/encodeSettings.width_tile,
+            height_/encodeSettings.height_tile,
+            stream);
     }
 
     //本カーネル同期
@@ -451,6 +481,33 @@ void save_encode::encode(VideoFrame Frame){
     CUDA_IMG_Proc->Dummy(stream);
     cudaEventRecord(event, stream);
     cudaEventSynchronize(event);
+
+
+    cudaEventRecord(start, stream);
+
+    for(int i=0;i<ve.size();i++){
+        cudaMemcpy2DAsync(
+            ve[i].hw_frame->data[0], ve[i].hw_frame->linesize[0], // dst
+            ve[i].d_y, ve[i].y_pitch,                             // src
+            width_/encodeSettings.width_tile,
+            height_/encodeSettings.height_tile,
+            cudaMemcpyDeviceToDevice,stream
+            );
+        cudaMemcpy2DAsync(
+            ve[i].hw_frame->data[1], ve[i].hw_frame->linesize[1], // dst
+            ve[i].d_uv, ve[i].uv_pitch,                           // src
+            (width_/encodeSettings.width_tile),
+            (height_/encodeSettings.height_tile)/2,
+            cudaMemcpyDeviceToDevice,stream
+            );
+    }
+
+    cudaEventRecord(stop, stream);
+    cudaEventSynchronize(stop);
+
+    float ms_peer = 0;
+    cudaEventElapsedTime(&ms_peer, start, stop);
+    qDebug() << ms_peer;
 
     // ------------------------
     // エンコード

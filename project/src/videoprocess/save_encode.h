@@ -23,6 +23,11 @@ extern "C" {
 extern int g_cudaDeviceID;
 
 struct VideoEncoder {
+    AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
+    uint8_t* d_y = nullptr;
+    size_t y_pitch = 0;
+    uint8_t* d_uv = nullptr;
+    size_t uv_pitch = 0;
     AVCodecContext* codec_ctx = nullptr;
     AVStream*       stream    = nullptr;
     AVFrame*        hw_frame  = nullptr;
@@ -37,11 +42,6 @@ public:
     ~save_encode();
     void encode(VideoFrame Frame);
 
-    struct QueuedPacket {
-        AVPacket* pkt;
-        int stream_index;
-    };
-
 private:
     void initialized_ffmpeg_hardware_context(int i);
     void initialized_ffmpeg_codec_context(int i,int max_split);
@@ -51,7 +51,7 @@ private:
     AVPacket* packet = nullptr;
     std::vector<VideoEncoder> ve;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;          // 出力ファイルのフォーマットコンテキスト
-    AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
+
     int64_t frame_index = 0;                         // PTS 管理用
 
     //エンコード設定
@@ -71,6 +71,8 @@ private:
     AVStream*       audio_stream  = nullptr;
     int64_t         audio_pts     = 0;
     AVAudioFifo* audio_fifo = nullptr;
+
+    cudaEvent_t start, stop;
 };
 
 #endif // SAVE_ENCODE_H
