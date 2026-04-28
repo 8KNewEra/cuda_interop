@@ -24,14 +24,21 @@ extern int g_cudaDeviceID;
 
 struct VideoEncoder {
     AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
+    AVCodecContext* codec_ctx = nullptr;
+    AVStream*       stream    = nullptr;
+
     uint8_t* d_y = nullptr;
     size_t y_pitch = 0;
     uint8_t* d_uv = nullptr;
     size_t uv_pitch = 0;
-    AVCodecContext* codec_ctx = nullptr;
-    AVStream*       stream    = nullptr;
-    AVFrame*        hw_frame  = nullptr;
+
+    // リングバッファ
     AVBufferRef*    hw_frames_ctx = nullptr;
+    std::vector<AVFrame*> hw_frames;
+    int ring_size = 4;
+
+    cudaStream_t st = nullptr;
+    cudaEvent_t ev = nullptr;
 };
 
 
@@ -51,7 +58,6 @@ private:
     AVPacket* packet = nullptr;
     std::vector<VideoEncoder> ve;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;          // 出力ファイルのフォーマットコンテキスト
-
     int64_t frame_index = 0;                         // PTS 管理用
 
     //エンコード設定
@@ -60,8 +66,8 @@ private:
 
     //CUDA周り
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
-    cudaStream_t stream = nullptr;
-    cudaEvent_t event = nullptr;
+    cudaStream_t st = nullptr;
+    cudaEvent_t ev = nullptr;
 
     //音声
     void init_audio_encoder();
@@ -72,7 +78,7 @@ private:
     int64_t         audio_pts     = 0;
     AVAudioFifo* audio_fifo = nullptr;
 
-    cudaEvent_t start, stop;
+    int gpu_switch_tiles = 0;
 };
 
 #endif // SAVE_ENCODE_H

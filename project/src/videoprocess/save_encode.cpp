@@ -13,12 +13,14 @@ save_encode::save_encode(int h,int w) {
     if (ret < 0 || !fmt_ctx) throw std::runtime_error("Failed to allocate format context");
 
     // ② Encoder / Stream を複数作る
+    qDebug()<<encodeSettings.encode_tile;
     for (int i = 0; i < encodeSettings.encode_tile; i++) {
         ve.emplace_back();
 
         //CUDAデバイスコンテキスト
         QString gpuId{};
-        if(i<2){
+        gpu_switch_tiles = 2;
+        if(i<gpu_switch_tiles){
             gpuId = QString::number(0);
         }else{
             gpuId = QString::number(1);
@@ -26,19 +28,6 @@ save_encode::save_encode(int h,int w) {
         qDebug()<<gpuId;
         ret = av_hwdevice_ctx_create(&ve[i].hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
         if (ret < 0) throw std::runtime_error("Failed to create CUDA device");
-
-        cudaMallocPitch(
-            &ve[i].d_y,
-            &ve[i].y_pitch,
-            width_/encodeSettings.width_tile,
-            height_/encodeSettings.height_tile
-            );
-        cudaMallocPitch(
-            &ve[i].d_uv,
-            &ve[i].uv_pitch,
-            (width_/encodeSettings.width_tile),
-            (height_/encodeSettings.height_tile)/2
-            );
 
         initialized_ffmpeg_hardware_context(i);
         initialized_ffmpeg_codec_context(i,encodeSettings.encode_tile);
@@ -53,6 +42,34 @@ save_encode::save_encode(int h,int w) {
         if (ret < 0) throw std::runtime_error("Failed to copy codec parameters");
 
         this->ve[i].stream = ve[i].stream;
+
+        //GPU転送用のメモリを確保
+        if(i>=gpu_switch_tiles){
+            cudaMallocPitch(
+                &ve[i].d_y,
+                &ve[i].y_pitch,
+                width_/encodeSettings.width_tile,
+                height_/encodeSettings.height_tile
+                );
+            cudaMallocPitch(
+                &ve[i].d_uv,
+                &ve[i].uv_pitch,
+                (width_/encodeSettings.width_tile),
+                (height_/encodeSettings.height_tile)/2
+                );
+        }
+
+        //Stream作成
+        cudaStreamCreateWithFlags(
+            &ve[i].st,
+            cudaStreamNonBlocking
+            );
+
+        //event作成
+        cudaEventCreateWithFlags(
+            &ve[i].ev,
+            cudaEventDisableTiming
+            );
     }
 
     if(VideoInfo.audio)
@@ -68,18 +85,15 @@ save_encode::save_encode(int h,int w) {
 
     //Stream作成
     cudaStreamCreateWithFlags(
-        &stream,
+        &st,
         cudaStreamNonBlocking
         );
 
     //event作成
     cudaEventCreateWithFlags(
-        &event,
+        &ev,
         cudaEventDisableTiming
         );
-
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
 }
 
 save_encode::~save_encode() {
@@ -169,10 +183,10 @@ save_encode::~save_encode() {
     // ---- 各メモリ解放 ----
     for(int i=0;i<ve.size();i++){
         //ハードウェアフレームを解放
-        if (ve[i].hw_frame) {
-            av_frame_free(&ve[i].hw_frame);
-            ve[i].hw_frame = nullptr;
+        for (auto f : ve[i].hw_frames) {
+            av_frame_free(&f);
         }
+        ve[i].hw_frames.clear();
         //ハードウェアフレームコンテキストを解放
         if (ve[i].hw_frames_ctx) {
             av_buffer_unref(&ve[i].hw_frames_ctx);
@@ -187,6 +201,16 @@ save_encode::~save_encode() {
         if (ve[i].hw_device_ctx) {
             av_buffer_unref(&ve[i].hw_device_ctx);
             ve[i].hw_device_ctx = nullptr;
+        }
+        //Stream削除
+        if(ve[i].st){
+            cudaStreamDestroy(ve[i].st);
+            ve[i].st=nullptr;
+        }
+        //event削除
+        if (ve[i].ev) {
+            cudaEventDestroy(ve[i].ev);
+            ve[i].ev = nullptr;
         }
     }
 
@@ -211,15 +235,15 @@ save_encode::~save_encode() {
     }
 
     //Stream削除
-    if(stream){
-        cudaStreamDestroy(stream);
-        stream=nullptr;
+    if(st){
+        cudaStreamDestroy(st);
+        st=nullptr;
     }
 
     //event削除
-    if (event) {
-        cudaEventDestroy(event);
-        event = nullptr;
+    if (ev) {
+        cudaEventDestroy(ev);
+        ev = nullptr;
     }
 
     delete CUDA_IMG_Proc;
@@ -292,21 +316,14 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     av_dict_set(&opts, "tune", encodeSettings.tune.toUtf8().constData(), 0);
     av_dict_set_int(&opts, "g", encodeSettings.gop_size, 0);
     av_dict_set_int(&opts, "bf", encodeSettings.b_frames, 0);
-
-    //分割エンコード使用時
-    if(max_split>1){
-        av_dict_set(&opts, "rc-lookahead", "0", 0); // lookahead 無効
-        // av_dict_set(&opts, "delay", "0", 0);
-        av_dict_set(&opts, "zerolatency", "1", 0);
-        av_dict_set(&opts, "async_depth", "1", 0);
-    }
+    av_dict_set(&opts, "zerolatency", "1", 0);
+    av_dict_set(&opts, "async_depth", "1", 0);
 
     if(encodeSettings.split_encode_mode=="0"){
         av_dict_set_int(&opts, "split_encode_mode", 0, 0);
     }else{
         av_dict_set_int(&opts, "split_encode_mode", 3, 0);
     }
-
 
     // 1pass / 2pass 切り替え
     qDebug()<<encodeSettings.pass_mode;
@@ -325,29 +342,52 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
 }
 
 //CUDAデバイスコンテキスト初期化
-void save_encode::initialized_ffmpeg_hardware_context(int i) {
+void save_encode::initialized_ffmpeg_hardware_context(int i)
+{
     int ret = 0;
 
+    // ---- hw_frames_ctx ----
     ve[i].hw_frames_ctx = av_hwframe_ctx_alloc(ve[i].hw_device_ctx);
-    if (!ve[i].hw_frames_ctx){
+    if (!ve[i].hw_frames_ctx) {
         throw std::runtime_error("Failed to allocate hw_frames_ctx");
     }
 
-    AVHWFramesContext* frames_ctx = (AVHWFramesContext*)(ve[i].hw_frames_ctx->data);
-    frames_ctx->format = AV_PIX_FMT_CUDA;
-    frames_ctx->sw_format = AV_PIX_FMT_NV12;
-    frames_ctx->width = width_/encodeSettings.width_tile;
-    frames_ctx->height = height_/encodeSettings.height_tile;
-    frames_ctx->initial_pool_size = 10;
-    ret = av_hwframe_ctx_init(ve[i].hw_frames_ctx);
-    if (ret < 0) throw std::runtime_error("Failed to init frames_ctx");
+    AVHWFramesContext* frames_ctx =
+        (AVHWFramesContext*)(ve[i].hw_frames_ctx->data);
 
-    ve[i].hw_frame = av_frame_alloc();
-    ve[i].hw_frame->format = AV_PIX_FMT_CUDA;
-    ve[i].hw_frame->width = width_/encodeSettings.width_tile;
-    ve[i].hw_frame->height = height_/encodeSettings.height_tile;
-    ret = av_hwframe_get_buffer(ve[i].hw_frames_ctx, ve[i].hw_frame, 0);
-    if (ret < 0) throw std::runtime_error("Failed to alloc hw_frame");
+    frames_ctx->format    = AV_PIX_FMT_CUDA;
+    frames_ctx->sw_format = AV_PIX_FMT_NV12;
+    frames_ctx->width     = width_  / encodeSettings.width_tile;
+    frames_ctx->height    = height_ / encodeSettings.height_tile;
+    frames_ctx->initial_pool_size = ve[i].ring_size + 4;
+    ret = av_hwframe_ctx_init(ve[i].hw_frames_ctx);
+    if (ret < 0) {
+        throw std::runtime_error("Failed to init frames_ctx");
+    }
+
+    // hw_frameリング確保
+    ve[i].hw_frames.resize(ve[i].ring_size);
+
+    // リングバッファ構築
+    for (int k = 0; k < ve[i].ring_size; k++) {
+        AVFrame* f = av_frame_alloc();
+        if (!f) throw std::runtime_error("av_frame_alloc failed");
+
+        f->format = AV_PIX_FMT_CUDA;
+        f->width  = frames_ctx->width;
+        f->height = frames_ctx->height;
+
+        // 重要: これを入れないと hw_frames_ctx が参照されない
+        f->hw_frames_ctx = av_buffer_ref(ve[i].hw_frames_ctx);
+
+        ret = av_hwframe_get_buffer(ve[i].hw_frames_ctx, f, 0);
+        if (ret < 0) {
+            av_frame_free(&f);
+            throw std::runtime_error("Failed to alloc hw_frame ring buffer");
+        }
+
+        ve[i].hw_frames[k] = f;
+    }
 }
 
 //オーディオエンコーダー初期化
@@ -422,18 +462,25 @@ void save_encode::init_audio_encoder()
 
 //映像エンコード
 void save_encode::encode(VideoFrame Frame){
+    //gpu0のフレームはそのままhw_frameに書き込み
+    for(int i = 0; i < ve.size(); i++)
+    {
+        if(i<gpu_switch_tiles){
+            AVFrame* out = ve[i].hw_frames[frame_index % ve[i].ring_size];
+            ve[i].d_y     = out->data[0];
+            ve[i].y_pitch = out->linesize[0];
+            ve[i].d_uv     = out->data[1];
+            ve[i].uv_pitch = out->linesize[1];
+        }
+    }
+
     // ------------------------
     // CUDA NV12変換
     // ------------------------
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(event, stream);
-    cudaEventSynchronize(event);
-
     //本カーネル
     if(ve.size()==1){
         //RGBAをNV12に変換してffmpegへ転送
-        CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].d_y,ve[0].y_pitch, ve[0].d_uv,ve[0].uv_pitch,Frame.d_encode_rgba, Frame.encode_pitch,width_,height_,stream);
+        CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0].d_y,ve[0].y_pitch, ve[0].d_uv,ve[0].uv_pitch,Frame.d_encode_rgba, Frame.encode_pitch,width_,height_,st);
     }else if(ve.size()==2){
         CUDA_IMG_Proc->rgba_to_nv12x2_flip_split(
             Frame.d_encode_rgba,Frame.encode_pitch,
@@ -442,7 +489,7 @@ void save_encode::encode(VideoFrame Frame){
             width_,height_,
             width_/encodeSettings.width_tile,
             height_/encodeSettings.height_tile,
-            stream);
+            st);
     }else if(ve.size()==4){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
@@ -454,7 +501,7 @@ void save_encode::encode(VideoFrame Frame){
             width_,height_,
             width_/encodeSettings.width_tile,
             height_/encodeSettings.height_tile,
-            stream);
+            st);
     }else if(ve.size()==8){
         //RGBAをNV12に変換してffmpegへ転送
         CUDA_IMG_Proc->rgba_to_nv12x8_flip_split(
@@ -470,52 +517,87 @@ void save_encode::encode(VideoFrame Frame){
             width_,height_,
             width_/encodeSettings.width_tile,
             height_/encodeSettings.height_tile,
-            stream);
+            st);
     }
+    //変換完了のイベントを待つだけにする
+    cudaEventRecord(ev, st);
 
-    //本カーネル同期
-    cudaEventRecord(event, stream);
-    cudaEventSynchronize(event);
-
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(event, stream);
-    cudaEventSynchronize(event);
-
-
-    cudaEventRecord(start, stream);
-
-    for(int i=0;i<ve.size();i++){
+    //各GPUへ転送
+    for(int i = gpu_switch_tiles; i < ve.size(); i++)
+    {
+        AVFrame* out = ve[i].hw_frames[frame_index % ve[i].ring_size];
+        cudaStreamWaitEvent(ve[i].st, ev, 0);
         cudaMemcpy2DAsync(
-            ve[i].hw_frame->data[0], ve[i].hw_frame->linesize[0], // dst
-            ve[i].d_y, ve[i].y_pitch,                             // src
-            width_/encodeSettings.width_tile,
-            height_/encodeSettings.height_tile,
-            cudaMemcpyDeviceToDevice,stream
+            out->data[0], out->linesize[0],      // dst (リング)
+            ve[i].d_y, ve[i].y_pitch,            // src
+            width_ / encodeSettings.width_tile,
+            height_ / encodeSettings.height_tile,
+            cudaMemcpyDeviceToDevice,
+            ve[i].st
             );
         cudaMemcpy2DAsync(
-            ve[i].hw_frame->data[1], ve[i].hw_frame->linesize[1], // dst
-            ve[i].d_uv, ve[i].uv_pitch,                           // src
-            (width_/encodeSettings.width_tile),
-            (height_/encodeSettings.height_tile)/2,
-            cudaMemcpyDeviceToDevice,stream
+            out->data[1], out->linesize[1],      // dst (リング)
+            ve[i].d_uv, ve[i].uv_pitch,          // src
+            (width_ / encodeSettings.width_tile),
+            (height_ / encodeSettings.height_tile) / 2,
+            cudaMemcpyDeviceToDevice,
+            ve[i].st
             );
+        cudaEventRecord(ve[i].ev, ve[i].st);
     }
-
-    cudaEventRecord(stop, stream);
-    cudaEventSynchronize(stop);
-
-    float ms_peer = 0;
-    cudaEventElapsedTime(&ms_peer, start, stop);
-    qDebug() << ms_peer;
+    // 全タイル完了待ち
+    for(int i = gpu_switch_tiles; i < ve.size(); i++)
+    {
+        cudaEventSynchronize(ve[i].ev);
+    }
 
     // ------------------------
     // エンコード
     // ------------------------
-    // 1. 全 encoder に frame を送る
+    // 1. 全 encoder に frame を送る（リング対応 + EAGAIN対応）
     for (int i = 0; i < ve.size(); i++) {
-        ve[i].hw_frame->pts = frame_index;
-        avcodec_send_frame(ve[i].codec_ctx, ve[i].hw_frame);
+        AVFrame* out = ve[i].hw_frames[frame_index % ve[i].ring_size];
+        out->pts = frame_index;
+        retry_send:
+            int ret = avcodec_send_frame(ve[i].codec_ctx, out);
+            if (ret == 0) {
+                continue; // OK
+            }
+            if (ret == AVERROR(EAGAIN)) {
+                // 詰まっているので packet を吐き出す
+                while (true) {
+                    ret = avcodec_receive_packet(ve[i].codec_ctx, packet);
+
+                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                        av_packet_unref(packet);
+                        break;
+                    }
+
+                    if (ret < 0) {
+                        qDebug() << "receive_packet error:" << ret;
+                        av_packet_unref(packet);
+                        break;
+                    }
+
+                    av_packet_rescale_ts(packet,
+                                         ve[i].codec_ctx->time_base,
+                                         ve[i].stream->time_base);
+
+                    packet->stream_index = ve[i].stream->index;
+
+                    int wret = av_interleaved_write_frame(fmt_ctx, packet);
+                    av_packet_unref(packet);
+
+                    if (wret < 0) {
+                        qDebug() << "write_frame error:" << wret;
+                        break;
+                    }
+                }
+                // packet吐いたので再送
+                goto retry_send;
+            }
+            // その他エラー
+            qDebug() << "send_frame error:" << ret;
     }
 
     // ---- mux（順序保証）----
