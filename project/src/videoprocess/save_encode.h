@@ -35,7 +35,7 @@ struct VideoEncoder {
     // リングバッファ
     AVBufferRef*    hw_frames_ctx = nullptr;
     std::vector<AVFrame*> hw_frames;
-    int ring_size = 4;
+    int ring_size = 6;
 
     cudaStream_t st = nullptr;
     cudaEvent_t ev = nullptr;

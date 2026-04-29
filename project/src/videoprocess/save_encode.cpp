@@ -183,8 +183,12 @@ save_encode::~save_encode() {
     // ---- 各メモリ解放 ----
     for(int i=0;i<ve.size();i++){
         //ハードウェアフレームを解放
-        for (auto f : ve[i].hw_frames) {
-            av_frame_free(&f);
+        for (AVFrame* &f : ve[i].hw_frames) {
+            if (f) {
+                av_frame_unref(f);
+                av_frame_free(&f);
+                f = nullptr;
+            }
         }
         ve[i].hw_frames.clear();
         //ハードウェアフレームコンテキストを解放
@@ -202,8 +206,20 @@ save_encode::~save_encode() {
             av_buffer_unref(&ve[i].hw_device_ctx);
             ve[i].hw_device_ctx = nullptr;
         }
+        //メモリ開放
+        if(i>=gpu_switch_tiles){
+            if (ve[i].d_y) {
+                cudaFree(ve[i].d_y);
+                ve[i].d_y = nullptr;
+            }
+            if (ve[i].d_uv) {
+                cudaFree(ve[i].d_uv);
+                ve[i].d_uv = nullptr;
+            }
+        }
         //Stream削除
         if(ve[i].st){
+            cudaStreamSynchronize(ve[i].st);
             cudaStreamDestroy(ve[i].st);
             ve[i].st=nullptr;
         }
@@ -236,6 +252,7 @@ save_encode::~save_encode() {
 
     //Stream削除
     if(st){
+        cudaStreamSynchronize(st);
         cudaStreamDestroy(st);
         st=nullptr;
     }
@@ -377,15 +394,11 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
         f->width  = frames_ctx->width;
         f->height = frames_ctx->height;
 
-        // 重要: これを入れないと hw_frames_ctx が参照されない
-        f->hw_frames_ctx = av_buffer_ref(ve[i].hw_frames_ctx);
-
         ret = av_hwframe_get_buffer(ve[i].hw_frames_ctx, f, 0);
         if (ret < 0) {
             av_frame_free(&f);
             throw std::runtime_error("Failed to alloc hw_frame ring buffer");
         }
-
         ve[i].hw_frames[k] = f;
     }
 }
