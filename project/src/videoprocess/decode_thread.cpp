@@ -77,9 +77,11 @@ decode_thread::~decode_thread() {
     };
 
     auto safe_free_hwctx = [&]() {
-        if (hw_device_ctx) {
-            av_buffer_unref(&hw_device_ctx);
-            hw_device_ctx = nullptr;
+        for (int i = 0; i < vd.size(); i++) {
+            if (vd[i].hw_device_ctx) {
+                av_buffer_unref(&vd[i].hw_device_ctx);
+                vd[i].hw_device_ctx = nullptr;
+            }
         }
     };
 

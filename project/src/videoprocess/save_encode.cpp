@@ -119,8 +119,10 @@ save_encode::~save_encode() {
 
             packet->stream_index = ve[i].stream->index;
             // ★ ソートしない ★
-            av_interleaved_write_frame(fmt_ctx, packet);
-            av_packet_unref(packet);
+            ret = av_interleaved_write_frame(fmt_ctx, packet);
+            if (ret < 0) {
+                qDebug() << "write_frame error:" << ret;
+            }
         }
     }
 

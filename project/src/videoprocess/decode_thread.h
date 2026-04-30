@@ -29,6 +29,13 @@ struct VideoDecorder {
     int stream_index=0;
     const AVCodec* decoder;
     AVFrame* Frame;
+    AVBufferRef* hw_device_ctx = nullptr;
+
+    //中間バッファ
+    uint8_t* d_y = nullptr;
+    size_t y_pitch = 0;
+    uint8_t* d_uv = nullptr;
+    size_t uv_pitch = 0;
 };
 
 class decode_thread : public QObject {
@@ -106,7 +113,6 @@ protected:
     const char* input_filename;
     std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;
-    AVBufferRef* hw_device_ctx = nullptr;
     DecodeState decode_state = STATE_DECODE_READY;
     DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
 

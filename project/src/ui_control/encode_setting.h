@@ -61,7 +61,7 @@ private:
     std::vector<int> combo_index= {0,0,0,0,0,0,0,0,0};
 
     int target_bit_rate=100;
-    int max_bit_rate=200;
+    int max_bit_rate=1000;
     bool encode_flag=false;
 
     void combo_index_control(QComboBox* comboBox,QListView *view, int ini_index,int target_index, bool flag,bool index_change_flag);

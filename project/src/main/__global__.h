@@ -60,7 +60,7 @@ struct EncodeSettings {
     QString rc_mode   = "cbr";
 
     int target_bit_rate = 100000000;
-    int max_bit_rate    = 200000000;
+    int max_bit_rate    = 1000000000;
     int cq = 23;
 
     int encode_tile = 1;

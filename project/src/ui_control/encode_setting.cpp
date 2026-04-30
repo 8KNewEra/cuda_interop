@@ -138,14 +138,14 @@ encode_setting::encode_setting(QWidget *parent)
     }
 
     // ターゲットビットレートスライダー
-    ui->horizontalSlider_targetbitrate->setRange(1, 200);
+    ui->horizontalSlider_targetbitrate->setRange(1, 1000);
     QObject::connect(ui->horizontalSlider_targetbitrate, &QSlider::valueChanged, this, [&](int value){
         target_bit_rate = value;
         ui->label_targetbitrare_value->setText(QString::number(value) + " Mbps");
     }, Qt::QueuedConnection);
 
     // 最大ビットレートスライダー
-    ui->horizontalSlider_maxbitrate->setRange(1, 200);
+    ui->horizontalSlider_maxbitrate->setRange(1, 1000);
     QObject::connect(ui->horizontalSlider_maxbitrate, &QSlider::valueChanged, this, [&](int value){
         max_bit_rate = value;
         ui->label_maxbitrate_value->setText(QString::number(value) + " Mbps");
@@ -191,7 +191,7 @@ encode_setting::encode_setting(QWidget *parent)
                     ui->horizontalSlider_cq->setEnabled(false);
                     ui->label_cq_value->setEnabled(false);
                     ui->label_cq->setEnabled(false);
-                    ui->horizontalSlider_targetbitrate->setRange(1,200);
+                    ui->horizontalSlider_targetbitrate->setRange(1,1000);
                     break;
                 case 1:
                     encodeSettings.rc_mode = settingmap[index].rc_items;
@@ -241,6 +241,24 @@ encode_setting::encode_setting(QWidget *parent)
         }else{
             encodeSettings.max_bit_rate=max_bit_rate*1000*1000;
             encodeSettings.target_bit_rate=target_bit_rate*1000*1000;
+        }
+
+        //コーデックの最大のビットレートを超えた場合の制限
+        if(encodeSettings.codec=="h264_nvenc"){
+            if(encodeSettings.max_bit_rate>960000000){
+                encodeSettings.max_bit_rate = 960000000;
+            }
+            if(encodeSettings.target_bit_rate>960000000){
+                encodeSettings.target_bit_rate = 960000000;
+            }
+        }
+        if(encodeSettings.codec=="hevc_nvenc"&&encodeSettings.max_bit_rate>800000000){
+            if(encodeSettings.max_bit_rate>800000000){
+                encodeSettings.max_bit_rate = 800000000;
+            }
+            if(encodeSettings.target_bit_rate>800000000){
+                encodeSettings.target_bit_rate = 800000000;
+            }
         }
 
         //パスが存在するか確認
