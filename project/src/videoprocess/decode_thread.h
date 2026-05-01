@@ -28,8 +28,11 @@ struct VideoDecorder {
     AVCodecContext* codec_ctx = nullptr;
     int stream_index=0;
     const AVCodec* decoder;
-    AVFrame* Frame;
     AVBufferRef* hw_device_ctx = nullptr;
+
+    //リングバッファ
+    std::vector<AVFrame*> hw_frames;
+    int ring_size = 6;
 
     //中間バッファ
     uint8_t* d_y = nullptr;

@@ -63,12 +63,19 @@ decode_thread::~decode_thread() {
     };
 
     auto safe_free_frames = [&]() {
-        for (int i = 0; i < vd.size(); i++) {
-            if (vd[i].Frame) {
-                av_frame_free(&vd[i].Frame);
-                vd[i].Frame = nullptr;
+        //ハードウェアフレームを解放
+        for (int i=0;i<vd.size();i++) {
+            //ハードウェアフレームを解放
+            for (AVFrame* &f : vd[i].hw_frames) {
+                if (f) {
+                    av_frame_unref(f);
+                    av_frame_free(&f);
+                    f = nullptr;
+                }
             }
+            vd[i].hw_frames.clear();
         }
+
 
         if (audio_frame) {
             av_frame_free(&audio_frame);

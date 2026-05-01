@@ -98,31 +98,77 @@ save_encode::save_encode(int h,int w) {
 
 save_encode::~save_encode() {
     // ==========================
-    // Video flush（NVENC）
+    // GPU同期
     // ==========================
     for (int i = 0; i < ve.size(); i++) {
-        // flush
-        avcodec_send_frame(ve[i].codec_ctx, nullptr);
-        while (true) {
-            int ret = avcodec_receive_packet(ve[i].codec_ctx, packet);
+        if (ve[i].st) {
+            cudaStreamSynchronize(ve[i].st);
+        }
+    }
 
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+    // ==========================
+    // Video flush（NVENC）
+    // ==========================
+    // まず全 encoder に NULL frame を送る
+    for (int i = 0; i < ve.size(); i++) {
+        int ret = avcodec_send_frame(ve[i].codec_ctx, nullptr);
+        if (ret < 0) {
+            qDebug() << "send NULL frame error:" << ret;
+        }
+    }
+
+    // drain を1回まとめて回す関数
+    auto drain_video_once = [&]() -> bool {
+        bool got_any = false;
+
+        for (int i = 0; i < ve.size(); i++) {
+            while (true) {
+                int ret = avcodec_receive_packet(ve[i].codec_ctx, packet);
+
+                if (ret == 0) {
+                    got_any = true;
+
+                    av_packet_rescale_ts(packet,
+                                         ve[i].codec_ctx->time_base,
+                                         ve[i].stream->time_base);
+
+                    packet->stream_index = ve[i].stream->index;
+
+                    int wret = av_interleaved_write_frame(fmt_ctx, packet);
+                    if (wret < 0) {
+                        char err[256];
+                        av_strerror(wret, err, sizeof(err));
+                        qDebug() << "write_frame error:" << wret << err;
+                    }
+
+                    av_packet_unref(packet);
+                    continue;
+                }
+
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                    av_packet_unref(packet);
+                    break;
+                }
+
+                qDebug() << "flush receive error:" << ret;
                 av_packet_unref(packet);
                 break;
             }
+        }
 
-            av_packet_rescale_ts(
-                 packet,
-                ve[i].codec_ctx->time_base,
-                ve[i].stream->time_base
-                );
+        return got_any;
+    };
 
-            packet->stream_index = ve[i].stream->index;
-            // ★ ソートしない ★
-            ret = av_interleaved_write_frame(fmt_ctx, packet);
-            if (ret < 0) {
-                qDebug() << "write_frame error:" << ret;
-            }
+    // まず普通に drain しきる
+    while (drain_video_once()) {}
+
+    // ★ 最後だけ追加で100ms粘る（NVENC遅延対策）
+    for (int t = 0; t < 100; t++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        // もし何も出てこなければ終了
+        if (!drain_video_once()) {
+            break;
         }
     }
 
@@ -181,6 +227,22 @@ save_encode::~save_encode() {
             av_packet_unref(&pkt);
         }
     }
+
+    // ==========================
+    // ファイルの終了処理
+    // ==========================
+    if (fmt_ctx && fmt_ctx->pb) {
+        avio_flush(fmt_ctx->pb);
+    }
+
+    int tret = av_write_trailer(fmt_ctx);
+    qDebug() << "trailer ret =" << tret;
+
+    if (fmt_ctx && fmt_ctx->pb) {
+        avio_closep(&fmt_ctx->pb);
+    }
+    avformat_free_context(fmt_ctx);
+    fmt_ctx = nullptr;
 
     // ---- 各メモリ解放 ----
     for(int i=0;i<ve.size();i++){
