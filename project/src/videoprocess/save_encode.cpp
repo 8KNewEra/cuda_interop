@@ -440,17 +440,17 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
     frames_ctx->sw_format = AV_PIX_FMT_NV12;
     frames_ctx->width     = width_  / encodeSettings.width_tile;
     frames_ctx->height    = height_ / encodeSettings.height_tile;
-    frames_ctx->initial_pool_size = ve[i].ring_size + 4;
+    frames_ctx->initial_pool_size = ringSize + 4;
     ret = av_hwframe_ctx_init(ve[i].hw_frames_ctx);
     if (ret < 0) {
         throw std::runtime_error("Failed to init frames_ctx");
     }
 
     // hw_frameリング確保
-    ve[i].hw_frames.resize(ve[i].ring_size);
+    ve[i].hw_frames.resize(ringSize);
 
     // リングバッファ構築
-    for (int k = 0; k < ve[i].ring_size; k++) {
+    for (int k = 0; k < ringSize; k++) {
         AVFrame* f = av_frame_alloc();
         if (!f) throw std::runtime_error("av_frame_alloc failed");
 
@@ -543,7 +543,7 @@ void save_encode::encode(VideoFrame Frame){
     for(int i = 0; i < ve.size(); i++)
     {
         if(i<gpu_switch_tiles){
-            AVFrame* out = ve[i].hw_frames[frame_index % ve[i].ring_size];
+            AVFrame* out = ve[i].hw_frames[ringNo];
             ve[i].d_y     = out->data[0];
             ve[i].y_pitch = out->linesize[0];
             ve[i].d_uv     = out->data[1];
@@ -602,7 +602,7 @@ void save_encode::encode(VideoFrame Frame){
     //各GPUへ転送
     for(int i = gpu_switch_tiles; i < ve.size(); i++)
     {
-        AVFrame* out = ve[i].hw_frames[frame_index % ve[i].ring_size];
+        AVFrame* out = ve[i].hw_frames[ringNo];
         cudaStreamWaitEvent(ve[i].st, ev, 0);
         cudaMemcpy2DAsync(
             out->data[0], out->linesize[0],      // dst (リング)
@@ -633,7 +633,7 @@ void save_encode::encode(VideoFrame Frame){
     // ------------------------
     // 1. 全 encoder に frame を送る（リング対応 + EAGAIN対応）
     for (int i = 0; i < ve.size(); i++) {
-        AVFrame* out = ve[i].hw_frames[frame_index % ve[i].ring_size];
+        AVFrame* out = ve[i].hw_frames[ringNo];
         out->pts = frame_index;
         retry_send:
             int ret = avcodec_send_frame(ve[i].codec_ctx, out);
@@ -678,6 +678,8 @@ void save_encode::encode(VideoFrame Frame){
     }
 
     // ---- mux（順序保証）----
+    if (packet->duration == 0)
+        packet->duration = 1;
     for (int i = 0; i < ve.size(); i++) {
         while (true) {
             int ret = avcodec_receive_packet(ve[i].codec_ctx, packet);
@@ -705,6 +707,10 @@ void save_encode::encode(VideoFrame Frame){
     // ========================
     encode_audio(Frame);
     frame_index+=1;
+
+    //リングを回す
+    ringNo ++;
+    if(ringNo>=ringSize) ringNo = 0;
 }
 
 //音声エンコード

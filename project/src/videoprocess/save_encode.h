@@ -35,7 +35,6 @@ struct VideoEncoder {
     // リングバッファ
     AVBufferRef*    hw_frames_ctx = nullptr;
     std::vector<AVFrame*> hw_frames;
-    int ring_size = 6;
 
     cudaStream_t st = nullptr;
     cudaEvent_t ev = nullptr;
@@ -79,6 +78,10 @@ private:
     AVAudioFifo* audio_fifo = nullptr;
 
     int gpu_switch_tiles = 0;
+
+    //リング設定
+    int ringSize = 60;
+    int ringNo = 0;
 };
 
 #endif // SAVE_ENCODE_H

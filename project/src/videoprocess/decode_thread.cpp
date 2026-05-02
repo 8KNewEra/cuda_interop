@@ -326,6 +326,10 @@ void decode_thread::processFrame() {
         drop_flag=true;
     }
 
+    //リングを回す
+    ringNo ++;
+    if(ringNo>=ringSize) ringNo = 0;
+
     //デコード修了指示が出た場合は全ての処理を完了してから修了を通知
     if(thread_stop_flag){
         emit finished();

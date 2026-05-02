@@ -32,7 +32,6 @@ struct VideoDecorder {
 
     //リングバッファ
     std::vector<AVFrame*> hw_frames;
-    int ring_size = 6;
 
     //中間バッファ
     uint8_t* d_y = nullptr;
@@ -147,6 +146,9 @@ protected:
     QElapsedTimer elapsedTimer;
     int interval_ms;
 
+    //リング設定
+    int ringSize = 1;
+    int ringNo = 0;
 };
 
 #endif // DECODE_THREAD_H
