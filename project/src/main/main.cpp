@@ -5,8 +5,8 @@
 #include <QTranslator>
 #include <QStyleFactory>
 
-int g_gpu_usage=0;
-int g_cudaDeviceID=0;
+std::vector<GPUInfo> g_GPUInfo;
+int g_openglDeviceID=0;
 cudaDeviceProp g_prop={};
 AppSettings g_AppSettings{};
 

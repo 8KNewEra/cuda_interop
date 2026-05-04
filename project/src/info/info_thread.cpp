@@ -31,25 +31,22 @@ void info_thread::run() {
 }
 
 void info_thread::check_gpu_usage() {
-    g_gpu_usage = get_gpu_usage();
-}
-
-int info_thread::get_gpu_usage() {
     nvmlDevice_t device;
     nvmlUtilization_t utilization;
 
-    // 最初の GPU の使用率を取得
-    nvmlReturn_t result = nvmlDeviceGetHandleByIndex(g_cudaDeviceID, &device);
-    if (result != NVML_SUCCESS) {
-        qDebug() << "Failed to get device handle:" << nvmlErrorString(result);
-        return -1;
-    }
+    for(int i=0;i<g_GPUInfo.size();i++){
+        // 最初の GPU の使用率を取得
+        nvmlReturn_t result = nvmlDeviceGetHandleByIndex(g_GPUInfo[i].deviceID, &device);
+        if (result != NVML_SUCCESS) {
+            qDebug() << "Failed to get device handle:" << nvmlErrorString(result);
+            return;
+        }
 
-    result = nvmlDeviceGetUtilizationRates(device, &utilization);
-    if (result != NVML_SUCCESS) {
-        qDebug() << "Failed to get utilization rates:" << nvmlErrorString(result);
-        return -1;
+        result = nvmlDeviceGetUtilizationRates(device, &utilization);
+        if (result != NVML_SUCCESS) {
+            qDebug() << "Failed to get utilization rates:" << nvmlErrorString(result);
+            return;
+        }
+        g_GPUInfo[i].GPU_Usage = utilization.gpu;
     }
-
-    return utilization.gpu;
 }

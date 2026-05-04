@@ -15,8 +15,7 @@
 #include <cuda_gl_interop.h>
 #include <QTimer>
 
-extern int g_gpu_usage;
-extern int g_cudaDeviceID;
+extern int g_openglDeviceID;
 
 class GLWidget : public QOpenGLWindow, protected QOpenGLFunctions_4_5_Core
 {
@@ -58,7 +57,8 @@ private:
     void histgram_Analysys();
     void downloadToGLTexture_and_Encode(VideoFrame Frame);
     std::vector<int> make_nice_y_labels(int max_value);
-    void getCudaCapabilityForOpenGLGPU();
+    void queryCudaGPUs();
+    void getCudaDeviceIDFromOpenGL();
 
     //CUDA Interop
     cudaGraphicsResource* cudaResource1;

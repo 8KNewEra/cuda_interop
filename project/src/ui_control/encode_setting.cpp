@@ -43,7 +43,7 @@ encode_setting::encode_setting(QWidget *parent)
     //コーデック
     {
         QStringList codec_items;
-        if(g_prop.major > 8 || (g_prop.major == 8 && g_prop.minor >= 9)){
+        if(g_GPUInfo[0].CC_major > 8 || (g_GPUInfo[0].CC_major == 8 && g_GPUInfo[0].CC_minor >= 9)){
             codec_items << "H.264" << "H.265" << "AV1";
         }else{
             codec_items << "H.264" << "H.265";
@@ -91,7 +91,7 @@ encode_setting::encode_setting(QWidget *parent)
     //Bフレーム
     {
         QStringList B_frame_items;
-        if(g_prop.major > 7 || (g_prop.major == 7 && g_prop.minor >= 5)){
+        if(g_GPUInfo[0].CC_major > 7 || (g_GPUInfo[0].CC_major == 7 && g_GPUInfo[0].CC_minor >= 5)){
             B_frame_items << "0" << "1"<<"2"<<"3"<<"4"<<"5"<<"6"<<"7";
             ui->comboBox_b_frame->addItems(B_frame_items);
             QObject::connect(ui->comboBox_b_frame, &QComboBox::currentIndexChanged, this, [&](int index) {
@@ -362,7 +362,7 @@ encode_setting::~encode_setting()
 //初期値をUIに反映する(Combobox)
 void encode_setting::iniFile_UI_Control(){
     // 読み込み
-    if(g_prop.major > 8 || (g_prop.major == 8 && g_prop.minor >= 9)){
+    if(g_GPUInfo[0].CC_major > 8 || (g_GPUInfo[0].CC_major == 8 && g_GPUInfo[0].CC_minor >= 9)){
         combo_index[0]=foundIndex("codec",encodeSettings.codec);
     }else{
         if(encodeSettings.codec=="av1_nvenc"){

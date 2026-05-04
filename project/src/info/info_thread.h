@@ -5,8 +5,7 @@
 #include <QTimer>
 #include "src/main/__global__.h"
 
-extern int g_gpu_usage;
-extern int g_cudaDeviceID;
+extern int g_openglDeviceID;
 
 class info_thread : public QThread {
     Q_OBJECT
@@ -20,9 +19,6 @@ protected:
 
 private slots:
     void check_gpu_usage();
-
-private:
-    int get_gpu_usage();
 };
 
 #endif // INFO_THREAD_H

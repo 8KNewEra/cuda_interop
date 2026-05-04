@@ -224,9 +224,6 @@ struct HistData {
     unsigned int max_b;
 };
 
-//デバイス情報
-extern cudaDeviceProp g_prop;
-
 //RGBレイアウト
 enum RGBLayout {
     RGB = 0,
@@ -243,5 +240,17 @@ enum e_jump_mode{
     JUMP_MODE_FRAME = 1,
     JUMP_MODE_TARGETFRAME = 2
 };
+
+//GPU情報を持つ構造体
+struct GPUInfo {
+    QString deviceName ="";
+    int deviceID = 0;
+    bool openglEnable = false;
+    int CC_major = 0;
+    int CC_minor = 0;
+    int GPU_Usage = 0;
+};
+
+extern std::vector<GPUInfo> g_GPUInfo;
 
 #endif // __GLOBAL___H

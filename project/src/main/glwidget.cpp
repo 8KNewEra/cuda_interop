@@ -180,7 +180,8 @@ void GLWidget::initializeGL()
     Averaging_shader.loc_filterEnabled = glGetUniformLocation(Averaging_shader.progId, "u_filterEnabled");
 
     //ComputeCapability取得
-    getCudaCapabilityForOpenGLGPU();
+    queryCudaGPUs();
+    getCudaDeviceIDFromOpenGL();
 
     //stream
     cudaStreamCreate(&interop_stream);
@@ -427,10 +428,10 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
         if(g_AppSettings.videoInfo_flag){
             painter.setPen(Qt::white);
             painter.setFont(QFont("Consolas", 16));
-            painter.drawText(2, 20, "OpenGL Device:" + QString::fromLatin1((const char*)glGetString(GL_RENDERER))+"\n");
-            painter.drawText(2, 40, "CUDA Device:" + QString::fromStdString(g_prop.name)+"(sm_"+QString::number(g_prop.major)+QString::number(g_prop.minor)+")\n");
-            painter.drawText(2, 60, QString("FPS: %1").arg(fps, 0, 'f', 2));
-            painter.drawText(2, 80, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
+            painter.drawText(2, 20, "OpenGL Device:" + g_GPUInfo[g_openglDeviceID].deviceName + " (" +QString::number(g_openglDeviceID) + ")" +"\n");
+            // painter.drawText(2, 40, "CUDA Device:" + QString::fromStdString(g_prop.name)+"(sm_"+QString::number(g_prop.major)+QString::number(g_prop.minor)+")\n");
+            // painter.drawText(2, 60, QString("FPS: %1").arg(fps, 0, 'f', 2));
+            // painter.drawText(2, 80, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
             painter.drawText(2, 100, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
             painter.drawText(2, 120, "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
             painter.drawText(2, 140, VideoInfo.decode_mode);
@@ -619,6 +620,7 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
 
     //解像度の変更に対応
     if (VideoInfo.width*VideoInfo.width_scale != width_ || VideoInfo.height*VideoInfo.height_scale != height_) {
+        cudaSetDevice(g_openglDeviceID);
         initCudaMalloc(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         initCudaTexture(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         initTextureCuda(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
@@ -972,34 +974,70 @@ std::vector<int> GLWidget::make_nice_y_labels(int max_value)
 }
 
 //CUDAとopenGLのデバイス設定
-void GLWidget::getCudaCapabilityForOpenGLGPU()
+void GLWidget::queryCudaGPUs()
 {
-    // OpenGL が使用している CUDA デバイスを取得
-    unsigned int deviceCount = 0;
-    int deviceIDs[8] = {0};
+    g_GPUInfo.clear();
+
+    int count = 0;
+    cudaGetDeviceCount(&count);
+
+    for (int i = 0; i < count; i++)
+    {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, i);
+
+        GPUInfo info;
+        info.deviceID = i;
+        info.deviceName = QString::fromUtf8(prop.name);
+        info.openglEnable = false;
+        info.CC_major = prop.major;
+        info.CC_minor = prop.minor;
+
+        g_GPUInfo.push_back(info);
+
+        qDebug() << "CUDA Device" << i
+                 << ":" << QString::fromUtf8(prop.name)
+                 << "CC =" << prop.major << "." << prop.minor;
+    }
+}
+
+void GLWidget::getCudaDeviceIDFromOpenGL()
+{
+    unsigned int count = 0;
+    int devices[8] = {};
 
     cudaError_t err = cudaGLGetDevices(
-        &deviceCount,
-        deviceIDs,
+        &count,
+        devices,
         8,
-        cudaGLDeviceListAll
+        cudaGLDeviceListCurrentFrame
         );
 
-    if (err != cudaSuccess || deviceCount == 0) {
+    if (err != cudaSuccess)
+    {
         qDebug() << "cudaGLGetDevices failed:" << cudaGetErrorString(err);
+        return;
     }
 
-    g_cudaDeviceID = deviceIDs[0];  // OpenGLが使っているCUDAデバイス
+    if (count == 0)
+    {
+        qDebug() << "No CUDA device associated with OpenGL context.";
+        return;
+    }
 
-    // CUDA の使用デバイスを設定
-    //cudaSetDevice(glCudaDevice);
+    int oglDev = devices[0];
+    if (oglDev < 0)
+        return;
 
-    // 確認用にプロパティを取得
-    cudaGetDeviceProperties(&g_prop, g_cudaDeviceID);
-
-    qDebug() << "OpenGL GPU に CUDA を同期:";
-    qDebug() << "  CUDA Device ID =" << g_cudaDeviceID;
-    qDebug() << "  GPU Name =" << g_prop.name;
-    qDebug() << "  Compute Capability ="
-             << g_prop.major << "." << g_prop.minor;
+    for (auto &gpu : g_GPUInfo)
+    {
+        if (gpu.deviceID == oglDev)
+        {
+            gpu.openglEnable = true;
+            g_openglDeviceID = gpu.deviceID;
+            qDebug() << "Matched OpenGL CUDA device:" << gpu.deviceID
+                     << gpu.deviceName;
+            break;
+        }
+    }
 }
