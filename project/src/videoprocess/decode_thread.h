@@ -6,6 +6,7 @@
 #include <QWaitCondition>
 #include <QMutex>
 #include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 #include <QDebug>
 #include <QFile>
 #include "src/main/__global__.h"
@@ -22,7 +23,7 @@ extern "C" {
 #include "libswresample/swresample.h"
 }
 
-extern int g_cudaDeviceID;
+extern int g_openglDeviceID;
 
 struct VideoDecorder {
     AVCodecContext* codec_ctx = nullptr;
@@ -38,6 +39,9 @@ struct VideoDecorder {
     size_t y_pitch = 0;
     uint8_t* d_uv = nullptr;
     size_t uv_pitch = 0;
+
+    cudaStream_t st = nullptr;
+    cudaEvent_t ev = nullptr;
 };
 
 class decode_thread : public QObject {
@@ -120,8 +124,8 @@ protected:
 
     //CUDA
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
-    cudaStream_t stream=nullptr;
-    cudaEvent_t events=nullptr;
+    cudaStream_t st=nullptr;
+    cudaEvent_t ev=nullptr;
     VideoFrame Frame{};
 
     //CPUデコード用
@@ -147,7 +151,7 @@ protected:
     int interval_ms;
 
     //リング設定
-    int ringSize = 1;
+    int ringSize = 12;
     int ringNo = 0;
 };
 

@@ -7,6 +7,9 @@
 // ffmpeg初期化（CPU）
 bool cpudecode::initialized_ffmpeg()
 {
+    //最初にGPU設定
+    cudaSetDevice(g_openglDeviceID);
+
     packet = av_packet_alloc();
     int ret;
 
@@ -226,7 +229,7 @@ bool cpudecode::initialized_ffmpeg()
     }
 
     // CUDA Stream
-    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+    cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking);
     if (err != cudaSuccess) {
         Error_String = QString("cudaStream failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -234,7 +237,7 @@ bool cpudecode::initialized_ffmpeg()
     }
 
     // CUDA Event
-    cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
+    cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
     if (err != cudaSuccess) {
         Error_String = QString("cudaEvent failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -634,9 +637,9 @@ void cpudecode::gpu_upload(){
                  cudaMemcpyHostToDevice);
 
     //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    CUDA_IMG_Proc->Dummy(st);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     // yuv420p → RGBA
     if(VideoInfo.bitdepth == 8){
@@ -651,7 +654,7 @@ void cpudecode::gpu_upload(){
             pitch_v,
             VideoInfo.width,
             VideoInfo.height,
-            stream
+            st
             );
     }else if(VideoInfo.bitdepth == 10){
         int is_be = (vd[0].hw_frames[ringNo]->format == AV_PIX_FMT_YUV420P10BE);
@@ -667,18 +670,18 @@ void cpudecode::gpu_upload(){
             VideoInfo.width,
             VideoInfo.height,
             is_be,
-            stream
+            st
             );
     }
 
     //CUDAカーネル同期
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    CUDA_IMG_Proc->Dummy(st);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     //フレーム番号取得
     if(seek_flag){

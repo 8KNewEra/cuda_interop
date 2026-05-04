@@ -75,8 +75,6 @@ decode_thread::~decode_thread() {
             }
             vd[i].hw_frames.clear();
         }
-
-
         if (audio_frame) {
             av_frame_free(&audio_frame);
             audio_frame = nullptr;
@@ -110,24 +108,41 @@ decode_thread::~decode_thread() {
         }
     };
 
+    auto safe_free_stream = [&]() {
+        for (int i = 0; i < vd.size(); i++) {
+            //Stream削除
+            if(vd[i].st){
+                cudaStreamSynchronize(vd[i].st);
+                cudaStreamDestroy(vd[i].st);
+                vd[i].st=nullptr;
+            }
+            //event削除
+            if (vd[i].ev) {
+                cudaEventDestroy(vd[i].ev);
+                vd[i].ev = nullptr;
+            }
+        }
+    };
+
     try {
         safe_free_codec();
         safe_free_format();
         safe_free_frames();
         safe_free_hwctx();
         safe_free_packet();
+        safe_free_stream();
     } catch (...) {
         qWarning() << "Exception during FFmpeg cleanup (ignored)";
     }
 
-    if(stream){
-        cudaStreamDestroy(stream);
-        stream=nullptr;
+    if(st){
+        cudaStreamDestroy(st);
+        st=nullptr;
     }
 
-    if (events) {
-        cudaEventDestroy(events);
-        events = nullptr;
+    if (ev) {
+        cudaEventDestroy(ev);
+        ev = nullptr;
     }
 
     if(Frame.d_decode_rgba){

@@ -8,6 +8,9 @@
 // ffmpeg初期化（CPU）
 bool avidecode::initialized_ffmpeg()
 {
+    //最初にGPU設定
+    cudaSetDevice(g_openglDeviceID);
+
     packet = av_packet_alloc();
     int ret;
 
@@ -209,7 +212,7 @@ bool avidecode::initialized_ffmpeg()
     }
 
     // CUDA Stream
-    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+    cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking);
     if (err != cudaSuccess) {
         Error_String = QString("cudaStream failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -217,7 +220,7 @@ bool avidecode::initialized_ffmpeg()
     }
 
     // CUDA Event
-    cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
+    cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
     if (err != cudaSuccess) {
         Error_String = QString("cudaEvent failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -593,50 +596,49 @@ void avidecode::get_decode_audio()
 //GPUへアップロード
 void avidecode::gpu_upload(){
     //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
-
+    CUDA_IMG_Proc->Dummy(st);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     //CUDAカーネル同期
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
     if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_UYVY422){
         cudaMemcpy2D(d_yuv, pitch_yuv,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->uyvy422_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_yuv, pitch_yuv,VideoInfo.width, VideoInfo.height,stream);
+        CUDA_IMG_Proc->uyvy422_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_yuv, pitch_yuv,VideoInfo.width, VideoInfo.height,st);
     }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV420P){
         cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2), VideoInfo.height/2,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2),VideoInfo.height/2,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
+        CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,st);
     }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV420P10){
         int is_be = (vd[0].hw_frames[ringNo]->format == AV_PIX_FMT_YUV420P10BE);
         cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height/2,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height/2,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
+        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,st);
     }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV422P){
         cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2), VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2),VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv422p_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
+        CUDA_IMG_Proc->yuv422p_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,st);
     }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV422P10){
         int is_be = (vd[0].hw_frames[ringNo]->format == AV_PIX_FMT_YUV422P10BE);
         cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv422p_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
+        CUDA_IMG_Proc->yuv422p_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,st);
     }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_GBRP10){
         cudaMemcpy2D(d_g, pitch_g,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_b, pitch_b,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
         cudaMemcpy2D(d_r, pitch_r,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->rgb_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_r, pitch_r,d_g,pitch_g, d_b,pitch_b,VideoInfo.width, VideoInfo.height,stream);
+        CUDA_IMG_Proc->rgb_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_r, pitch_r,d_g,pitch_g, d_b,pitch_b,VideoInfo.width, VideoInfo.height,st);
     }
 
     //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    CUDA_IMG_Proc->Dummy(st);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     //フレーム番号取得
     if(seek_flag){

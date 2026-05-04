@@ -620,7 +620,6 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
 
     //解像度の変更に対応
     if (VideoInfo.width*VideoInfo.width_scale != width_ || VideoInfo.height*VideoInfo.height_scale != height_) {
-        cudaSetDevice(g_openglDeviceID);
         initCudaMalloc(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         initCudaTexture(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         initTextureCuda(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
@@ -1035,6 +1034,7 @@ void GLWidget::getCudaDeviceIDFromOpenGL()
         {
             gpu.openglEnable = true;
             g_openglDeviceID = gpu.deviceID;
+            cudaSetDevice(g_openglDeviceID);
             qDebug() << "Matched OpenGL CUDA device:" << gpu.deviceID
                      << gpu.deviceName;
             break;

@@ -20,7 +20,7 @@ extern "C" {
 #include "libswresample/swresample.h"
 }
 
-extern int g_cudaDeviceID;
+extern int g_openglDeviceID;
 
 struct VideoEncoder {
     AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
@@ -77,7 +77,7 @@ private:
     int64_t         audio_pts     = 0;
     AVAudioFifo* audio_fifo = nullptr;
 
-    int gpu_switch_tiles = 0;
+    int primary_gpu_tiles = 0;
 
     //リング設定
     int ringSize = 60;

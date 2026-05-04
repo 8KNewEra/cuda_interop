@@ -24,7 +24,7 @@ protected:
     void high_res_seek_frame_multi(int FrameNo);
 
     int a=0;
-    int gpu_switch_tiles = 0;
+    int primary_gpu_tiles = 0;
 };
 
 #endif // NVGPUDECODE_H

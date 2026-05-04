@@ -7,6 +7,9 @@
 // ffmpeg初期化
 bool nvgpudecode::initialized_ffmpeg()
 {
+    //最初にGPU設定
+    cudaSetDevice(g_openglDeviceID);
+
     packet = av_packet_alloc();
     int ret;
     // ------------------------
@@ -73,11 +76,32 @@ bool nvgpudecode::initialized_ffmpeg()
 
         //CUDAデバイスコンテキスト
         QString gpuId{};
-        gpu_switch_tiles = 4;
-        if(i<gpu_switch_tiles){
-            gpuId = QString::number(0);
-        }else{
-            gpuId = QString::number(1);
+        primary_gpu_tiles = video_stream_indices.size();
+        //gpu選択
+        if (i < primary_gpu_tiles)
+        {
+            gpuId = QString::number(g_openglDeviceID);
+        }
+        else
+        {
+            // OpenGL GPU以外のリストを作る
+            std::vector<int> otherGPU;
+            for (auto &g : g_GPUInfo)
+            {
+                if (g.deviceID != g_openglDeviceID)
+                    otherGPU.push_back(g.deviceID);
+            }
+
+            // GPUが1枚しかない場合
+            if (otherGPU.empty())
+            {
+                gpuId = QString::number(g_openglDeviceID);
+            }
+            else
+            {
+                int idx = (i - primary_gpu_tiles) % otherGPU.size();
+                gpuId = QString::number(otherGPU[idx]);
+            }
         }
         qDebug()<<gpuId;
         ret = av_hwdevice_ctx_create(&dec.hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
@@ -146,6 +170,18 @@ bool nvgpudecode::initialized_ffmpeg()
                 .arg(ffmpegErrStr(ret));
             return false;
         }
+
+        //Stream作成
+        cudaStreamCreateWithFlags(
+            &dec.st,
+            cudaStreamNonBlocking
+            );
+
+        //event作成
+        cudaEventCreateWithFlags(
+            &dec.ev,
+            cudaEventDisableTiming
+            );
     }
 
     // ------------------------
@@ -211,7 +247,7 @@ bool nvgpudecode::initialized_ffmpeg()
 
     //GPU転送用のメモリを確保
     for(int i = 0; i < vd.size(); i++){
-        if(i>=gpu_switch_tiles){
+        if(i>=primary_gpu_tiles){
             cudaMallocPitch(
                 &vd[i].d_y,
                 &vd[i].y_pitch,
@@ -229,7 +265,7 @@ bool nvgpudecode::initialized_ffmpeg()
 
 
     // CUDA Stream
-    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+    cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking);
     if (err != cudaSuccess) {
         Error_String = QString("cudaStream failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -237,7 +273,7 @@ bool nvgpudecode::initialized_ffmpeg()
     }
 
     // CUDA Event
-    cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
+    cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
     if (err != cudaSuccess) {
         Error_String = QString("cudaEvent failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -621,8 +657,8 @@ void nvgpudecode::get_multidecode_image() {
     }
 
     // CUDAの処理,NVDEC完了待ち
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     CUDA_RGBA_to_merge();
 }
@@ -713,7 +749,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     //gpu0のフレームはそのままhw_frameからd_y、d_uvへ書き込み
     for(int i = 0; i < vd.size(); i++)
     {
-        if(i<gpu_switch_tiles){
+        if(i<primary_gpu_tiles){
             AVFrame* out = vd[i].hw_frames[ringNo];
             vd[i].d_y     = out->data[0];
             vd[i].y_pitch = out->linesize[0];
@@ -722,31 +758,36 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
         }
     }
 
-    for(int i = gpu_switch_tiles; i < vd.size(); i++)
+    for(int i = primary_gpu_tiles; i < vd.size(); i++)
     {
         AVFrame* out = vd[i].hw_frames[ringNo];
-        cudaMemcpy2D(
+
+        cudaMemcpy2DAsync(
             vd[i].d_y, vd[i].y_pitch,
             out->data[0], out->linesize[0],
             VideoInfo.width,
             VideoInfo.height,
-            cudaMemcpyDeviceToDevice
+            cudaMemcpyDeviceToDevice,
+            vd[i].st
             );
-        cudaMemcpy2D(
+
+        cudaMemcpy2DAsync(
             vd[i].d_uv, vd[i].uv_pitch,
             out->data[1], out->linesize[1],
-            (VideoInfo.width),
-            (VideoInfo.height)/2,
-            cudaMemcpyDeviceToDevice
-        );
+            VideoInfo.width,
+            VideoInfo.height / 2,
+            cudaMemcpyDeviceToDevice,
+            vd[i].st
+            );
+
+        cudaEventRecord(vd[i].ev, vd[i].st);
+        cudaStreamWaitEvent(st, vd[i].ev, 0);
     }
 
-
-
     //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    CUDA_IMG_Proc->Dummy(st);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     //本カーネル
     if (vd.size() == 2) {
@@ -754,7 +795,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
         CUDA_IMG_Proc->nv12x2_to_rgba_merge(
             vd[0].d_y,vd[0].y_pitch, vd[0].d_uv,vd[0].uv_pitch,
             vd[1].d_y,vd[1].y_pitch, vd[1].d_uv,vd[1].uv_pitch,
-            Frame.d_decode_rgba,Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
+            Frame.d_decode_rgba,Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,st);
     }else if (vd.size() == 4) {
         //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x4_to_rgba_merge(
@@ -762,7 +803,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             vd[1].d_y,vd[1].y_pitch, vd[1].d_uv,vd[1].uv_pitch,
             vd[2].d_y,vd[2].y_pitch, vd[2].d_uv,vd[2].uv_pitch,
             vd[3].d_y,vd[3].y_pitch, vd[3].d_uv,vd[3].uv_pitch,
-            Frame.d_decode_rgba, Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
+            Frame.d_decode_rgba, Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,st);
     }else if(vd.size() == 8){
         //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x8_to_rgba_merge(
@@ -774,7 +815,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             vd[5].d_y,vd[5].y_pitch, vd[5].d_uv,vd[5].uv_pitch,
             vd[6].d_y,vd[6].y_pitch, vd[6].d_uv,vd[6].uv_pitch,
             vd[7].d_y,vd[7].y_pitch, vd[7].d_uv,vd[7].uv_pitch,
-            Frame.d_decode_rgba, Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
+            Frame.d_decode_rgba, Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,st);
     }else{
         // NV12 → RGBA
         if(VideoInfo.bitdepth == 8){
@@ -784,7 +825,7 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
                 vd[0].d_y,vd[0].y_pitch, vd[0].d_uv,vd[0].uv_pitch,
                 VideoInfo.width*VideoInfo.width_scale,
                 VideoInfo.height*VideoInfo.height_scale,
-                stream
+                st
                 );
         }else if(VideoInfo.bitdepth == 10){
             CUDA_IMG_Proc->NV12_to_RGBA_10bit(
@@ -793,19 +834,19 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
                 vd[0].d_y,vd[0].y_pitch, vd[0].d_uv,vd[0].uv_pitch,
                 VideoInfo.width*VideoInfo.width_scale,
                 VideoInfo.height*VideoInfo.height_scale,
-                stream
+                st
                 );
         }
     }
 
     //本カーネル同期
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    CUDA_IMG_Proc->Dummy(st);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     //フレーム番号取得
     if(seek_flag){
@@ -992,8 +1033,8 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
         }
 
         // CUDAの処理,NVDEC完了待ち
-        cudaEventRecord(events, stream);
-        cudaEventSynchronize(events);
+        cudaEventRecord(ev, st);
+        cudaEventSynchronize(ev);
 
         //フレーム番号記憶
         back1FrameNo = FrameNo;

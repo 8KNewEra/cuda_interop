@@ -2,6 +2,9 @@
 #include "qdebug.h"
 
 save_encode::save_encode(int h,int w) {
+    //最初にGPU設定
+    cudaSetDevice(g_openglDeviceID);
+
     width_=w;
     height_=h;
     frame_index = 0;
@@ -19,11 +22,32 @@ save_encode::save_encode(int h,int w) {
 
         //CUDAデバイスコンテキスト
         QString gpuId{};
-        gpu_switch_tiles = 2;
-        if(i<gpu_switch_tiles){
-            gpuId = QString::number(0);
-        }else{
-            gpuId = QString::number(1);
+        primary_gpu_tiles = 2;
+        //gpu選択
+        if (i < primary_gpu_tiles)
+        {
+            gpuId = QString::number(g_openglDeviceID);
+        }
+        else
+        {
+            // OpenGL GPU以外のリストを作る
+            std::vector<int> otherGPU;
+            for (auto &g : g_GPUInfo)
+            {
+                if (g.deviceID != g_openglDeviceID)
+                    otherGPU.push_back(g.deviceID);
+            }
+
+            // GPUが1枚しかない場合
+            if (otherGPU.empty())
+            {
+                gpuId = QString::number(g_openglDeviceID);
+            }
+            else
+            {
+                int idx = (i - primary_gpu_tiles) % otherGPU.size();
+                gpuId = QString::number(otherGPU[idx]);
+            }
         }
         qDebug()<<gpuId;
         ret = av_hwdevice_ctx_create(&ve[i].hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
@@ -44,7 +68,7 @@ save_encode::save_encode(int h,int w) {
         this->ve[i].stream = ve[i].stream;
 
         //GPU転送用のメモリを確保
-        if(i>=gpu_switch_tiles){
+        if(i>=primary_gpu_tiles){
             cudaMallocPitch(
                 &ve[i].d_y,
                 &ve[i].y_pitch,
@@ -271,7 +295,7 @@ save_encode::~save_encode() {
             ve[i].hw_device_ctx = nullptr;
         }
         //メモリ開放
-        if(i>=gpu_switch_tiles){
+        if(i>=primary_gpu_tiles){
             if (ve[i].d_y) {
                 cudaFree(ve[i].d_y);
                 ve[i].d_y = nullptr;
@@ -542,7 +566,7 @@ void save_encode::encode(VideoFrame Frame){
     //gpu0のフレームはそのままhw_frameに書き込み
     for(int i = 0; i < ve.size(); i++)
     {
-        if(i<gpu_switch_tiles){
+        if(i<primary_gpu_tiles){
             AVFrame* out = ve[i].hw_frames[ringNo];
             ve[i].d_y     = out->data[0];
             ve[i].y_pitch = out->linesize[0];
@@ -600,7 +624,7 @@ void save_encode::encode(VideoFrame Frame){
     cudaEventRecord(ev, st);
 
     //各GPUへ転送
-    for(int i = gpu_switch_tiles; i < ve.size(); i++)
+    for(int i = primary_gpu_tiles; i < ve.size(); i++)
     {
         AVFrame* out = ve[i].hw_frames[ringNo];
         cudaStreamWaitEvent(ve[i].st, ev, 0);
@@ -623,7 +647,7 @@ void save_encode::encode(VideoFrame Frame){
         cudaEventRecord(ve[i].ev, ve[i].st);
     }
     // 全タイル完了待ち
-    for(int i = gpu_switch_tiles; i < ve.size(); i++)
+    for(int i = primary_gpu_tiles; i < ve.size(); i++)
     {
         cudaEventSynchronize(ve[i].ev);
     }
