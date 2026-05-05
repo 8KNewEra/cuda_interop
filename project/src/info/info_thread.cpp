@@ -33,6 +33,7 @@ void info_thread::run() {
 void info_thread::check_gpu_usage() {
     nvmlDevice_t device;
     nvmlUtilization_t utilization;
+    nvmlMemory_t memInfo;
     unsigned int encUtil = 0, encSampling = 0;
     unsigned int decUtil = 0, decSampling = 0;
 
@@ -61,9 +62,15 @@ void info_thread::check_gpu_usage() {
             qDebug() << "Failed to get decoder utilization:" << nvmlErrorString(result);
             return;
         }
-
         unsigned int totalLike = std::max({ utilization.gpu, encUtil, decUtil });
 
+        result = nvmlDeviceGetMemoryInfo(device, &memInfo);
+        if (result != NVML_SUCCESS) {
+            qDebug() << "Failed to get decoder utilization:" << nvmlErrorString(result);
+            return;
+        }
+
         g_GPUInfo[i].GPU_Usage = totalLike;
+        g_GPUInfo[i].Memory_Usage = (int)(memInfo.used / (1024 * 1024)); // MB
     }
 }

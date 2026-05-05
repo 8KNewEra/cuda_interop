@@ -66,6 +66,7 @@ struct EncodeSettings {
     int encode_tile = 1;
     int width_tile = 1;
     int height_tile = 1;
+    std::vector<int> tile_gpu_map;
 };
 
 // ★書き込みを許可したいクラスをここで「前方宣言」
@@ -248,6 +249,8 @@ struct GPUInfo {
     bool openglEnable = false;
     int CC_major = 0;
     int CC_minor = 0;
+    int Max_Memory_Usage = 0;
+    int Memory_Usage = 0;
     int GPU_Usage = 0;
 };
 

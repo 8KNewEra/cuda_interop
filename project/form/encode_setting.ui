@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>515</width>
-    <height>464</height>
+    <height>650</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -17,7 +17,7 @@
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>432</y>
+     <y>612</y>
      <width>75</width>
      <height>24</height>
     </rect>
@@ -30,7 +30,7 @@
    <property name="geometry">
     <rect>
      <x>180</x>
-     <y>432</y>
+     <y>612</y>
      <width>321</width>
      <height>23</height>
     </rect>
@@ -46,7 +46,7 @@
    <property name="geometry">
     <rect>
      <x>93</x>
-     <y>432</y>
+     <y>612</y>
      <width>75</width>
      <height>24</height>
     </rect>
@@ -162,7 +162,7 @@
    <widget class="QLabel" name="label_3">
     <property name="geometry">
      <rect>
-      <x>35</x>
+      <x>31</x>
       <y>35</y>
       <width>49</width>
       <height>16</height>
@@ -174,7 +174,10 @@
      </font>
     </property>
     <property name="text">
-     <string>コーデック</string>
+     <string>-c:v</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QLabel" name="label_4">
@@ -192,7 +195,7 @@
      </font>
     </property>
     <property name="text">
-     <string>フレームレート</string>
+     <string>-vf</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignCenter</set>
@@ -216,19 +219,22 @@
    <widget class="QLabel" name="label_6">
     <property name="geometry">
      <rect>
-      <x>17</x>
-      <y>67</y>
+      <x>8</x>
+      <y>68</y>
       <width>101</width>
       <height>16</height>
      </rect>
     </property>
     <property name="font">
      <font>
-      <pointsize>9</pointsize>
+      <pointsize>8</pointsize>
      </font>
     </property>
     <property name="text">
-     <string>スプリットエンコード</string>
+     <string>-split_encode_mode</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QComboBox" name="comboBox_splitencode">
@@ -322,9 +328,9 @@
    <widget class="QLabel" name="label_targetbitrate">
     <property name="geometry">
      <rect>
-      <x>10</x>
+      <x>8</x>
       <y>133</y>
-      <width>111</width>
+      <width>101</width>
       <height>16</height>
      </rect>
     </property>
@@ -334,13 +340,16 @@
      </font>
     </property>
     <property name="text">
-     <string>ターゲットビットレート</string>
+     <string>-b:v</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QLabel" name="label_8">
     <property name="geometry">
      <rect>
-      <x>40</x>
+      <x>32</x>
       <y>33</y>
       <width>49</width>
       <height>16</height>
@@ -352,7 +361,10 @@
      </font>
     </property>
     <property name="text">
-     <string>プリセット</string>
+     <string>-preset</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QLabel" name="label_9">
@@ -370,7 +382,7 @@
      </font>
     </property>
     <property name="text">
-     <string>チューニング</string>
+     <string>-tune</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignCenter</set>
@@ -379,10 +391,10 @@
    <widget class="QLabel" name="label_10">
     <property name="geometry">
      <rect>
-      <x>38</x>
+      <x>14</x>
       <y>65</y>
-      <width>51</width>
-      <height>16</height>
+      <width>81</width>
+      <height>20</height>
      </rect>
     </property>
     <property name="font">
@@ -391,13 +403,16 @@
      </font>
     </property>
     <property name="text">
-     <string>GOPサイズ</string>
+     <string>-g</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QLabel" name="label_11">
     <property name="geometry">
      <rect>
-      <x>30</x>
+      <x>15</x>
       <y>97</y>
       <width>81</width>
       <height>20</height>
@@ -409,15 +424,18 @@
      </font>
     </property>
     <property name="text">
-     <string>ビットレート設定</string>
+     <string>-rc</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QLabel" name="label_maxbitrate">
     <property name="geometry">
      <rect>
-      <x>19</x>
+      <x>25</x>
       <y>165</y>
-      <width>81</width>
+      <width>71</width>
       <height>16</height>
      </rect>
     </property>
@@ -427,7 +445,10 @@
      </font>
     </property>
     <property name="text">
-     <string>最大ビットレート</string>
+     <string>-maxrate</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QComboBox" name="comboBox_preset">
@@ -518,7 +539,7 @@
      </font>
     </property>
     <property name="text">
-     <string>Bフレーム挿入数</string>
+     <string>-bf</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignCenter</set>
@@ -584,7 +605,7 @@
    <widget class="QLabel" name="label_cq">
     <property name="geometry">
      <rect>
-      <x>19</x>
+      <x>9</x>
       <y>194</y>
       <width>101</width>
       <height>16</height>
@@ -596,7 +617,10 @@
      </font>
     </property>
     <property name="text">
-     <string>品質(CQ)</string>
+     <string>-cq</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
    <widget class="QLabel" name="label_cq_value">
@@ -636,7 +660,7 @@
    <widget class="QLabel" name="label_12">
     <property name="geometry">
      <rect>
-      <x>257</x>
+      <x>260</x>
       <y>96</y>
       <width>71</width>
       <height>20</height>
@@ -648,7 +672,7 @@
      </font>
     </property>
     <property name="text">
-     <string>マルチパス</string>
+     <string>-multipass</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignmentFlag::AlignCenter</set>
@@ -669,6 +693,34 @@
      </font>
     </property>
    </widget>
+  </widget>
+  <widget class="QTableWidget" name="tableWidget_gpu">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>452</y>
+     <width>491</width>
+     <height>151</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label_GPUTable">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>431</y>
+     <width>171</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <pointsize>11</pointsize>
+    </font>
+   </property>
+   <property name="text">
+    <string>マルチGPU 重み付け設定</string>
+   </property>
   </widget>
  </widget>
  <resources/>

@@ -77,8 +77,6 @@ private:
     int64_t         audio_pts     = 0;
     AVAudioFifo* audio_fifo = nullptr;
 
-    int primary_gpu_tiles = 0;
-
     //リング設定
     int ringSize = 60;
     int ringNo = 0;

@@ -432,7 +432,7 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
             painter.drawText(2, 20, "Primary Device(Open GL):" + g_GPUInfo[g_openglDeviceID].deviceName + " (CUDA Device " +QString::number(g_openglDeviceID) + ")" +"\n");
 
             for(int i=0;i<g_GPUInfo.size();i++){
-                painter.drawText(2, 40 + 20*i, "CUDA Device " + QString::number(i) + ":" + g_GPUInfo[i].deviceName +"(sm_"+QString::number(g_GPUInfo[i].CC_major)+QString::number(g_GPUInfo[i].CC_minor)+")" + " GPU Usage:" + QString::number(g_GPUInfo[i].GPU_Usage) + "%\n");
+                painter.drawText(2, 40 + 20*i, "CUDA Device " + QString::number(i) + ":" + g_GPUInfo[i].deviceName +"(sm_"+QString::number(g_GPUInfo[i].CC_major)+QString::number(g_GPUInfo[i].CC_minor)+")" + " Usage:" + QString::number(g_GPUInfo[i].GPU_Usage) + "% Memory:" + QString::number(g_GPUInfo[i].Memory_Usage) + "/" + QString::number(g_GPUInfo[i].Max_Memory_Usage) + " MB\n");
             }
 
             painter.drawText(2, 40 + 20*g_GPUInfo.size(), QString("OpenGL Rendering FPS:%1").arg(fps, 0, 'f', 2));
@@ -995,7 +995,7 @@ void GLWidget::queryCudaGPUs()
         info.openglEnable = false;
         info.CC_major = prop.major;
         info.CC_minor = prop.minor;
-
+        info.Max_Memory_Usage = (int)(prop.totalGlobalMem / (1024 * 1024));
         g_GPUInfo.push_back(info);
 
         qDebug() << "CUDA Device" << i

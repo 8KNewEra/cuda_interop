@@ -21,34 +21,7 @@ save_encode::save_encode(int h,int w) {
         ve.emplace_back();
 
         //CUDAデバイスコンテキスト
-        QString gpuId{};
-        primary_gpu_tiles = 2;
-        //gpu選択
-        if (i < primary_gpu_tiles)
-        {
-            gpuId = QString::number(g_openglDeviceID);
-        }
-        else
-        {
-            // OpenGL GPU以外のリストを作る
-            std::vector<int> otherGPU;
-            for (auto &g : g_GPUInfo)
-            {
-                if (g.deviceID != g_openglDeviceID)
-                    otherGPU.push_back(g.deviceID);
-            }
-
-            // GPUが1枚しかない場合
-            if (otherGPU.empty())
-            {
-                gpuId = QString::number(g_openglDeviceID);
-            }
-            else
-            {
-                int idx = (i - primary_gpu_tiles) % otherGPU.size();
-                gpuId = QString::number(otherGPU[idx]);
-            }
-        }
+        QString gpuId = QString::number(encodeSettings.tile_gpu_map[i]);
         qDebug()<<gpuId;
         ret = av_hwdevice_ctx_create(&ve[i].hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
         if (ret < 0) throw std::runtime_error("Failed to create CUDA device");
@@ -68,7 +41,7 @@ save_encode::save_encode(int h,int w) {
         this->ve[i].stream = ve[i].stream;
 
         //GPU転送用のメモリを確保
-        if(i>=primary_gpu_tiles){
+        if(encodeSettings.tile_gpu_map[i] != g_openglDeviceID){
             cudaMallocPitch(
                 &ve[i].d_y,
                 &ve[i].y_pitch,
@@ -295,7 +268,7 @@ save_encode::~save_encode() {
             ve[i].hw_device_ctx = nullptr;
         }
         //メモリ開放
-        if(i>=primary_gpu_tiles){
+        if(encodeSettings.tile_gpu_map[i] != g_openglDeviceID){
             if (ve[i].d_y) {
                 cudaFree(ve[i].d_y);
                 ve[i].d_y = nullptr;
@@ -566,12 +539,13 @@ void save_encode::encode(VideoFrame Frame){
     //gpu0のフレームはそのままhw_frameに書き込み
     for(int i = 0; i < ve.size(); i++)
     {
-        if(i<primary_gpu_tiles){
+        if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
+        {
             AVFrame* out = ve[i].hw_frames[ringNo];
             ve[i].d_y     = out->data[0];
             ve[i].y_pitch = out->linesize[0];
-            ve[i].d_uv     = out->data[1];
-            ve[i].uv_pitch = out->linesize[1];
+            ve[i].d_uv    = out->data[1];
+            ve[i].uv_pitch= out->linesize[1];
         }
     }
 
@@ -624,31 +598,40 @@ void save_encode::encode(VideoFrame Frame){
     cudaEventRecord(ev, st);
 
     //各GPUへ転送
-    for(int i = primary_gpu_tiles; i < ve.size(); i++)
+    for(int i = 0; i < ve.size(); i++)
     {
+        if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
+            continue; // primaryはコピー不要
+
         AVFrame* out = ve[i].hw_frames[ringNo];
         cudaStreamWaitEvent(ve[i].st, ev, 0);
+
         cudaMemcpy2DAsync(
-            out->data[0], out->linesize[0],      // dst (リング)
-            ve[i].d_y, ve[i].y_pitch,            // src
+            out->data[0], out->linesize[0],
+            ve[i].d_y, ve[i].y_pitch,
             width_ / encodeSettings.width_tile,
             height_ / encodeSettings.height_tile,
             cudaMemcpyDeviceToDevice,
             ve[i].st
             );
+
         cudaMemcpy2DAsync(
-            out->data[1], out->linesize[1],      // dst (リング)
-            ve[i].d_uv, ve[i].uv_pitch,          // src
-            (width_ / encodeSettings.width_tile),
+            out->data[1], out->linesize[1],
+            ve[i].d_uv, ve[i].uv_pitch,
+            width_ / encodeSettings.width_tile,
             (height_ / encodeSettings.height_tile) / 2,
             cudaMemcpyDeviceToDevice,
             ve[i].st
             );
+
         cudaEventRecord(ve[i].ev, ve[i].st);
     }
     // 全タイル完了待ち
-    for(int i = primary_gpu_tiles; i < ve.size(); i++)
+    for(int i = 0; i < ve.size(); i++)
     {
+        if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
+            continue;
+
         cudaEventSynchronize(ve[i].ev);
     }
 

@@ -17,7 +17,7 @@ namespace Ui {
 class encode_setting;
 }
 
-extern QString g_compute_capability;
+extern int g_openglDeviceID;
 
 class encode_setting : public QWidget
 {
@@ -69,6 +69,9 @@ private:
     void combo_index_control2();
     void tile_index_control();
     void tile_split_exchange();
+    void setGPUTable();
+    void updateGpuTileAllocation();
+    std::vector<int> buildTileGpuMap();
 };
 
 #endif // ENCODE_SETTING_H

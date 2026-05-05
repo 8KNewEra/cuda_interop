@@ -1,5 +1,6 @@
 #include "src/ui_control/encode_setting.h"
 #include "qevent.h"
+#include "qspinbox.h"
 #include "ui_encode_setting.h"
 
 encode_setting::encode_setting(QWidget *parent)
@@ -44,9 +45,9 @@ encode_setting::encode_setting(QWidget *parent)
     {
         QStringList codec_items;
         if(g_GPUInfo[0].CC_major > 8 || (g_GPUInfo[0].CC_major == 8 && g_GPUInfo[0].CC_minor >= 9)){
-            codec_items << "H.264" << "H.265" << "AV1";
+            codec_items << "h264_nvenc" << "hevc_nvenc" << "av1_nvenc";
         }else{
-            codec_items << "H.264" << "H.265";
+            codec_items << "h264_nvenc" << "hevc_nvenc";
         }
 
         ui->comboBox_codec->addItems(codec_items);
@@ -74,6 +75,7 @@ encode_setting::encode_setting(QWidget *parent)
         QObject::connect(ui->comboBox_tile, &QComboBox::currentIndexChanged, this, [&](int index) {
             encodeSettings.encode_tile = settingmap[index].encode_tile;
             tile_split_exchange();
+            updateGpuTileAllocation();
 
             if(VideoInfo.width*VideoInfo.width_scale/encodeSettings.width_tile>4096||VideoInfo.height*VideoInfo.height_scale/encodeSettings.height_tile>4096){
                 qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
@@ -280,6 +282,9 @@ encode_setting::encode_setting(QWidget *parent)
             ui->label_filepath->setText(encodeSettings.encode_path);
         }
 
+        //GPU、タイル設定を保存
+        encodeSettings.tile_gpu_map = buildTileGpuMap();
+
         //エンコード開始
         emit signal_encode_start();
 
@@ -289,6 +294,8 @@ encode_setting::encode_setting(QWidget *parent)
         ui->filepath_groupBox->setEnabled(false);
         ui->normalsetting_groupBox->setEnabled(false);
         ui->advancesetting_groupBox->setEnabled(false);
+        ui->tableWidget_gpu->setEnabled(false);
+        ui->label_GPUTable->setEnabled(false);
         encode_flag=true;
     }, Qt::QueuedConnection);
 
@@ -473,6 +480,8 @@ void encode_setting::encode_end(QString encode_time){
     ui->filepath_groupBox->setEnabled(true);
     ui->normalsetting_groupBox->setEnabled(true);
     ui->advancesetting_groupBox->setEnabled(true);
+    ui->tableWidget_gpu->setEnabled(true);
+    ui->label_GPUTable->setEnabled(true);
     encode_flag=false;
 }
 
@@ -483,6 +492,7 @@ void encode_setting::slider(int min,int max){
 
     fps_cmbobox_control();
     tile_index_control();
+    setGPUTable();
 }
 
 //進捗バーを動かす
@@ -637,4 +647,217 @@ void encode_setting::tile_split_exchange(){
         encodeSettings.width_tile = 1;
         encodeSettings.height_tile  = 1;
     }
+}
+
+void encode_setting::setGPUTable()
+{
+    ui->tableWidget_gpu->blockSignals(true);
+    ui->tableWidget_gpu->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    ui->tableWidget_gpu->setColumnCount(5);
+    ui->tableWidget_gpu->setRowCount((int)g_GPUInfo.size());
+
+    QStringList headers;
+    headers << "GPU Name" << "Memory(MB)" << "Detail" << "Weight" << "Tiles";
+    ui->tableWidget_gpu->setHorizontalHeaderLabels(headers);
+
+    std::vector<int> order;
+
+    for (int i = 0; i < (int)g_GPUInfo.size(); i++)
+        if (g_GPUInfo[i].openglEnable)
+            order.push_back(i);
+
+    for (int i = 0; i < (int)g_GPUInfo.size(); i++)
+        if (!g_GPUInfo[i].openglEnable)
+            order.push_back(i);
+
+    for (int row = 0; row < (int)order.size(); row++)
+    {
+        const auto &gpu = g_GPUInfo[order[row]];
+
+        // GPU Name
+        ui->tableWidget_gpu->setItem(row, 0,
+                                     new QTableWidgetItem(gpu.deviceName + "(" + QString::number(gpu.deviceID) + ")"));
+
+        // Memory
+        ui->tableWidget_gpu->setItem(row, 1,
+                                     new QTableWidgetItem(QString("%1 / %2")
+                                                              .arg(gpu.Memory_Usage)
+                                                              .arg(gpu.Max_Memory_Usage)));
+
+        // Detail
+        ui->tableWidget_gpu->setItem(row, 2,
+                                     new QTableWidgetItem(gpu.openglEnable ? "Primary GPU" : ""));
+
+        // Weight SpinBox
+        QSpinBox *spin = new QSpinBox();
+
+        // Primary GPUは必ず使う
+        if (gpu.openglEnable)
+            spin->setRange(1, 10);
+        else
+            spin->setRange(0, 10);
+
+        spin->setValue(gpu.openglEnable ? 50 : 50);
+
+        ui->tableWidget_gpu->setCellWidget(row, 3, spin);
+
+        // Tiles 表示
+        ui->tableWidget_gpu->setItem(row, 4, new QTableWidgetItem(""));
+        ui->tableWidget_gpu->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+
+        connect(spin, QOverload<int>::of(&QSpinBox::valueChanged),
+                this, &encode_setting::updateGpuTileAllocation);
+    }
+
+    ui->tableWidget_gpu->blockSignals(false);
+
+    updateGpuTileAllocation();
+    ui->tableWidget_gpu->resizeColumnsToContents();
+    ui->tableWidget_gpu->setColumnWidth(3, 50);
+}
+
+void encode_setting::updateGpuTileAllocation()
+{
+    ui->tableWidget_gpu->blockSignals(true);
+
+    int totalTiles = encodeSettings.encode_tile;
+    if (totalTiles <= 0) totalTiles = 1;
+
+    int totalWeight = 0;
+
+    // Weight合計（weight>0のみ対象）
+    for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
+    {
+        QSpinBox *spin =
+            qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
+        if (!spin) continue;
+
+        if (spin->value() <= 0)
+            continue;
+
+        totalWeight += spin->value();
+    }
+
+    if (totalWeight <= 0) totalWeight = 1;
+
+    int usedTiles = 0;
+
+    // タイル計算
+    for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
+    {
+        QSpinBox *spin =
+            qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
+        if (!spin) continue;
+
+        int weight = spin->value();
+
+        // weight=0 → 無効
+        if (weight <= 0)
+        {
+            ui->tableWidget_gpu->item(row, 4)->setText("Not Used");
+
+            // グレーアウト
+            for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+            {
+                QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+                if (it) it->setForeground(Qt::gray);
+            }
+
+            continue;
+        }
+
+        int tiles = (weight * totalTiles) / totalWeight;
+        usedTiles += tiles;
+
+        ui->tableWidget_gpu->item(row, 4)->setText(QString::number(tiles));
+
+        // 有効なので色を戻す
+        for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+        {
+            QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+            if (it) it->setForeground(Qt::black);
+        }
+    }
+
+    // 余り配布（weight>0 の行だけに配る）
+    int remain = totalTiles - usedTiles;
+
+    for (int row = 0; row < ui->tableWidget_gpu->rowCount() && remain > 0; row++)
+    {
+        QSpinBox *spin =
+            qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
+        if (!spin) continue;
+
+        if (spin->value() <= 0)
+            continue;
+
+        int current = ui->tableWidget_gpu->item(row, 4)->text().toInt();
+        ui->tableWidget_gpu->item(row, 4)->setText(QString::number(current + 1));
+        remain--;
+    }
+
+    // 最終チェック：tiles=0ならNot Used表示にする
+    for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
+    {
+        QSpinBox *spin =
+            qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
+        if (!spin) continue;
+
+        if (spin->value() <= 0)
+            continue;
+
+        int tiles = ui->tableWidget_gpu->item(row, 4)->text().toInt();
+        if (tiles <= 0)
+        {
+            ui->tableWidget_gpu->item(row, 4)->setText("Not Used");
+
+            // tiles 0はグレーアウト
+            for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+            {
+                QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+                if (it) it->setForeground(Qt::gray);
+            }
+        }
+    }
+
+    ui->tableWidget_gpu->blockSignals(false);
+}
+
+std::vector<int> encode_setting::buildTileGpuMap()
+{
+    int totalTiles = encodeSettings.encode_tile;
+    std::vector<int> tileGpuMap;
+    tileGpuMap.reserve(totalTiles);
+
+    // ここは updateGpuTileAllocation() の結果から拾う
+    // tableWidget_gpu の Tiles列(4)に書かれてる数字を読む
+
+    for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
+    {
+        QString gpuName = ui->tableWidget_gpu->item(row, 0)->text();
+
+        // (deviceID) を抜く
+        int devIdStart = gpuName.lastIndexOf("(");
+        int devIdEnd   = gpuName.lastIndexOf(")");
+
+        if (devIdStart < 0 || devIdEnd < 0) continue;
+
+        int devId = gpuName.mid(devIdStart + 1, devIdEnd - devIdStart - 1).toInt();
+
+        QString tileText = ui->tableWidget_gpu->item(row, 4)->text();
+        int tileCount = tileText.toInt(); // Not Usedなら0
+
+        for (int t = 0; t < tileCount; t++)
+            tileGpuMap.push_back(devId);
+    }
+
+    // 念のため足りなければ primary GPUで埋める
+    while ((int)tileGpuMap.size() < totalTiles)
+        tileGpuMap.push_back(g_openglDeviceID);
+
+    // 多すぎたら切る
+    if ((int)tileGpuMap.size() > totalTiles)
+        tileGpuMap.resize(totalTiles);
+
+    return tileGpuMap;
 }
