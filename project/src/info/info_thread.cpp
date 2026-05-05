@@ -33,6 +33,8 @@ void info_thread::run() {
 void info_thread::check_gpu_usage() {
     nvmlDevice_t device;
     nvmlUtilization_t utilization;
+    unsigned int encUtil = 0, encSampling = 0;
+    unsigned int decUtil = 0, decSampling = 0;
 
     for(int i=0;i<g_GPUInfo.size();i++){
         // 最初の GPU の使用率を取得
@@ -47,6 +49,21 @@ void info_thread::check_gpu_usage() {
             qDebug() << "Failed to get utilization rates:" << nvmlErrorString(result);
             return;
         }
-        g_GPUInfo[i].GPU_Usage = utilization.gpu;
+
+        result = nvmlDeviceGetEncoderUtilization(device, &encUtil, &encSampling);
+        if (result != NVML_SUCCESS) {
+            qDebug() << "Failed to get encoder utilization:" << nvmlErrorString(result);
+            return;
+        }
+
+        result = nvmlDeviceGetDecoderUtilization(device, &decUtil, &decSampling);
+        if (result != NVML_SUCCESS) {
+            qDebug() << "Failed to get decoder utilization:" << nvmlErrorString(result);
+            return;
+        }
+
+        unsigned int totalLike = std::max({ utilization.gpu, encUtil, decUtil });
+
+        g_GPUInfo[i].GPU_Usage = totalLike;
     }
 }

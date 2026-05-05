@@ -248,6 +248,7 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
     if (encode_state==STATE_ENCODING) {
         // GPUエンコード用処理
         downloadToGLTexture_and_Encode(Frame);
+        Monitor_Rendering(Frame);
     } else if(encode_state==STATE_NOT_ENCODE){
         //画面に描画
         Monitor_Rendering(Frame);
@@ -428,19 +429,22 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
         if(g_AppSettings.videoInfo_flag){
             painter.setPen(Qt::white);
             painter.setFont(QFont("Consolas", 16));
-            painter.drawText(2, 20, "OpenGL Device:" + g_GPUInfo[g_openglDeviceID].deviceName + " (" +QString::number(g_openglDeviceID) + ")" +"\n");
-            // painter.drawText(2, 40, "CUDA Device:" + QString::fromStdString(g_prop.name)+"(sm_"+QString::number(g_prop.major)+QString::number(g_prop.minor)+")\n");
-            // painter.drawText(2, 60, QString("FPS: %1").arg(fps, 0, 'f', 2));
-            // painter.drawText(2, 80, "GPU Usage:" + QString::number(g_gpu_usage) +"% \n");
-            painter.drawText(2, 100, "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
-            painter.drawText(2, 120, "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
-            painter.drawText(2, 140, VideoInfo.decode_mode);
-            painter.drawText(2, 160, "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
-            painter.drawText(2, 180, "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
-            painter.drawText(2, 200, "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
-            painter.drawText(2, 220, "Current Frame:" + QString::number(Frame.FrameNo)+"\n");
+            painter.drawText(2, 20, "Primary Device(Open GL):" + g_GPUInfo[g_openglDeviceID].deviceName + " (CUDA Device " +QString::number(g_openglDeviceID) + ")" +"\n");
+
+            for(int i=0;i<g_GPUInfo.size();i++){
+                painter.drawText(2, 40 + 20*i, "CUDA Device " + QString::number(i) + ":" + g_GPUInfo[i].deviceName +"(sm_"+QString::number(g_GPUInfo[i].CC_major)+QString::number(g_GPUInfo[i].CC_minor)+")" + " GPU Usage:" + QString::number(g_GPUInfo[i].GPU_Usage) + "%\n");
+            }
+
+            painter.drawText(2, 40 + 20*g_GPUInfo.size(), QString("OpenGL Rendering FPS:%1").arg(fps, 0, 'f', 2));
+            painter.drawText(2, 60 + 20*g_GPUInfo.size(), "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
+            painter.drawText(2, 80 + 20*g_GPUInfo.size(), "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
+            painter.drawText(2, 100 + 20*g_GPUInfo.size(), VideoInfo.decode_mode);
+            painter.drawText(2, 120 + 20*g_GPUInfo.size(), "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
+            painter.drawText(2, 140 + 20*g_GPUInfo.size(), "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
+            painter.drawText(2, 160 + 20*g_GPUInfo.size(), "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
+            painter.drawText(2, 180 + 20*g_GPUInfo.size(), "Current Frame:" + QString::number(Frame.FrameNo)+"\n");
             if(VideoInfo.audio)
-                painter.drawText(2, 240, "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
+                painter.drawText(2, 200 + 20*g_GPUInfo.size(), "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
         }
     }
 

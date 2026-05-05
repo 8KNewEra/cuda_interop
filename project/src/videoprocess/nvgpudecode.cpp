@@ -202,19 +202,19 @@ bool nvgpudecode::initialized_ffmpeg()
     // デコードモード設定
     // ------------------------
     if (vd.size() == 2) {
-        VideoInfo.decode_mode = "Tiled Multi-Stream:stream_x2(tile:2×1)\n";
+        VideoInfo.decode_mode = "Tile Based Decoding:stream_x2(tile:2×1)\n";
         VideoInfo.width_scale = 2;
         VideoInfo.height_scale = 1;
     } else if (vd.size() == 4) {
-        VideoInfo.decode_mode = "Tiled Multi-Stream:stream_x4(tile:2×2)\n";
+        VideoInfo.decode_mode = "Tile Based Decoding:stream_x4(tile:2×2)\n";
         VideoInfo.width_scale = 2;
         VideoInfo.height_scale = 2;
     } else if (vd.size() == 8) {
-        VideoInfo.decode_mode = "Tiled Multi-Stream:stream_x8(tile:4×2)\n";
+        VideoInfo.decode_mode = "Tile Based Decoding:stream_x8(tile:4×2)\n";
         VideoInfo.width_scale = 4;
         VideoInfo.height_scale = 2;
     } else {
-        VideoInfo.decode_mode = "Tiled Multi-Stream:stream_x1(tile:1)\n";
+        VideoInfo.decode_mode = "Tile Based Decoding:stream_x1(tile:1)\n";
         VideoInfo.width_scale = 1;
         VideoInfo.height_scale = 1;
     }
