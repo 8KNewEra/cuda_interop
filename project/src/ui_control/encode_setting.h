@@ -72,6 +72,7 @@ private:
     void setGPUTable();
     void updateGpuTileAllocation();
     std::vector<int> buildTileGpuMap();
+    void multiGPUtabel_UI_Control(bool flag);
 };
 
 #endif // ENCODE_SETTING_H

@@ -294,8 +294,7 @@ encode_setting::encode_setting(QWidget *parent)
         ui->filepath_groupBox->setEnabled(false);
         ui->normalsetting_groupBox->setEnabled(false);
         ui->advancesetting_groupBox->setEnabled(false);
-        ui->tableWidget_gpu->setEnabled(false);
-        ui->label_GPUTable->setEnabled(false);
+        multiGPUtabel_UI_Control(false);
         encode_flag=true;
     }, Qt::QueuedConnection);
 
@@ -480,8 +479,9 @@ void encode_setting::encode_end(QString encode_time){
     ui->filepath_groupBox->setEnabled(true);
     ui->normalsetting_groupBox->setEnabled(true);
     ui->advancesetting_groupBox->setEnabled(true);
-    ui->tableWidget_gpu->setEnabled(true);
-    ui->label_GPUTable->setEnabled(true);
+    if(g_GPUInfo.size() > 1){
+        multiGPUtabel_UI_Control(true);
+    }
     encode_flag=false;
 }
 
@@ -551,18 +551,22 @@ void encode_setting::combo_index_control2(){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),1,7,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),4,4,true,true);
+        //combo_index_control(ui->comboBox_splitencode,qobject_cast<QListView*>(ui->comboBox_splitencode->view()),1,1,true,true);
     }else if(encodeSettings.codec == "h264_nvenc"){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),5,7,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
+        //combo_index_control(ui->comboBox_splitencode,qobject_cast<QListView*>(ui->comboBox_splitencode->view()),1,1,false,false);
     }else if(encodeSettings.codec == "hevc_nvenc"){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),6,7,true,true);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
+        //combo_index_control(ui->comboBox_splitencode,qobject_cast<QListView*>(ui->comboBox_splitencode->view()),1,1,false,false);
     }else if(encodeSettings.codec == "av1_nvenc"){
         combo_index_control(ui->comboBox_b_frame,qobject_cast<QListView*>(ui->comboBox_b_frame->view()),0,7,false,false);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),0,4,false,false);
         combo_index_control(ui->comboBox_profile,qobject_cast<QListView*>(ui->comboBox_profile->view()),4,4,true,true);
+        //combo_index_control(ui->comboBox_splitencode,qobject_cast<QListView*>(ui->comboBox_splitencode->view()),1,1,false,false);
     }
 }
 
@@ -649,6 +653,7 @@ void encode_setting::tile_split_exchange(){
     }
 }
 
+//マルチGPU設定表作成
 void encode_setting::setGPUTable()
 {
     ui->tableWidget_gpu->blockSignals(true);
@@ -675,8 +680,10 @@ void encode_setting::setGPUTable()
         const auto &gpu = g_GPUInfo[order[row]];
 
         // GPU Name
-        ui->tableWidget_gpu->setItem(row, 0,
-                                     new QTableWidgetItem(gpu.deviceName + "(" + QString::number(gpu.deviceID) + ")"));
+        auto *nameItem = new QTableWidgetItem(
+            gpu.deviceName + "(" + QString::number(gpu.deviceID) + ")");
+        nameItem->setData(Qt::UserRole, gpu.deviceID); // ★deviceID保持
+        ui->tableWidget_gpu->setItem(row, 0, nameItem);
 
         // Memory
         ui->tableWidget_gpu->setItem(row, 1,
@@ -698,7 +705,6 @@ void encode_setting::setGPUTable()
             spin->setRange(0, 10);
 
         spin->setValue(gpu.openglEnable ? 50 : 50);
-
         ui->tableWidget_gpu->setCellWidget(row, 3, spin);
 
         // Tiles 表示
@@ -714,8 +720,14 @@ void encode_setting::setGPUTable()
     updateGpuTileAllocation();
     ui->tableWidget_gpu->resizeColumnsToContents();
     ui->tableWidget_gpu->setColumnWidth(3, 50);
+
+    // GPUが1枚しかない場合はグレーアウト
+    if(g_GPUInfo.size() <= 1){
+        multiGPUtabel_UI_Control(false);
+    }
 }
 
+//マルチGPU設定タイル割り当て
 void encode_setting::updateGpuTileAllocation()
 {
     ui->tableWidget_gpu->blockSignals(true);
@@ -768,7 +780,7 @@ void encode_setting::updateGpuTileAllocation()
 
         int tiles = (weight * totalTiles) / totalWeight;
         usedTiles += tiles;
-
+        ui->tableWidget_gpu->item(row, 4)->setData(Qt::UserRole, tiles);
         ui->tableWidget_gpu->item(row, 4)->setText(QString::number(tiles));
 
         // 有効なので色を戻す
@@ -791,8 +803,10 @@ void encode_setting::updateGpuTileAllocation()
         if (spin->value() <= 0)
             continue;
 
-        int current = ui->tableWidget_gpu->item(row, 4)->text().toInt();
-        ui->tableWidget_gpu->item(row, 4)->setText(QString::number(current + 1));
+        int current = ui->tableWidget_gpu->item(row, 4)->data(Qt::UserRole).toInt();
+        current++;
+        ui->tableWidget_gpu->item(row, 4)->setData(Qt::UserRole, current);
+
         remain--;
     }
 
@@ -803,61 +817,181 @@ void encode_setting::updateGpuTileAllocation()
             qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
         if (!spin) continue;
 
-        if (spin->value() <= 0)
-            continue;
+        int weight = spin->value();
 
-        int tiles = ui->tableWidget_gpu->item(row, 4)->text().toInt();
-        if (tiles <= 0)
+        // weight=0 は Not Used
+        if (weight <= 0)
         {
             ui->tableWidget_gpu->item(row, 4)->setText("Not Used");
+            continue;
+        }
 
-            // tiles 0はグレーアウト
+        int tiles = ui->tableWidget_gpu->item(row, 4)->data(Qt::UserRole).toInt();
+        int percent = int((double(tiles) / double(totalTiles)) * 100.0 + 0.5);
+
+        // tiles=0 なら自動的に割り当て無し
+        if (weight <= 0){
+            // 手動無効化
+            ui->tableWidget_gpu->item(row, 4)->setText("Not Used");
+
+            spin->setEnabled(true);
+            spin->setStyleSheet("QSpinBox { color: gray; }");
+
             for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
             {
                 QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
                 if (it) it->setForeground(Qt::gray);
             }
+            continue;
+        }else if (tiles<=0&&encodeSettings.encode_tile < g_GPUInfo.size()){
+            ui->tableWidget_gpu->item(row, 4)->setText("0 (0%)");
+
+            // spin を無効化
+            spin->setEnabled(false);
+            spin->setStyleSheet("QSpinBox { color: gray; }");
+
+            for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+            {
+                QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+                if (it) it->setForeground(Qt::gray);
+            }
+            continue;
+        }else{
+            spin->setEnabled(true);
+            spin->setStyleSheet("");
+            ui->tableWidget_gpu->item(row, 4)->setText(QString("%1 (%2%)").arg(tiles).arg(percent));
+        }
+
+        // 予備用、spinboxを無効にしない場合
+        // for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
+        // {
+        //     QSpinBox *spin =
+        //         qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
+        //     if (!spin) continue;
+
+        //     int weight = spin->value();
+
+        //     // weight=0 は Not Used
+        //     if (weight <= 0)
+        //     {
+        //         ui->tableWidget_gpu->item(row, 4)->setText("Not Used");
+        //         continue;
+        //     }
+
+        //     int tiles = ui->tableWidget_gpu->item(row, 4)->data(Qt::UserRole).toInt();
+        //     int percent = int((double(tiles) / double(totalTiles)) * 100.0 + 0.5);
+
+        //     // tiles=0 なら自動的に割り当て無し
+        //     if (tiles <= 0)
+        //     {
+        //         ui->tableWidget_gpu->item(row, 4)->setText("0 (0%)");
+
+        //         // グレーアウト
+        //         for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+        //         {
+        //             QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+        //             if (it) it->setForeground(Qt::gray);
+        //         }
+        //         continue;
+        //     }
+
+        //     // tiles>0 正常
+        //     ui->tableWidget_gpu->item(row, 4)->setText(
+        //         QString("%1 (%2%)").arg(tiles).arg(percent)
+        //         );
+
+        //     for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+        //     {
+        //         QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+        //         if (it) it->setForeground(Qt::black);
+        //     }
+        // }
+
+        // tiles>0 正常
+        ui->tableWidget_gpu->item(row, 4)->setText(
+            QString("%1 (%2%)").arg(tiles).arg(percent)
+            );
+
+        for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+        {
+            QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+            if (it) it->setForeground(Qt::black);
         }
     }
 
     ui->tableWidget_gpu->blockSignals(false);
 }
 
+//割り当てたタイルを配列に格納
 std::vector<int> encode_setting::buildTileGpuMap()
 {
-    int totalTiles = encodeSettings.encode_tile;
-    std::vector<int> tileGpuMap;
-    tileGpuMap.reserve(totalTiles);
+    std::vector<int> tile_gpu_map;
 
-    // ここは updateGpuTileAllocation() の結果から拾う
-    // tableWidget_gpu の Tiles列(4)に書かれてる数字を読む
+    int totalTiles = encodeSettings.encode_tile;
+    if (totalTiles <= 0) totalTiles = 1;
 
     for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
     {
-        QString gpuName = ui->tableWidget_gpu->item(row, 0)->text();
+        auto *nameItem = ui->tableWidget_gpu->item(row, 0);
+        if (!nameItem) continue;
 
-        // (deviceID) を抜く
-        int devIdStart = gpuName.lastIndexOf("(");
-        int devIdEnd   = gpuName.lastIndexOf(")");
+        int deviceID = nameItem->data(Qt::UserRole).toInt();
 
-        if (devIdStart < 0 || devIdEnd < 0) continue;
+        auto *tileItem = ui->tableWidget_gpu->item(row, 4);
+        if (!tileItem) continue;
 
-        int devId = gpuName.mid(devIdStart + 1, devIdEnd - devIdStart - 1).toInt();
+        int tiles = tileItem->data(Qt::UserRole).toInt(); // ★tiles数
 
-        QString tileText = ui->tableWidget_gpu->item(row, 4)->text();
-        int tileCount = tileText.toInt(); // Not Usedなら0
-
-        for (int t = 0; t < tileCount; t++)
-            tileGpuMap.push_back(devId);
+        for (int t = 0; t < tiles; t++)
+            tile_gpu_map.push_back(deviceID);
     }
 
-    // 念のため足りなければ primary GPUで埋める
-    while ((int)tileGpuMap.size() < totalTiles)
-        tileGpuMap.push_back(g_openglDeviceID);
+    // 念のため不足補正
+    while ((int)tile_gpu_map.size() < totalTiles)
+        tile_gpu_map.push_back(g_openglDeviceID);
 
-    // 多すぎたら切る
-    if ((int)tileGpuMap.size() > totalTiles)
-        tileGpuMap.resize(totalTiles);
+    // 超えたら切る
+    if ((int)tile_gpu_map.size() > totalTiles)
+        tile_gpu_map.resize(totalTiles);
 
-    return tileGpuMap;
+    return tile_gpu_map;
+}
+
+void encode_setting::multiGPUtabel_UI_Control(bool flag)
+{
+    bool disable = (!flag);
+
+    for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
+    {
+        for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+        {
+            QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+            if (!it) continue;
+
+            if (disable)
+                it->setForeground(QBrush(Qt::gray));
+            else
+                it->setForeground(QBrush(Qt::black));
+        }
+
+        QSpinBox *spin =
+            qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
+
+        if (spin)
+        {
+            if (disable)
+            {
+                spin->setEnabled(false);
+                spin->setStyleSheet("QSpinBox { color: gray; }");
+            }
+            else
+            {
+                spin->setEnabled(true);
+                spin->setStyleSheet("");   // ★元に戻す
+            }
+        }
+    }
+
+    ui->tableWidget_gpu->setEnabled(!disable);
+    ui->label_GPUTable->setEnabled(!disable);
 }
