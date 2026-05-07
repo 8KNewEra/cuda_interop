@@ -249,9 +249,14 @@ struct GPUInfo {
     bool openglEnable = false;
     int CC_major = 0;
     int CC_minor = 0;
+    int pciDomain = 0;
+    int pciBus = 0;
+    int pciDevice = 0;
     int Max_Memory_Usage = 0;
     int Memory_Usage = 0;
     int GPU_Usage = 0;
+    //エンコード設定用
+    int tile_weight = 10;
 };
 
 extern std::vector<GPUInfo> g_GPUInfo;

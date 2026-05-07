@@ -2,7 +2,7 @@
 #include "qdir.h"
 #include <QDebug>
 
-#define Rerease 0
+#define Rerease 1
 
 GLWidget::GLWidget(QWindow *parent)
     :  QOpenGLWindow(NoPartialUpdate, parent),
@@ -979,7 +979,11 @@ std::vector<int> GLWidget::make_nice_y_labels(int max_value)
 //CUDAとopenGLのデバイス設定
 void GLWidget::queryCudaGPUs()
 {
-    g_GPUInfo.clear();
+    // iniから読み込んだ情報を退避
+    std::vector<GPUInfo> savedGPUInfo = g_GPUInfo;
+
+    // CUDAで取得したGPU情報を一時的に格納
+    std::vector<GPUInfo> currentGPUInfo;
 
     int count = 0;
     cudaGetDeviceCount(&count);
@@ -992,15 +996,112 @@ void GLWidget::queryCudaGPUs()
         GPUInfo info;
         info.deviceID = i;
         info.deviceName = QString::fromUtf8(prop.name);
-        info.openglEnable = false;
         info.CC_major = prop.major;
         info.CC_minor = prop.minor;
         info.Max_Memory_Usage = (int)(prop.totalGlobalMem / (1024 * 1024));
-        g_GPUInfo.push_back(info);
 
-        qDebug() << "CUDA Device" << i
-                 << ":" << QString::fromUtf8(prop.name)
-                 << "CC =" << prop.major << "." << prop.minor;
+        cudaDeviceGetAttribute(&info.pciDomain, cudaDevAttrPciDomainId, i);
+        cudaDeviceGetAttribute(&info.pciBus, cudaDevAttrPciBusId, i);
+        cudaDeviceGetAttribute(&info.pciDevice, cudaDevAttrPciDeviceId, i);
+
+        // 初期値
+        info.tile_weight = 10;
+        info.openglEnable = false;
+
+        currentGPUInfo.push_back(info);
+    }
+
+    // ==========================================
+    // savedGPUInfo と currentGPUInfo が全一致か確認
+    // ==========================================
+    bool allMatch = true;
+
+    if (savedGPUInfo.size() != currentGPUInfo.size())
+    {
+        allMatch = false;
+    }
+    else
+    {
+        for (const auto &cur : currentGPUInfo)
+        {
+            bool found = false;
+
+            for (const auto &saved : savedGPUInfo)
+            {
+                if (saved.pciDomain == cur.pciDomain &&
+                    saved.pciBus == cur.pciBus &&
+                    saved.pciDevice == cur.pciDevice &&
+                    saved.deviceName == cur.deviceName &&
+                    saved.CC_major == cur.CC_major &&
+                    saved.CC_minor == cur.CC_minor &&
+                    saved.Max_Memory_Usage == cur.Max_Memory_Usage)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+            {
+                allMatch = false;
+                break;
+            }
+        }
+    }
+
+    // ==========================================
+    // g_GPUInfo を確定
+    // ==========================================
+    g_GPUInfo.clear();
+
+    if (allMatch)
+    {
+        // 全一致 → iniの設定を復元
+        for (auto &cur : currentGPUInfo)
+        {
+            for (const auto &saved : savedGPUInfo)
+            {
+                if (saved.pciDomain == cur.pciDomain &&
+                    saved.pciBus == cur.pciBus &&
+                    saved.pciDevice == cur.pciDevice &&
+                    saved.deviceName == cur.deviceName &&
+                    saved.CC_major == cur.CC_major &&
+                    saved.CC_minor == cur.CC_minor &&
+                    saved.Max_Memory_Usage == cur.Max_Memory_Usage)
+                {
+                    cur.tile_weight = saved.tile_weight;
+                    cur.openglEnable = saved.openglEnable;
+                    break;
+                }
+            }
+
+            g_GPUInfo.push_back(cur);
+        }
+
+        qDebug() << "[GPU MATCH] All GPUs matched -> restored tile_weight";
+    }
+    else
+    {
+        // 一部一致・不一致 → 全GPU初期化
+        for (auto &cur : currentGPUInfo)
+        {
+            cur.tile_weight = 10;
+            cur.openglEnable = false;
+            g_GPUInfo.push_back(cur);
+        }
+
+        qDebug() << "[GPU MISMATCH] Partial match -> reset ALL tile_weight=10";
+    }
+
+    // ログ
+    for (const auto &gpu : g_GPUInfo)
+    {
+        qDebug() << "CUDA Device" << gpu.deviceID
+                 << ":" << gpu.deviceName
+                 << "CC =" << gpu.CC_major << "." << gpu.CC_minor
+                 << "VRAM =" << gpu.Max_Memory_Usage << "MB"
+                 << "PCI =" << gpu.pciDomain << ":" << gpu.pciBus << ":" << gpu.pciDevice
+                 << "tile_weight =" << gpu.tile_weight;
     }
 }
 
@@ -1032,16 +1133,146 @@ void GLWidget::getCudaDeviceIDFromOpenGL()
     if (oglDev < 0)
         return;
 
-    for (auto &gpu : g_GPUInfo)
+    // ============================================
+    // OpenGL CUDA device の詳細情報を取得
+    // ============================================
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, oglDev);
+
+    QString oglName = QString::fromUtf8(prop.name);
+    int oglCCMajor = prop.major;
+    int oglCCMinor = prop.minor;
+    int oglVRAM = (int)(prop.totalGlobalMem / (1024 * 1024));
+
+    int oglDomain = 0;
+    int oglBus = 0;
+    int oglDevice = 0;
+
+    cudaDeviceGetAttribute(&oglDomain, cudaDevAttrPciDomainId, oglDev);
+    cudaDeviceGetAttribute(&oglBus, cudaDevAttrPciBusId, oglDev);
+    cudaDeviceGetAttribute(&oglDevice, cudaDevAttrPciDeviceId, oglDev);
+
+    qDebug() << "Current OpenGL CUDA deviceID =" << oglDev
+             << "name =" << oglName
+             << "CC =" << oglCCMajor << "." << oglCCMinor
+             << "VRAM =" << oglVRAM << "MB"
+             << "PCI =" << oglDomain << ":" << oglBus << ":" << oglDevice;
+
+    // ============================================
+    // 前回iniで openglEnable=true だったGPUの情報を保存
+    // ============================================
+    int savedDomain = -1;
+    int savedBus = -1;
+    int savedDevice = -1;
+    QString savedName;
+    int savedCCMajor = 0;
+    int savedCCMinor = 0;
+    int savedVRAM = 0;
+
+    for (const auto &gpu : g_GPUInfo)
     {
-        if (gpu.deviceID == oglDev)
+        if (gpu.openglEnable)
         {
-            gpu.openglEnable = true;
-            g_openglDeviceID = gpu.deviceID;
-            cudaSetDevice(g_openglDeviceID);
-            qDebug() << "Matched OpenGL CUDA device:" << gpu.deviceID
-                     << gpu.deviceName;
+            savedDomain = gpu.pciDomain;
+            savedBus = gpu.pciBus;
+            savedDevice = gpu.pciDevice;
+
+            savedName = gpu.deviceName;
+            savedCCMajor = gpu.CC_major;
+            savedCCMinor = gpu.CC_minor;
+            savedVRAM = gpu.Max_Memory_Usage;
             break;
         }
+    }
+
+    bool hasSavedOpenGL = (savedDomain != -1);
+
+    if (hasSavedOpenGL)
+    {
+        qDebug() << "Saved OpenGL GPU ="
+                 << savedName
+                 << "CC =" << savedCCMajor << "." << savedCCMinor
+                 << "VRAM =" << savedVRAM << "MB"
+                 << "PCI =" << savedDomain << ":" << savedBus << ":" << savedDevice;
+    }
+    else
+    {
+        qDebug() << "Saved OpenGL GPU = (none)";
+    }
+
+    // ============================================
+    // OpenGL GPU が変わったか判定（PCI + Name + CC + VRAM）
+    // ============================================
+    bool oglChanged = false;
+
+    if (hasSavedOpenGL)
+    {
+        if (savedDomain != oglDomain ||
+            savedBus != oglBus ||
+            savedDevice != oglDevice ||
+            savedName != oglName ||
+            savedCCMajor != oglCCMajor ||
+            savedCCMinor != oglCCMinor ||
+            savedVRAM != oglVRAM)
+        {
+            oglChanged = true;
+        }
+    }
+
+    // ============================================
+    // iniのopenglEnableは信用しないので一旦全OFF
+    // ============================================
+    for (auto &gpu : g_GPUInfo)
+        gpu.openglEnable = false;
+
+    // ============================================
+    // OpenGL GPU を g_GPUInfo から特定
+    // ============================================
+    bool found = false;
+
+    for (auto &gpu : g_GPUInfo)
+    {
+        if (gpu.pciDomain == oglDomain &&
+            gpu.pciBus == oglBus &&
+            gpu.pciDevice == oglDevice &&
+            gpu.deviceName == oglName &&
+            gpu.CC_major == oglCCMajor &&
+            gpu.CC_minor == oglCCMinor &&
+            gpu.Max_Memory_Usage == oglVRAM)
+        {
+            found = true;
+            gpu.openglEnable = true;
+            g_openglDeviceID = gpu.deviceID;
+
+            // OpenGL GPU が変わった場合は全GPUを初期値に戻す
+            if (oglChanged)
+            {
+                qDebug() << "[INFO] OpenGL GPU changed -> Reset ALL tile_weight = 10";
+                for (auto &g : g_GPUInfo)
+                    g.tile_weight = 10;
+            }
+
+            cudaSetDevice(g_openglDeviceID);
+
+            qDebug() << "Matched OpenGL GPU:"
+                     << "deviceID =" << gpu.deviceID
+                     << "name =" << gpu.deviceName
+                     << "CC =" << gpu.CC_major << "." << gpu.CC_minor
+                     << "VRAM =" << gpu.Max_Memory_Usage << "MB"
+                     << "PCI =" << gpu.pciDomain << ":" << gpu.pciBus << ":" << gpu.pciDevice
+                     << "tile_weight =" << gpu.tile_weight;
+
+            break;
+        }
+    }
+
+    if (!found)
+    {
+        qDebug() << "[ERROR] OpenGL GPU match not found in g_GPUInfo.";
+        qDebug() << "OpenGL GPU ="
+                 << oglName
+                 << "CC =" << oglCCMajor << "." << oglCCMinor
+                 << "VRAM =" << oglVRAM << "MB"
+                 << "PCI =" << oglDomain << ":" << oglBus << ":" << oglDevice;
     }
 }

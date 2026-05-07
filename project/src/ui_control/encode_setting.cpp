@@ -704,7 +704,7 @@ void encode_setting::setGPUTable()
         else
             spin->setRange(0, 10);
 
-        spin->setValue(gpu.openglEnable ? 50 : 50);
+        spin->setValue(gpu.tile_weight);
         ui->tableWidget_gpu->setCellWidget(row, 3, spin);
 
         // Tiles 表示
@@ -813,11 +813,23 @@ void encode_setting::updateGpuTileAllocation()
     // 最終チェック：tiles=0ならNot Used表示にする
     for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
     {
+        //デバイスID取得
+        auto *nameItem = ui->tableWidget_gpu->item(row, 0);
+        if (!nameItem) continue;
+        int deviceID = nameItem->data(Qt::UserRole).toInt();
+
+        //spinbox値取得
         QSpinBox *spin =
             qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
         if (!spin) continue;
-
         int weight = spin->value();
+
+        //ウエイト保存
+        for (auto& gpu : g_GPUInfo) {
+            if (gpu.deviceID == deviceID) {
+                gpu.tile_weight = weight;
+            }
+        }
 
         // weight=0 は Not Used
         if (weight <= 0)

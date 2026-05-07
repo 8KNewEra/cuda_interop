@@ -29,7 +29,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     //iniファイルなど
     logFile = new logfile_control();
-    logFile->save_inifile();
 
     CSS_Design();
     GLwidgetInitialized();

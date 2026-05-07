@@ -29,6 +29,7 @@ void logfile_control::load_inifile()
     g_AppSettings.sobelfilterEnabled = settings.value("Filter/sobelfilterEnabled").toBool();
     g_AppSettings.gaussianfilterEnabled = settings.value("Filter/gaussianfilterEnabled").toBool();
     g_AppSettings.averagingfilterEnabled = settings.value("Filter/averagingfilterEnabled").toBool();
+
     encodeSettings.encode_path = settings.value("Encodesetting/encode_path").toString();
     encodeSettings.codec = settings.value("Encodesetting/codec").toString();
     encodeSettings.preset = settings.value("Encodesetting/preset").toString();
@@ -42,11 +43,38 @@ void logfile_control::load_inifile()
     encodeSettings.target_bit_rate = settings.value("Encodesetting/target_bit_rate").toInt();
     encodeSettings.max_bit_rate = settings.value("Encodesetting/max_bit_rate").toInt();
     encodeSettings.cq = settings.value("Encodesetting/cq").toInt();
+
+    // ==========================
+    // GPUInfo 読み込み（追記）
+    // ==========================
+    settings.beginGroup("GPUInfo");
+    int count = settings.value("count", 0).toInt();
+    g_GPUInfo.clear();
+    g_GPUInfo.resize(count);
+    for (int i = 0; i < count; i++)
+    {
+        settings.beginGroup(QString("GPU_%1").arg(i));
+
+        g_GPUInfo[i].deviceName = settings.value("deviceName", "").toString();
+        g_GPUInfo[i].deviceID = settings.value("deviceID", 0).toInt();
+        g_GPUInfo[i].openglEnable = settings.value("openglEnable", false).toBool();
+        g_GPUInfo[i].CC_major = settings.value("CC_major", 0).toInt();
+        g_GPUInfo[i].CC_minor = settings.value("CC_minor", 0).toInt();
+        g_GPUInfo[i].pciDomain = settings.value("pciDomain", 0).toInt();
+        g_GPUInfo[i].pciBus = settings.value("pciBus", 0).toInt();
+        g_GPUInfo[i].pciDevice = settings.value("pciDevice", 0).toInt();
+        g_GPUInfo[i].Max_Memory_Usage = settings.value("Max_Memory_Usage", 0).toInt();
+        g_GPUInfo[i].Memory_Usage = settings.value("Memory_Usage", 0).toInt();
+        g_GPUInfo[i].GPU_Usage = settings.value("GPU_Usage", 0).toInt();
+        g_GPUInfo[i].tile_weight = settings.value("tile_weight", 10).toInt();
+
+        settings.endGroup();
+    }
+    settings.endGroup();
 }
 
 void logfile_control::save_inifile(){
     QSettings settings("setting.ini", QSettings::IniFormat);
-
     settings.setValue("Path/decode_path", g_AppSettings.decode_path);
     settings.setValue("Info//videoInfo_flag", g_AppSettings.videoInfo_flag);
     settings.setValue("Info/histgram_flag", g_AppSettings.histgram_flag);
@@ -60,6 +88,7 @@ void logfile_control::save_inifile(){
     settings.setValue("Filter/sobelfilterEnabled", g_AppSettings.sobelfilterEnabled);
     settings.setValue("Filter/gaussianfilterEnabled", g_AppSettings.gaussianfilterEnabled);
     settings.setValue("Filter/averagingfilterEnabled", g_AppSettings.averagingfilterEnabled);
+
     settings.setValue("Encodesetting/encode_path", encodeSettings.encode_path);
     settings.setValue("Encodesetting/codec", encodeSettings.codec);
     settings.setValue("Encodesetting/preset", encodeSettings.preset);
@@ -73,4 +102,33 @@ void logfile_control::save_inifile(){
     settings.setValue("Encodesetting/target_bit_rate", encodeSettings.target_bit_rate);
     settings.setValue("Encodesetting/max_bit_rate", encodeSettings.max_bit_rate);
     settings.setValue("Encodesetting/cq", encodeSettings.cq);
+
+    // ==========================
+    // GPUInfo 保存（追記）
+    // ==========================
+    settings.beginGroup("GPUInfo");
+    settings.remove(""); // GPUInfo以下を全削除（古いゴミ対策）
+    settings.setValue("count", (int)g_GPUInfo.size());
+    for(int i = 0; i < (int)g_GPUInfo.size(); i++)
+    {
+        settings.beginGroup(QString("GPU_%1").arg(i));
+
+        settings.setValue("deviceName", g_GPUInfo[i].deviceName);
+        settings.setValue("deviceID", g_GPUInfo[i].deviceID);
+        settings.setValue("openglEnable", g_GPUInfo[i].openglEnable);
+        settings.setValue("CC_major", g_GPUInfo[i].CC_major);
+        settings.setValue("CC_minor", g_GPUInfo[i].CC_minor);
+        settings.setValue("pciDomain", g_GPUInfo[i].pciDomain);
+        settings.setValue("pciBus", g_GPUInfo[i].pciBus);
+        settings.setValue("pciDevice", g_GPUInfo[i].pciDevice);
+        settings.setValue("Max_Memory_Usage", g_GPUInfo[i].Max_Memory_Usage);
+        settings.setValue("Memory_Usage", g_GPUInfo[i].Memory_Usage);
+        settings.setValue("GPU_Usage", g_GPUInfo[i].GPU_Usage);
+        settings.setValue("tile_weight", g_GPUInfo[i].tile_weight);
+
+        settings.endGroup();
+    }
+
+    settings.endGroup();
+    settings.sync();
 }
