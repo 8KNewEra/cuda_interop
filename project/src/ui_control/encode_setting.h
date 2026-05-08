@@ -70,6 +70,9 @@ private:
     void tile_index_control();
     void tile_split_exchange();
     void setGPUTable();
+    bool isAv1Supported(const GPUInfo& gpu);
+    void applyAv1GpuRestriction();
+    void restoreGpuRestriction();
     void updateGpuTileAllocation();
     std::vector<int> buildTileGpuMap();
     void multiGPUtabel_UI_Control(bool flag);

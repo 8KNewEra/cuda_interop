@@ -44,16 +44,24 @@ encode_setting::encode_setting(QWidget *parent)
     //コーデック
     {
         QStringList codec_items;
-        if(g_GPUInfo[0].CC_major > 8 || (g_GPUInfo[0].CC_major == 8 && g_GPUInfo[0].CC_minor >= 9)){
-            codec_items << "h264_nvenc" << "hevc_nvenc" << "av1_nvenc";
-        }else{
-            codec_items << "h264_nvenc" << "hevc_nvenc";
+        //プライマリGPUがAV1エンコードに対応しているかを確認
+        codec_items << "h264_nvenc" << "hevc_nvenc";
+        for (const auto &gpu : g_GPUInfo)
+        {
+            if (gpu.openglEnable)
+            {
+                if (gpu.CC_major > 8 || (gpu.CC_major == 8 && gpu.CC_minor >= 9))
+                    codec_items << "av1_nvenc";
+
+                break;
+            }
         }
 
         ui->comboBox_codec->addItems(codec_items);
         QObject::connect(ui->comboBox_codec, &QComboBox::currentIndexChanged, this, [&](int index) {
             encodeSettings.codec = settingmap[index].codec;
             combo_index_control2();
+            setGPUTable();
         }, Qt::QueuedConnection);
     }
 
@@ -368,14 +376,31 @@ encode_setting::~encode_setting()
 //初期値をUIに反映する(Combobox)
 void encode_setting::iniFile_UI_Control(){
     // 読み込み
-    if(g_GPUInfo[0].CC_major > 8 || (g_GPUInfo[0].CC_major == 8 && g_GPUInfo[0].CC_minor >= 9)){
-        combo_index[0]=foundIndex("codec",encodeSettings.codec);
-    }else{
-        if(encodeSettings.codec=="av1_nvenc"){
-            combo_index[0]=foundIndex("codec","hevc_nvenc");
-        }else{
-            combo_index[0]=foundIndex("codec",encodeSettings.codec);
+    // デフォルト
+    combo_index[0] = foundIndex("codec", "h264_nvenc");
+    bool foundPrimary = false;
+    bool primaryAv1 = false;
+    for (const auto &gpu : g_GPUInfo)
+    {
+        if (gpu.openglEnable)
+        {
+            foundPrimary = true;
+            primaryAv1 = (gpu.CC_major > 8 || (gpu.CC_major == 8 && gpu.CC_minor >= 9));
+            break;
         }
+    }
+    if (primaryAv1)
+    {
+        // primaryがAV1対応ならそのまま反映
+        combo_index[0] = foundIndex("codec", encodeSettings.codec);
+    }
+    else
+    {
+        // primaryがAV1非対応、または見つからない場合
+        if (encodeSettings.codec == "av1_nvenc")
+            combo_index[0] = foundIndex("codec", "hevc_nvenc");
+        else
+            combo_index[0] = foundIndex("codec", encodeSettings.codec);
     }
     combo_index[1]=foundIndex("split_encode_mode",encodeSettings.split_encode_mode);
     combo_index[2]=foundIndex("b_frames",QString::number(encodeSettings.b_frames));
@@ -481,11 +506,12 @@ void encode_setting::encode_end(QString encode_time){
     ui->advancesetting_groupBox->setEnabled(true);
     if(g_GPUInfo.size() > 1){
         multiGPUtabel_UI_Control(true);
+        setGPUTable();
     }
     encode_flag=false;
 }
 
-//最大フレーム数などを取得
+//エンコード開始時、最大フレーム数などを取得
 void encode_setting::slider(int min,int max){
     ui->encode_progressBar->setRange(min, max);
     ui->encode_progressBar->setValue(min);
@@ -661,6 +687,9 @@ void encode_setting::setGPUTable()
     ui->tableWidget_gpu->setColumnCount(5);
     ui->tableWidget_gpu->setRowCount((int)g_GPUInfo.size());
 
+    restoreGpuRestriction();     // AV1以外なら復元
+    applyAv1GpuRestriction();    // AV1なら制限適用
+
     QStringList headers;
     headers << "GPU Name" << "Memory(MB)" << "Detail" << "Weight" << "Tiles";
     ui->tableWidget_gpu->setHorizontalHeaderLabels(headers);
@@ -724,6 +753,119 @@ void encode_setting::setGPUTable()
     // GPUが1枚しかない場合はグレーアウト
     if(g_GPUInfo.size() <= 1){
         multiGPUtabel_UI_Control(false);
+    }
+}
+
+//AV1対応可否
+bool encode_setting::isAv1Supported(const GPUInfo& gpu)
+{
+    return (gpu.CC_major > 8) || (gpu.CC_major == 8 && gpu.CC_minor >= 9);
+}
+
+//セカンダリGPU以降AV1対応可否
+void encode_setting::applyAv1GpuRestriction()
+{
+    if (encodeSettings.codec != "av1_nvenc")
+        return;
+
+    for (auto &gpu : g_GPUInfo)
+    {
+        if (gpu.openglEnable)
+        {
+            if (!isAv1Supported(gpu))
+                return; // primaryが非対応なら何もしない（そもそもAV1出すべきではない）
+            break;
+        }
+    }
+
+    for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
+    {
+        auto *nameItem = ui->tableWidget_gpu->item(row, 0);
+        if (!nameItem) continue;
+
+        int deviceID = nameItem->data(Qt::UserRole).toInt();
+
+        GPUInfo *gpuPtr = nullptr;
+        for (auto &g : g_GPUInfo)
+        {
+            if (g.deviceID == deviceID) { gpuPtr = &g; break; }
+        }
+        if (!gpuPtr) continue;
+
+        // primaryは除外
+        if (gpuPtr->openglEnable)
+            continue;
+
+        // secondaryでAV1非対応なら無効化
+        if (!isAv1Supported(*gpuPtr))
+        {
+            QSpinBox *spin =
+                qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
+
+            if (spin)
+            {
+                // 初回だけ退避
+                if (gpuPtr->backup_tile_weight < 0)
+                    gpuPtr->backup_tile_weight = spin->value();
+
+                gpuPtr->av1_forced_disabled = true;
+                spin->blockSignals(true);
+                spin->setValue(0);
+                spin->setEnabled(false);
+                spin->setStyleSheet("QSpinBox { color: gray; }");
+                spin->blockSignals(false);
+            }
+
+            gpuPtr->tile_weight = 0;
+
+            ui->tableWidget_gpu->item(row, 4)->setText("Not Used (AV1 Unsupported)");
+
+            for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+            {
+                QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+                if (it) it->setForeground(Qt::gray);
+            }
+        }
+    }
+}
+
+//AV1で無効化したUIを戻す
+void encode_setting::restoreGpuRestriction()
+{
+    if (encodeSettings.codec == "av1_nvenc")
+        return;
+
+    for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
+    {
+        auto *nameItem = ui->tableWidget_gpu->item(row, 0);
+        if (!nameItem) continue;
+
+        int deviceID = nameItem->data(Qt::UserRole).toInt();
+
+        GPUInfo *gpuPtr = nullptr;
+        for (auto &g : g_GPUInfo)
+        {
+            if (g.deviceID == deviceID) { gpuPtr = &g; break; }
+        }
+        if (!gpuPtr) continue;
+
+        QSpinBox *spin =
+            qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
+        if (!spin) continue;
+
+        // backupがあるなら復元
+        if (gpuPtr->backup_tile_weight >= 0)
+        {
+            spin->blockSignals(true);
+            spin->setEnabled(true);
+            spin->setStyleSheet("");
+            spin->setValue(gpuPtr->backup_tile_weight);
+            spin->blockSignals(false);
+
+            gpuPtr->tile_weight = gpuPtr->backup_tile_weight;
+            gpuPtr->backup_tile_weight = -1;
+            gpuPtr->av1_forced_disabled = false;
+        }
     }
 }
 
@@ -818,36 +960,44 @@ void encode_setting::updateGpuTileAllocation()
         if (!nameItem) continue;
         int deviceID = nameItem->data(Qt::UserRole).toInt();
 
+        // g_GPUInfo の該当GPUを探す
+        GPUInfo* gpuPtr = nullptr;
+        for (auto &g : g_GPUInfo)
+        {
+            if (g.deviceID == deviceID)
+            {
+                gpuPtr = &g;
+                break;
+            }
+        }
+        if (!gpuPtr) continue;
+
         //spinbox値取得
         QSpinBox *spin =
             qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
         if (!spin) continue;
         int weight = spin->value();
-
-        //ウエイト保存
-        for (auto& gpu : g_GPUInfo) {
-            if (gpu.deviceID == deviceID) {
-                gpu.tile_weight = weight;
-            }
-        }
-
-        // weight=0 は Not Used
-        if (weight <= 0)
-        {
-            ui->tableWidget_gpu->item(row, 4)->setText("Not Used");
-            continue;
-        }
+        gpuPtr->tile_weight = weight;
 
         int tiles = ui->tableWidget_gpu->item(row, 4)->data(Qt::UserRole).toInt();
         int percent = int((double(tiles) / double(totalTiles)) * 100.0 + 0.5);
 
-        // tiles=0 なら自動的に割り当て無し
-        if (weight <= 0){
-            // 手動無効化
-            ui->tableWidget_gpu->item(row, 4)->setText("Not Used");
+        // 最初に必ず初期化
+        spin->setEnabled(true);
+        spin->setStyleSheet("");
 
-            spin->setEnabled(true);
+        // ★ AV1強制無効を最優先
+        if (gpuPtr->av1_forced_disabled)
+        {
+            ui->tableWidget_gpu->item(row, 4)->setText("Not Used (AV1 Unsupported)");
+
+            spin->blockSignals(true);
+            spin->setValue(0);
+            spin->setEnabled(false);
             spin->setStyleSheet("QSpinBox { color: gray; }");
+            spin->blockSignals(false);
+
+            gpuPtr->tile_weight = 0;
 
             for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
             {
@@ -855,10 +1005,32 @@ void encode_setting::updateGpuTileAllocation()
                 if (it) it->setForeground(Qt::gray);
             }
             continue;
-        }else if (tiles<=0&&encodeSettings.encode_tile < g_GPUInfo.size()){
+        }
+
+        // ★ 手動でweight=0の場合
+        if (weight <= 0)
+        {
+            ui->tableWidget_gpu->item(row, 4)->setText("Not Used");
+
+            // 手動ならspinは触れるようにする
+            spin->setEnabled(true);
+            spin->setStyleSheet("");
+
+            for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
+            {
+                QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
+                if (it) it->setForeground(Qt::gray);
+            }
+
+            gpuPtr->tile_weight = 0;
+            continue;
+        }
+
+        // tiles=0 自動無効
+        if (tiles <= 0 && encodeSettings.encode_tile < g_GPUInfo.size())
+        {
             ui->tableWidget_gpu->item(row, 4)->setText("0 (0%)");
 
-            // spin を無効化
             spin->setEnabled(false);
             spin->setStyleSheet("QSpinBox { color: gray; }");
 
@@ -868,56 +1040,7 @@ void encode_setting::updateGpuTileAllocation()
                 if (it) it->setForeground(Qt::gray);
             }
             continue;
-        }else{
-            spin->setEnabled(true);
-            spin->setStyleSheet("");
-            ui->tableWidget_gpu->item(row, 4)->setText(QString("%1 (%2%)").arg(tiles).arg(percent));
         }
-
-        // 予備用、spinboxを無効にしない場合
-        // for (int row = 0; row < ui->tableWidget_gpu->rowCount(); row++)
-        // {
-        //     QSpinBox *spin =
-        //         qobject_cast<QSpinBox*>(ui->tableWidget_gpu->cellWidget(row, 3));
-        //     if (!spin) continue;
-
-        //     int weight = spin->value();
-
-        //     // weight=0 は Not Used
-        //     if (weight <= 0)
-        //     {
-        //         ui->tableWidget_gpu->item(row, 4)->setText("Not Used");
-        //         continue;
-        //     }
-
-        //     int tiles = ui->tableWidget_gpu->item(row, 4)->data(Qt::UserRole).toInt();
-        //     int percent = int((double(tiles) / double(totalTiles)) * 100.0 + 0.5);
-
-        //     // tiles=0 なら自動的に割り当て無し
-        //     if (tiles <= 0)
-        //     {
-        //         ui->tableWidget_gpu->item(row, 4)->setText("0 (0%)");
-
-        //         // グレーアウト
-        //         for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
-        //         {
-        //             QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
-        //             if (it) it->setForeground(Qt::gray);
-        //         }
-        //         continue;
-        //     }
-
-        //     // tiles>0 正常
-        //     ui->tableWidget_gpu->item(row, 4)->setText(
-        //         QString("%1 (%2%)").arg(tiles).arg(percent)
-        //         );
-
-        //     for (int col = 0; col < ui->tableWidget_gpu->columnCount(); col++)
-        //     {
-        //         QTableWidgetItem *it = ui->tableWidget_gpu->item(row, col);
-        //         if (it) it->setForeground(Qt::black);
-        //     }
-        // }
 
         // tiles>0 正常
         ui->tableWidget_gpu->item(row, 4)->setText(
@@ -969,6 +1092,7 @@ std::vector<int> encode_setting::buildTileGpuMap()
     return tile_gpu_map;
 }
 
+//マルチgpu UI制御
 void encode_setting::multiGPUtabel_UI_Control(bool flag)
 {
     bool disable = (!flag);

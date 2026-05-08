@@ -257,6 +257,8 @@ struct GPUInfo {
     int GPU_Usage = 0;
     //エンコード設定用
     int tile_weight = 10;
+    int backup_tile_weight = -1;
+    bool av1_forced_disabled = false;
 };
 
 extern std::vector<GPUInfo> g_GPUInfo;
