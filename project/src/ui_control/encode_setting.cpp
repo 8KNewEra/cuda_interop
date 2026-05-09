@@ -623,7 +623,12 @@ void encode_setting::tile_index_control(){
     //H264チェック
     if(VideoInfo.width*VideoInfo.width_scale/encodeSettings.width_tile>4096||VideoInfo.height*VideoInfo.height_scale/encodeSettings.height_tile>4096){
         qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,true);
-        ui->comboBox_codec->setCurrentIndex(1);
+
+        if(encodeSettings.codec == "h264_nvenc"||encodeSettings.codec == "hevc_nvenc"){
+            ui->comboBox_codec->setCurrentIndex(1);
+        }else{
+            ui->comboBox_codec->setCurrentIndex(2);
+        }
     }else{
         qobject_cast<QListView*>(ui->comboBox_codec->view())->setRowHidden(0,false);
     }
