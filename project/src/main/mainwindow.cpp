@@ -82,24 +82,24 @@ MainWindow::MainWindow(QWidget *parent)
     // ui->comboBox_speed->addItems(items);
 
     //ESCショートカット
-    QShortcut *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), container);
-    escShortcut->setContext(Qt::ApplicationShortcut);
-    connect(escShortcut, &QShortcut::activated, this, [this] {
-        if (isFullScreenMode) {
-            toggleFullScreen();
-        }
-    });
+    // QShortcut *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), container);
+    // escShortcut->setContext(Qt::ApplicationShortcut);
+    // connect(escShortcut, &QShortcut::activated, this, [this] {
+    //     if (isFullScreenMode) {
+    //         toggleFullScreen();
+    //     }
+    // });
 
     //ESCショートカット
-    QShortcut *spaceShortcut = new QShortcut(QKeySequence(Qt::Key_Space), container);
-    spaceShortcut->setContext(Qt::ApplicationShortcut);
-    connect(spaceShortcut, &QShortcut::activated, this, [this] {
-        if(pause_flag){
-            emit send_manual_resumeplayback();
-        }else{
-            emit send_manual_pause();
-        }
-    });
+    // QShortcut *spaceShortcut = new QShortcut(QKeySequence(Qt::Key_Space), container);
+    // spaceShortcut->setContext(Qt::ApplicationShortcut);
+    // connect(spaceShortcut, &QShortcut::activated, this, [this] {
+    //     if(pause_flag){
+    //         emit send_manual_resumeplayback();
+    //     }else{
+    //         emit send_manual_pause();
+    //     }
+    // });
 
     //動画情報
     QObject::connect(ui->action_videoinfo, &QAction::triggered,this, [&](bool flag) {
@@ -182,34 +182,36 @@ MainWindow::~MainWindow()
 
 //OpenGL初期化
 void MainWindow::GLwidgetInitialized(){
-    glWidget = new GLWidget();
-    container = QWidget::createWindowContainer(glWidget);;
-    container->setMinimumSize(320, 240);
-    container->setFocusPolicy(Qt::StrongFocus);
+    glWidget = new DXWidget(ui->openGLContainer);  // 親を指定
+    glWidget->setMinimumSize(320, 240);
+    glWidget->setFocusPolicy(Qt::StrongFocus);
 
-    // openGLContainerにコンテナを追加
+
+
     QLayout* layout = ui->openGLContainer->layout();
     if (!layout) {
         auto* vlayout = new QVBoxLayout(ui->openGLContainer);
-        vlayout->setContentsMargins(0, 0, 0, 0);   // ★ 超重要
-        vlayout->setSpacing(0);                    // ★ 超重要
+        vlayout->setContentsMargins(0, 0, 0, 0);
+        vlayout->setSpacing(0);
         ui->openGLContainer->setLayout(vlayout);
         layout = vlayout;
     }
+
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    layout->addWidget(container);
+    layout->addWidget(glWidget);
+
+
 
     // 初期化完了後の処理
-    connect(glWidget, &GLWidget::initialized, this, [=]() {
-        qDebug() << "GLWidget 初期化完了";
+    connect(glWidget, &DXWidget::initialized, this, [=]() {
+        qDebug() << "Dirct3d11 初期化完了";
         start_info_thread();
 
         //ドラッグアンドドロップ有効化
         ui->centralwidget->setAcceptDrops(true);
         ui->centralwidget->installEventFilter(this);
-        container->setAcceptDrops(true);
-        container->installEventFilter(this);
+
 
         ui->actionOpenFile->setEnabled(true);
 
@@ -364,6 +366,8 @@ void MainWindow::GLwidgetInitialized(){
     });
 
     glWidget->show();
+
+
 }
 
 int MainWindow::p2p_test()
@@ -872,7 +876,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     ui->label_range_time->setGeometry(window_width-340, window_height-89,41,window_height-5);
 
     setMinimumSize(QSize(990, 540));
-    glWidget->GLresize();
+    glWidget->DXresize();
 }
 
 //最大スクリーン検知
@@ -919,7 +923,7 @@ void MainWindow::toggleFullScreen()
         ui->jumpmode_pushButton->hide();
         // ui->comboBox_speed->hide();
 
-        glWidget->GLresize();
+        glWidget->DXresize();
 
         isFullScreenMode = true;
 
@@ -965,7 +969,7 @@ void MainWindow::toggleFullScreen()
         ui->jumpvalue_spinbox->show();
         ui->jumpmode_pushButton->show();
 
-        glWidget->GLresize();
+        glWidget->DXresize();
 
         isFullScreenMode = false;
     }
@@ -1009,10 +1013,8 @@ void MainWindow::Close_Video_File()
         stop_decode_thread();
     }
 
-    glWidget->makeCurrent();
-    glWidget->GLreset();
-    glWidget->GLreset();
-    glWidget->doneCurrent();
+    glWidget->DXreset();
+    glWidget->DXreset();
 }
 
 //非同期オーディオ再生
@@ -1368,7 +1370,7 @@ void MainWindow::init_decodethread_complete(){
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
     start_fps_thread(VideoInfo.fps*g_AppSettings.video_speed_ratio);
     init_async_audio();
-    glWidget->GLresize();
+    glWidget->DXresize();
 }
 
 //動画表示
@@ -1405,18 +1407,13 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
         slider_No=Frame.FrameNo;
 
         //描画を開始
-        //コンテキストを作成
-        glWidget->makeCurrent();
 
         //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
         if(!pause_flag&&encode_state!=STATE_ENCODE_READY){
-            glWidget->uploadToGLTexture(Frame);
+            glWidget->uploadToDXTexture(Frame);
         }else if(encode_state==STATE_NOT_ENCODE){
             glWidget->FBO_Rendering(Frame);
         }
-
-        //コンテキストを破棄
-        glWidget->doneCurrent();
 
         //デコードスレッドシグナル
         if(encode_state!=STATE_ENCODE_READY)
@@ -1679,7 +1676,7 @@ void MainWindow::start_encode(){
         emit send_manual_resumeplayback();
 
         //修了処理
-        connect(glWidget, &GLWidget::encode_finished, this, [=]() {
+        connect(glWidget, &DXWidget::encode_finished, this, [=]() {
             wasCanceled=true;
             emit send_manual_pause();
 

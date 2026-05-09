@@ -82,7 +82,7 @@ private:
     QIcon makeWhiteIcon(const QIcon &icon);
 
     //OpenGLwidget
-    GLWidget* glWidget;
+    DXWidget* glWidget;
     QWidget *container;
     bool isFullScreenMode = false;
 

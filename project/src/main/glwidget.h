@@ -1,134 +1,200 @@
-#ifndef GLWIDGET_H
-#define GLWIDGET_H
+#ifndef DXWIDGET_H
+#define DXWIDGET_H
+
+#include "qpainter.h"
+#pragma once
 
 #include "src/videoprocess/save_encode.h"
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "src/main/__global__.h"
-#include <QOpenGLFunctions_4_5_Core>
-#pragma once
-#include <QOpenGLWindow>
-#include <QOpenGLShader>
-#include <QOpenGLShaderProgram>
-#include <QOpenGLFunctions>
-#include <QPainter>
+
+#include <QWidget>
+#include <QElapsedTimer>
+#include <QVector>
+#include <QByteArray>
+
+#include <d3d11.h>
+#include <dxgi.h>
+#include <dxgi1_2.h>
 #include <cuda_runtime.h>
-#include <cuda_gl_interop.h>
-#include <QTimer>
 
-extern int g_openglDeviceID;
+#include <cuda_runtime.h>
+#include <cuda_d3d11_interop.h>
 
-class GLWidget : public QOpenGLWindow, protected QOpenGLFunctions_4_5_Core
+#pragma comment(lib,"d3d11.lib")
+#pragma comment(lib,"dxgi.lib")
+
+class DXWidget : public QWidget
 {
     Q_OBJECT
+
 signals:
     void decode_please();
     void initialized();
     void encode_finished();
 
 public:
-    explicit GLWidget(QWindow *parent = nullptr);
-    ~GLWidget();
-    void uploadToGLTexture(VideoFrame Frame);
+    explicit DXWidget(QWidget* parent = nullptr);
+    ~DXWidget();
+
+    bool initializeD3D();
+
+    // フレーム入力（OpenGL texture upload の代替）
+    void uploadFrame(VideoFrame frame);
+
+    // encode制御
     void encode_mode(int flag);
-    void GLresize();
-    void GLreset();
-    void FBO_Rendering(VideoFrame Frame);
-    void setShaderUniformEnable();
 
-    int MinFrame=0;
-    int MaxFrame=0;
-    int encode_FrameCount=0;
+    void DXresize();
+    void DXreset();
 
-    //画像処理
+
+    int MinFrame = 0;
+    int MaxFrame = 0;
+    int encode_FrameCount = 0;
+
+    // 画像処理
     bool filter_change_flag = true;
 
-        double fps = 0.0;
+    double fps = 0.0;
+
+    void uploadToDXTexture(VideoFrame Frame);
+    void FBO_Rendering(VideoFrame Frame);
 
 protected:
-    void initializeGL() override;
+    void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
-    void initTextureCuda(int width,int height);
-    void initCudaTexture(int width,int height);
-    void initCudaMalloc(int width,int height);
-    void setShaderUniform(int width,int height);
-    void Monitor_Rendering(VideoFrame Frame);
+    // DirectX 初期化系
+    bool createRenderTarget();
+    void releaseRenderTarget();
+    bool createTextureResources(int width, int height);
+    void releaseTextureResources();
+    void cleanup();
+
+    // CUDA interop
+    bool initCudaInterop();
+    void releaseCudaInterop();
+
+    // ヒストグラム
     void initCudaHist();
     void histgram_Analysys();
-    void downloadToGLTexture_and_Encode(VideoFrame Frame);
     std::vector<int> make_nice_y_labels(int max_value);
-    void queryCudaGPUs();
-    void getCudaDeviceIDFromOpenGL();
 
-    //CUDA Interop
-    cudaGraphicsResource* cudaResource1;
-    cudaGraphicsResource* cudaResource2;
-    cudaGraphicsResource* cudaResource_hist=nullptr;
-    cudaGraphicsResource* cudaResource_hist_draw=nullptr;
-    CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
+    // 描画領域計算
+    void calcViewport();
+
+private:
+    bool d3d_initialized = false;
+
+    // --------------------------
+    // DirectX11 core
+    // --------------------------
+    ID3D11Device* device = nullptr;
+    ID3D11DeviceContext* context = nullptr;
+    IDXGISwapChain* swapChain = nullptr;
+    ID3D11RenderTargetView* rtv = nullptr;
+
+    ID3D11Texture2D* fboTexture = nullptr;
+    ID3D11RenderTargetView* fboRTV = nullptr;
+    ID3D11ShaderResourceView* fboSRV = nullptr;
+
+    ID3D11Texture2D* tempTexture = nullptr;
+    ID3D11RenderTargetView* tempRTV = nullptr;
+    ID3D11ShaderResourceView* tempSRV = nullptr;
+
+    cudaGraphicsResource* cudaResource2 = nullptr; // fboTexture用
+    cudaGraphicsResource* cudaTempRes   = nullptr; // tempTexture用
+
+    // --------------------------
+    // DirectX texture (input/output)
+    // --------------------------
+    ID3D11Texture2D* inputTexture = nullptr;
+    ID3D11ShaderResourceView* inputSRV = nullptr;
+
+    ID3D11Texture2D* outputTexture = nullptr;          // CUDA処理結果用
+    ID3D11ShaderResourceView* outputSRV = nullptr;
+
+    // --------------------------
+    // CUDA Interop resources
+    // --------------------------
+    cudaGraphicsResource* cudaInputRes = nullptr;
+    cudaGraphicsResource* cudaOutputRes = nullptr;
+
+    CUDA_ImageProcess* CUDA_IMG_Proc = nullptr;
+
     cudaStream_t interop_stream = nullptr;
-    cudaEvent_t interop_event = nullptr;
+    cudaEvent_t  interop_event  = nullptr;
 
-    //OpenGL周り
-    bool initialize_completed_flag=false;
-    GLuint inputTextureID;  // ← 入力用
-    GLuint fboTextureID;    // ← 出力先（FBOバインド用）
-    GLuint tempTextureID;
-    GLuint vbo_hist = 0;
-    GLuint fbo = 0;
-    GLuint vao = 0;
-    GLuint vbo = 0;
-    GLuint tempfbo = 0;
+    // Histogram draw buffer (D3D11)
+    ID3D11Buffer* histVB = nullptr;
+
+    // CUDA interop
+    cudaGraphicsResource* cudaResource_hist = nullptr;      // fboTexture相当 (D3D11 texture)
+    cudaGraphicsResource* cudaResource_hist_draw = nullptr; // histVB相当 (D3D11 buffer)
+
+
+    void Monitor_Rendering(VideoFrame Frame);
+
+    void initCudaTexture(int width, int height);
+    void initTextureCuda(int width, int height);
+
+    void downloadToDXTexture_and_Encode(VideoFrame Frame);
+    void queryCudaGPUs();
+    void getCudaDeviceIDFromD3D11();
     QPainter painter;
 
-    //シェーダ―
-    QOpenGLShaderProgram Sobel_program;
-    QOpenGLShaderProgram Gaussian_program;
-    QOpenGLShaderProgram Averaging_program;
-    struct shader{
-        GLuint progId=0;
-        GLint loc_tex           = 0;
-        GLint loc_texelSize     = 0;
-        GLint loc_filterEnabled =0;
-    };
-    shader Sobel_shader;
-    shader Gaussian_shader;
-    shader Averaging_shader;
+    // --------------------------
+    // 状態管理
+    // --------------------------
+    int width_ = 0;
+    int height_ = 0;
+    int FrameNo = 0;
 
-    // 描画領域を計算
-    float monitor_scaling=1;
-    GLint viewportWidth;
-    GLint viewportHeight;
-    GLint x0, y0, x1, y1;
-
-    //エンコード関連
-    int encode_state=STATE_NOT_ENCODE;
-    int prev_encode_state=STATE_NOT_ENCODE;
-    save_encode* save_encoder=nullptr;
-
-    //動画情報
-    int width_, height_;
-    int FrameNo=0;
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
-    //fpsタイマー
+    // --------------------------
+    // Encode
+    // --------------------------
+    int encode_state = STATE_NOT_ENCODE;
+    int prev_encode_state = STATE_NOT_ENCODE;
+    save_encode* save_encoder = nullptr;
+
+    // --------------------------
+    // fps
+    // --------------------------
     QElapsedTimer fpsTimer;
     int fpsCount = 0;
 
-    //ヒストグラム
+    // --------------------------
+    // Histogram
+    // --------------------------
     cudaStream_t hist_stream = nullptr;
-    cudaEvent_t hist_event = nullptr;
-    HistData* d_hist_data = nullptr;
-    HistStats* d_hist_stats = nullptr;
-    HistData h_hist_data;
-    HistStats h_hist_stats;
-    int num_bins = 256;
-    int line_y1,line_y2,line_y3,line_y4;
+    cudaEvent_t  hist_event  = nullptr;
 
-    // 音声
-    bool audio_mode=false;
+    HistData*  d_hist_data = nullptr;
+    HistStats* d_hist_stats = nullptr;
+
+    HistData  h_hist_data;
+    HistStats h_hist_stats;
+
+    int num_bins = 256;
+    int line_y1, line_y2, line_y3, line_y4;
+
+    // --------------------------
+    // viewport
+    // --------------------------
+    float monitor_scaling = 1.0f;
+    int viewportWidth = 0;
+    int viewportHeight = 0;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+
+    // --------------------------
+    // Audio
+    // --------------------------
+    bool audio_mode = false;
     QVector<QByteArray> audio_pcm{};
 };
 
-
-#endif // GLWIDGET_H
+#endif // DXWIDGET_H
