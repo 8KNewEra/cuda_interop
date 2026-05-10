@@ -20,7 +20,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     //スライダー
     rangeSlider = new RangeSlider(this);
-    ui->horizontalLayout_slider->addWidget(rangeSlider);
     rangeSlider->setParent(ui->centralwidget);
     rangeSlider->setRange(0, 1000);
     rangeSlider->setValues(0, 1000);

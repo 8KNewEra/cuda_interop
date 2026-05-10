@@ -133,11 +133,6 @@ DXWidget::~DXWidget()
     qDebug() << "DXWidget: Destructor called";
 }
 
-
-
-
-
-
 bool DXWidget::initializeD3D()
 {
     HWND hwnd = (HWND)winId();
@@ -146,6 +141,9 @@ bool DXWidget::initializeD3D()
         return false;
     }
 
+    // --------------------------
+    // SwapChain設定
+    // --------------------------
     DXGI_SWAP_CHAIN_DESC sd{};
     sd.BufferCount = 2;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -157,6 +155,13 @@ bool DXWidget::initializeD3D()
 
     UINT createFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 
+#ifdef _DEBUG
+    createFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+
+    // --------------------------
+    // DXGI Factory作成
+    // --------------------------
     IDXGIFactory1* factory = nullptr;
     HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory);
     if (FAILED(hr) || !factory) {
@@ -164,7 +169,12 @@ bool DXWidget::initializeD3D()
         return false;
     }
 
-    // CUDA deviceID から PCI情報を取る
+    // --------------------------
+    // CUDA GPU情報取得
+    // --------------------------
+    queryCudaGPUs();
+
+    // CUDA device のPCI情報取得
     int cudaDev = g_openglDeviceID;
     int pciBus = 0;
     int pciDevice = 0;
@@ -174,32 +184,32 @@ bool DXWidget::initializeD3D()
     cudaDeviceGetAttribute(&pciDevice, cudaDevAttrPciDeviceId, cudaDev);
     cudaDeviceGetAttribute(&pciDomain, cudaDevAttrPciDomainId, cudaDev);
 
+    qDebug() << "CUDA target device =" << cudaDev
+             << "PCI =" << pciDomain << ":" << pciBus << ":" << pciDevice;
+
+    // --------------------------
+    // Adapter選択
+    // --------------------------
     IDXGIAdapter1* adapter = nullptr;
 
-    // factoryから全adapterを列挙して PCI一致のものを探す
-    for (UINT i = 0; ; i++) {
-        IDXGIAdapter1* tmp = nullptr;
-        if (factory->EnumAdapters1(i, &tmp) != S_OK)
-            break;
-
-        DXGI_ADAPTER_DESC1 desc{};
-        tmp->GetDesc1(&desc);
-
-        // LUIDは古いCUDAだと使えないので名前比較+PCI比較が必要だが
-        // DXGI側はPCIを直接出せないため、ここではとりあえず最初のadapterを使う例
-        // （本当は SetupAPI を使う必要あり）
-
-        adapter = tmp;
-        break;
-    }
+    // 本来PCI一致検索が必要だが、今回は最初のAdapterを使用
+    // (ここを改善するならSetupAPIでPCIバス一致を取る)
+    hr = factory->EnumAdapters1(0, &adapter);
 
     factory->Release();
 
-    if (!adapter) {
+    if (FAILED(hr) || !adapter) {
         qDebug() << "No DXGI adapter found";
         return false;
     }
 
+    DXGI_ADAPTER_DESC1 adesc{};
+    adapter->GetDesc1(&adesc);
+    qDebug() << "D3D Adapter =" << QString::fromWCharArray(adesc.Description);
+
+    // --------------------------
+    // D3D11 Device作成
+    // --------------------------
     D3D_FEATURE_LEVEL featureLevel;
     hr = D3D11CreateDeviceAndSwapChain(
         adapter,
@@ -223,22 +233,54 @@ bool DXWidget::initializeD3D()
         return false;
     }
 
+    // --------------------------
+    // RenderTarget作成
+    // --------------------------
     if (!createRenderTarget()) {
         qDebug() << "createRenderTarget failed";
         return false;
     }
 
-    queryCudaGPUs();
+    // --------------------------
+    // CUDA device を D3D11 に合わせる
+    // --------------------------
     getCudaDeviceIDFromD3D11();
+    cudaSetDevice(g_openglDeviceID);
 
+    // --------------------------
+    // CUDA Stream/Event作成
+    // --------------------------
     cudaStreamCreate(&interop_stream);
     cudaEventCreate(&interop_event);
+
     cudaStreamCreate(&hist_stream);
     cudaEventCreate(&hist_event);
 
+    // --------------------------
+    // Shader / Quad / Sampler
+    // --------------------------
+    if (!D3D11_sharder_compile()) {
+        qDebug() << "D3D11_sharder_compile failed";
+        return false;
+    }
+
+    if (!createQuadVB()) {
+        qDebug() << "createQuadVB failed";
+        return false;
+    }
+
+    if (!createSampler()) {
+        qDebug() << "createSampler failed";
+        return false;
+    }
+
+    // --------------------------
+    // 初期化完了
+    // --------------------------
     fpsTimer.start();
     d3d_initialized = true;
 
+    qDebug() << "[OK] initializeD3D completed";
     return true;
 }
 
@@ -259,6 +301,173 @@ bool DXWidget::createRenderTarget()
 
     if (FAILED(hr)) {
         qDebug() << "CreateRenderTargetView failed";
+        return false;
+    }
+
+    return true;
+}
+
+bool DXWidget::D3D11_sharder_compile()
+{
+    ID3DBlob* vsBlob = nullptr;
+    ID3DBlob* psBlob = nullptr;
+    ID3DBlob* errorBlob = nullptr;
+
+    HRESULT hr = D3DCompile(
+        g_VSCode,
+        strlen(g_VSCode),
+        nullptr,
+        nullptr,
+        nullptr,
+        "main",
+        "vs_5_0",
+        0,
+        0,
+        &vsBlob,
+        &errorBlob
+        );
+
+    if (FAILED(hr)) {
+        if (errorBlob) {
+            qDebug() << "VS Compile Error:" << (char*)errorBlob->GetBufferPointer();
+            errorBlob->Release();
+        }
+        return false;
+    }
+
+    hr = device->CreateVertexShader(
+        vsBlob->GetBufferPointer(),
+        vsBlob->GetBufferSize(),
+        nullptr,
+        &vs
+        );
+
+    if (FAILED(hr)) {
+        qDebug() << "CreateVertexShader failed";
+        vsBlob->Release();
+        return false;
+    }
+
+    // InputLayout作成
+    if (!createInputLayout(vsBlob)) {
+        vsBlob->Release();
+        return false;
+    }
+
+    // PS compile
+    hr = D3DCompile(
+        g_PSCode,
+        strlen(g_PSCode),
+        nullptr,
+        nullptr,
+        nullptr,
+        "main",
+        "ps_5_0",
+        0,
+        0,
+        &psBlob,
+        &errorBlob
+        );
+
+    if (FAILED(hr)) {
+        if (errorBlob) {
+            qDebug() << "PS Compile Error:" << (char*)errorBlob->GetBufferPointer();
+            errorBlob->Release();
+        }
+        vsBlob->Release();
+        return false;
+    }
+
+    hr = device->CreatePixelShader(
+        psBlob->GetBufferPointer(),
+        psBlob->GetBufferSize(),
+        nullptr,
+        &ps
+        );
+
+    if (FAILED(hr)) {
+        qDebug() << "CreatePixelShader failed";
+        psBlob->Release();
+        vsBlob->Release();
+        return false;
+    }
+
+    psBlob->Release();
+    vsBlob->Release();
+
+    return true;
+}
+
+bool DXWidget::createQuadVB()
+{
+    Vertex quadVertices[] = {
+                             { -1.0f, -1.0f, 0.0f, 1.0f },
+                             { -1.0f,  1.0f, 0.0f, 0.0f },
+                             {  1.0f, -1.0f, 1.0f, 1.0f },
+                             {  1.0f,  1.0f, 1.0f, 0.0f },
+                             };
+
+    D3D11_BUFFER_DESC bd{};
+    bd.Usage = D3D11_USAGE_DEFAULT;
+    bd.ByteWidth = sizeof(quadVertices);
+    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+    D3D11_SUBRESOURCE_DATA initData{};
+    initData.pSysMem = quadVertices;
+
+    HRESULT hr = device->CreateBuffer(&bd, &initData, &quadVB);
+    if (FAILED(hr)) {
+        qDebug() << "CreateBuffer(quadVB) failed";
+        return false;
+    }
+    return true;
+}
+
+bool DXWidget::createInputLayout(ID3DBlob* vsBlob)
+{
+    D3D11_INPUT_ELEMENT_DESC layout[] =
+        {
+            { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,
+             D3D11_INPUT_PER_VERTEX_DATA, 0 },
+
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8,
+             D3D11_INPUT_PER_VERTEX_DATA, 0 }
+        };
+
+    HRESULT hr = device->CreateInputLayout(
+        layout,
+        ARRAYSIZE(layout),
+        vsBlob->GetBufferPointer(),
+        vsBlob->GetBufferSize(),
+        &inputLayout
+        );
+
+    if (FAILED(hr)) {
+        qDebug() << "CreateInputLayout failed";
+        return false;
+    }
+    return true;
+}
+
+bool DXWidget::createSampler()
+{
+    if (samplerLinear) {
+        samplerLinear->Release();
+        samplerLinear = nullptr;
+    }
+
+    D3D11_SAMPLER_DESC sampDesc{};
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    sampDesc.MinLOD = 0;
+    sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+
+    HRESULT hr = device->CreateSamplerState(&sampDesc, &samplerLinear);
+    if (FAILED(hr) || !samplerLinear) {
+        qDebug() << "CreateSamplerState failed";
         return false;
     }
 
@@ -293,18 +502,6 @@ void DXWidget::cleanup()
     }
 }
 
-void DXWidget::paintEvent(QPaintEvent*)
-{
-    if (!d3d_initialized) return;
-
-    float clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-
-    context->OMSetRenderTargets(1, &rtv, nullptr);
-    context->ClearRenderTargetView(rtv, clearColor);
-
-    swapChain->Present(1, 0);
-}
-
 void DXWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
@@ -324,7 +521,6 @@ void DXWidget::resizeEvent(QResizeEvent* event)
         );
 
     createRenderTarget();
-    update();
 }
 
 
@@ -365,41 +561,62 @@ void DXWidget::Monitor_Rendering(VideoFrame Frame){
     //動画フレーム描画
     {
         if (!d3d_initialized) return;
-        if (!swapChain || !context || !fboTexture) return;
+        if (!swapChain || !context || !device) return;
+        if (!fboSRV || !quadVB || !vs || !ps || !inputLayout || !samplerLinear) return;
+
+        // アスペクト計算（ここでx0,y0,x1,y1更新）
+        DXresize();
 
         ID3D11Texture2D* backBuffer = nullptr;
         HRESULT hr = swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
         if (FAILED(hr) || !backBuffer) return;
 
-        // backbufferのサイズ取得
-        D3D11_TEXTURE2D_DESC bbDesc{};
-        backBuffer->GetDesc(&bbDesc);
+        ID3D11RenderTargetView* bbRTV = nullptr;
+        hr = device->CreateRenderTargetView(backBuffer, nullptr, &bbRTV);
+        if (FAILED(hr) || !bbRTV) {
+            backBuffer->Release();
+            return;
+        }
 
-        // fboTextureのサイズ取得
-        D3D11_TEXTURE2D_DESC fboDesc{};
-        fboTexture->GetDesc(&fboDesc);
+        context->OMSetRenderTargets(1, &bbRTV, nullptr);
 
-        // コピー範囲（backbufferサイズにクリップ）
-        D3D11_BOX srcBox{};
-        srcBox.left   = 0;
-        srcBox.top    = 0;
-        srcBox.front  = 0;
-        srcBox.right  = min(bbDesc.Width,  fboDesc.Width);
-        srcBox.bottom = min(bbDesc.Height, fboDesc.Height);
-        srcBox.back   = 1;
+        // まず全体を黒でクリア（黒帯）
+        float clearColor[4] = {0,0,0,1};
+        context->ClearRenderTargetView(bbRTV, clearColor);
 
-        // fboTexture → backbuffer コピー（左上部分だけ）
-        context->CopySubresourceRegion(
-            backBuffer,
-            0,
-            0, 0, 0,
-            fboTexture,
-            0,
-            &srcBox
-            );
+        // viewportを「表示領域」に限定
+        D3D11_VIEWPORT vp{};
+        vp.TopLeftX = (float)x0;
+        vp.TopLeftY = (float)y0;
+        vp.Width  = (float)(x1 - x0);
+        vp.Height = (float)(y1 - y0);
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        context->RSSetViewports(1, &vp);
+
+        // pipeline
+        context->VSSetShader(vs, nullptr, 0);
+        context->PSSetShader(ps, nullptr, 0);
+
+        context->IASetInputLayout(inputLayout);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+        UINT stride = sizeof(Vertex);
+        UINT offset = 0;
+        context->IASetVertexBuffers(0, 1, &quadVB, &stride, &offset);
+
+        context->PSSetShaderResources(0, 1, &fboSRV);
+        context->PSSetSamplers(0, 1, &samplerLinear);
+
+        context->Draw(4, 0);
+
+        // SRV unbind
+        ID3D11ShaderResourceView* nullSRV[1] = { nullptr };
+        context->PSSetShaderResources(0, 1, nullSRV);
 
         swapChain->Present(1, 0);
 
+        bbRTV->Release();
         backBuffer->Release();
     }
 
@@ -581,33 +798,38 @@ void DXWidget::Monitor_Rendering(VideoFrame Frame){
 }
 
 //アスペクト比を合わせてリサイズ
-void DXWidget::DXresize() {
-    // //現在のウィンドウのDPIスケールを取得
-    // monitor_scaling = devicePixelRatio();
+void DXWidget::DXresize()
+{
+    // backbuffer の実サイズを取得
+    ID3D11Texture2D* backBuffer = nullptr;
+    HRESULT hr = swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
+    if (FAILED(hr) || !backBuffer) return;
 
-    // //実ピクセル単位のビューポートサイズを取得
-    // viewportWidth  = static_cast<GLint>(this->width()  * monitor_scaling);
-    // viewportHeight = static_cast<GLint>(this->height() * monitor_scaling);
+    D3D11_TEXTURE2D_DESC bbDesc{};
+    backBuffer->GetDesc(&bbDesc);
+    backBuffer->Release();
 
-    // //ソース（動画/FBO）のサイズ
-    // float srcAspect = static_cast<float>(width_) / static_cast<float>(height_);
-    // float dstAspect = static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
+    viewportWidth  = (int)bbDesc.Width;
+    viewportHeight = (int)bbDesc.Height;
 
-    // if (srcAspect > dstAspect) {
-    //     int displayHeight = static_cast<int>(viewportWidth / srcAspect);
-    //     int yOffset = (viewportHeight - displayHeight) / 2;
-    //     x0 = 0;
-    //     y0 = yOffset;
-    //     x1 = viewportWidth;
-    //     y1 = yOffset + displayHeight;
-    // } else {
-    //     int displayWidth = static_cast<int>(viewportHeight * srcAspect);
-    //     int xOffset = (viewportWidth - displayWidth) / 2;
-    //     x0 = xOffset;
-    //     y0 = 0;
-    //     x1 = xOffset + displayWidth;
-    //     y1 = viewportHeight;
-    // }
+    float srcAspect = (float)width_ / (float)height_;
+    float dstAspect = (float)viewportWidth / (float)viewportHeight;
+
+    if (srcAspect > dstAspect) {
+        int displayHeight = (int)(viewportWidth / srcAspect);
+        int yOffset = (viewportHeight - displayHeight) / 2;
+        x0 = 0;
+        y0 = yOffset;
+        x1 = viewportWidth;
+        y1 = yOffset + displayHeight;
+    } else {
+        int displayWidth = (int)(viewportHeight * srcAspect);
+        int xOffset = (viewportWidth - displayWidth) / 2;
+        x0 = xOffset;
+        y0 = 0;
+        x1 = xOffset + displayWidth;
+        y1 = viewportHeight;
+    }
 }
 
 //画面をリセット(真っ黒にする)

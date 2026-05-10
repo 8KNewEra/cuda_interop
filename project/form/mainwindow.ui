@@ -183,17 +183,6 @@
      <bool>false</bool>
     </property>
    </widget>
-   <widget class="QWidget" name="horizontalLayoutWidget">
-    <property name="geometry">
-     <rect>
-      <x>360</x>
-      <y>664</y>
-      <width>801</width>
-      <height>31</height>
-     </rect>
-    </property>
-    <layout class="QHBoxLayout" name="horizontalLayout_slider"/>
-   </widget>
    <widget class="QLabel" name="label_start_time">
     <property name="geometry">
      <rect>

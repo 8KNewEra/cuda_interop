@@ -20,9 +20,16 @@
 
 #include <cuda_runtime.h>
 #include <cuda_d3d11_interop.h>
-
+#include <d3dcompiler.h>
+#pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib,"d3d11.lib")
 #pragma comment(lib,"dxgi.lib")
+
+struct Vertex
+{
+    float x, y;
+    float u, v;
+};
 
 class DXWidget : public QWidget
 {
@@ -62,7 +69,6 @@ public:
     void FBO_Rendering(VideoFrame Frame);
 
 protected:
-    void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
 
 private:
@@ -143,7 +149,51 @@ private:
     void downloadToDXTexture_and_Encode(VideoFrame Frame);
     void queryCudaGPUs();
     void getCudaDeviceIDFromD3D11();
+    bool D3D11_sharder_compile();
+    bool createInputLayout(ID3DBlob* vsBlob);
+    bool createQuadVB();
+    bool createSampler();
     QPainter painter;
+
+    const char* g_VSCode = R"(
+        struct VS_IN {
+            float2 pos : POSITION;
+            float2 uv  : TEXCOORD0;
+        };
+
+        struct VS_OUT {
+            float4 pos : SV_POSITION;
+            float2 uv  : TEXCOORD0;
+        };
+
+        VS_OUT main(VS_IN input)
+        {
+            VS_OUT o;
+            o.pos = float4(input.pos, 0, 1);
+            o.uv  = input.uv;
+            return o;
+        }
+    )";
+    const char* g_PSCode = R"(
+        Texture2D tex0 : register(t0);
+        SamplerState samp0 : register(s0);
+
+        float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
+        {
+            return tex0.Sample(samp0, uv);
+        }
+    )";
+
+    // Shader関連
+    ID3D11VertexShader* vs = nullptr;
+    ID3D11PixelShader*  ps = nullptr;
+    ID3D11InputLayout*  inputLayout = nullptr;
+
+    // Quad描画用
+    ID3D11Buffer* quadVB = nullptr;
+
+    // Sampler
+    ID3D11SamplerState* samplerLinear = nullptr;
 
     // --------------------------
     // 状態管理
