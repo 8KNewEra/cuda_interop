@@ -44,116 +44,66 @@ public:
     explicit DXWidget(QWidget* parent = nullptr);
     ~DXWidget();
 
-    bool initializeD3D();
-
-    // フレーム入力（OpenGL texture upload の代替）
-    void uploadFrame(VideoFrame frame);
-
     // encode制御
     void encode_mode(int flag);
-
-    void DXresize();
-    void DXreset();
-
-
     int MinFrame = 0;
     int MaxFrame = 0;
     int encode_FrameCount = 0;
 
-    // 画像処理
-    bool filter_change_flag = true;
-
-    double fps = 0.0;
-
+    //DXレンダリング
     void uploadToDXTexture(VideoFrame Frame);
     void FBO_Rendering(VideoFrame Frame);
+
+    //DX周りリサイズ
+    void DXresize();
+    void DXreset();
+
+    // 画像処理
+    bool filter_change_flag = true;
+    double fps = 0.0;
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
 
 private:
-    // DirectX 初期化系
-    bool createRenderTarget();
-    void releaseRenderTarget();
-    bool createTextureResources(int width, int height);
-    void releaseTextureResources();
-    void cleanup();
-
-    // CUDA interop
-    bool initCudaInterop();
-    void releaseCudaInterop();
-
-    // ヒストグラム
-    void initCudaHist();
-    void histgram_Analysys();
-    std::vector<int> make_nice_y_labels(int max_value);
-
-    // 描画領域計算
-    void calcViewport();
-
-private:
-    bool d3d_initialized = false;
-
     // --------------------------
     // DirectX11 core
     // --------------------------
+    bool d3d_initialized = false;
     ID3D11Device* device = nullptr;
     ID3D11DeviceContext* context = nullptr;
     IDXGISwapChain* swapChain = nullptr;
     ID3D11RenderTargetView* rtv = nullptr;
+    ID3D11VertexShader* vs = nullptr;
+    ID3D11PixelShader*  ps = nullptr;
+    ID3D11InputLayout*  inputLayout = nullptr;
+    ID3D11Buffer* quadVB = nullptr;
+    ID3D11SamplerState* samplerLinear = nullptr;
 
-    ID3D11Texture2D* fboTexture = nullptr;
-    ID3D11RenderTargetView* fboRTV = nullptr;
-    ID3D11ShaderResourceView* fboSRV = nullptr;
-
+    //Texture
+    ID3D11Texture2D* inputTexture = nullptr;
+    ID3D11ShaderResourceView* inputSRV = nullptr;
     ID3D11Texture2D* tempTexture = nullptr;
     ID3D11RenderTargetView* tempRTV = nullptr;
     ID3D11ShaderResourceView* tempSRV = nullptr;
-
-    cudaGraphicsResource* cudaResource2 = nullptr; // fboTexture用
-    cudaGraphicsResource* cudaTempRes   = nullptr; // tempTexture用
-
-    // --------------------------
-    // DirectX texture (input/output)
-    // --------------------------
-    ID3D11Texture2D* inputTexture = nullptr;
-    ID3D11ShaderResourceView* inputSRV = nullptr;
-
-    ID3D11Texture2D* outputTexture = nullptr;          // CUDA処理結果用
+    ID3D11Texture2D* outputTexture = nullptr;
+    ID3D11RenderTargetView* outputRTV = nullptr;
     ID3D11ShaderResourceView* outputSRV = nullptr;
 
-    // --------------------------
-    // CUDA Interop resources
-    // --------------------------
-    cudaGraphicsResource* cudaInputRes = nullptr;
-    cudaGraphicsResource* cudaOutputRes = nullptr;
-
-    CUDA_ImageProcess* CUDA_IMG_Proc = nullptr;
-
-    cudaStream_t interop_stream = nullptr;
-    cudaEvent_t  interop_event  = nullptr;
-
-    // Histogram draw buffer (D3D11)
-    ID3D11Buffer* histVB = nullptr;
-
-    // CUDA interop
-    cudaGraphicsResource* cudaResource_hist = nullptr;      // fboTexture相当 (D3D11 texture)
-    cudaGraphicsResource* cudaResource_hist_draw = nullptr; // histVB相当 (D3D11 buffer)
-
-
-    void Monitor_Rendering(VideoFrame Frame);
-
-    void initCudaTexture(int width, int height);
-    void initTextureCuda(int width, int height);
-
-    void downloadToDXTexture_and_Encode(VideoFrame Frame);
-    void queryCudaGPUs();
-    void getCudaDeviceIDFromD3D11();
+    // DirectX 初期化系
+    bool initializeD3D();
     bool D3D11_sharder_compile();
+    bool createRenderTargetView();
+    void releaseRenderTargetView();
     bool createInputLayout(ID3DBlob* vsBlob);
     bool createQuadVB();
     bool createSampler();
-    QPainter painter;
+    void Monitor_Rendering(VideoFrame Frame);
+    void initCudaTexture(int width, int height);
+    void initTextureCuda(int width, int height);
+    void downloadToDXTexture_and_Encode(VideoFrame Frame);
+    void queryCudaGPUs();
+    void getCudaDeviceIDFromD3D11();
 
     const char* g_VSCode = R"(
         struct VS_IN {
@@ -184,24 +134,25 @@ private:
         }
     )";
 
-    // Shader関連
-    ID3D11VertexShader* vs = nullptr;
-    ID3D11PixelShader*  ps = nullptr;
-    ID3D11InputLayout*  inputLayout = nullptr;
-
-    // Quad描画用
-    ID3D11Buffer* quadVB = nullptr;
-
-    // Sampler
-    ID3D11SamplerState* samplerLinear = nullptr;
+    // --------------------------
+    // CUDA Interop resources
+    // --------------------------
+    cudaGraphicsResource* cudaInputRes = nullptr;
+    cudaGraphicsResource* cudaOutputRes = nullptr;
+    cudaStream_t interop_stream = nullptr;
+    cudaEvent_t  interop_event  = nullptr;
+    CUDA_ImageProcess* CUDA_IMG_Proc = nullptr;
+    ID3D11Buffer* histVB = nullptr;
+    cudaGraphicsResource* cudaResource_hist = nullptr;      // fboTexture相当 (D3D11 texture)
+    cudaGraphicsResource* cudaResource_hist_draw = nullptr; // histVB相当 (D3D11 buffer)
 
     // --------------------------
     // 状態管理
     // --------------------------
+    QPainter painter;
     int width_ = 0;
     int height_ = 0;
     int FrameNo = 0;
-
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
     // --------------------------
@@ -222,15 +173,15 @@ private:
     // --------------------------
     cudaStream_t hist_stream = nullptr;
     cudaEvent_t  hist_event  = nullptr;
-
     HistData*  d_hist_data = nullptr;
     HistStats* d_hist_stats = nullptr;
-
     HistData  h_hist_data;
     HistStats h_hist_stats;
-
     int num_bins = 256;
     int line_y1, line_y2, line_y3, line_y4;
+    void initCudaHist();
+    void histgram_Analysys();
+    std::vector<int> make_nice_y_labels(int max_value);
 
     // --------------------------
     // viewport

@@ -29,6 +29,7 @@ DXWidget::DXWidget(QWidget* parent)
 
     // ★ connect後に必ず届く
     QTimer::singleShot(0, this, [this]() {
+        DXreset();
         emit initialized();
     });
 
@@ -236,8 +237,8 @@ bool DXWidget::initializeD3D()
     // --------------------------
     // RenderTarget作成
     // --------------------------
-    if (!createRenderTarget()) {
-        qDebug() << "createRenderTarget failed";
+    if (!createRenderTargetView()) {
+        qDebug() << "createRenderTargetView failed";
         return false;
     }
 
@@ -284,27 +285,31 @@ bool DXWidget::initializeD3D()
     return true;
 }
 
-bool DXWidget::createRenderTarget()
+bool DXWidget::createRenderTargetView()
 {
     if (!swapChain || !device) return false;
 
     ID3D11Texture2D* backBuffer = nullptr;
-
     HRESULT hr = swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
     if (FAILED(hr)) {
         qDebug() << "swapChain->GetBuffer failed";
         return false;
     }
-
     hr = device->CreateRenderTargetView(backBuffer, nullptr, &rtv);
     backBuffer->Release();
-
     if (FAILED(hr)) {
         qDebug() << "CreateRenderTargetView failed";
         return false;
     }
-
     return true;
+}
+
+void DXWidget::releaseRenderTargetView()
+{
+    if (rtv) {
+        rtv->Release();
+        rtv = nullptr;
+    }
 }
 
 bool DXWidget::D3D11_sharder_compile()
@@ -474,34 +479,6 @@ bool DXWidget::createSampler()
     return true;
 }
 
-void DXWidget::releaseRenderTarget()
-{
-    if (rtv) {
-        rtv->Release();
-        rtv = nullptr;
-    }
-}
-
-void DXWidget::cleanup()
-{
-    releaseRenderTarget();
-
-    if (swapChain) {
-        swapChain->Release();
-        swapChain = nullptr;
-    }
-
-    if (context) {
-        context->Release();
-        context = nullptr;
-    }
-
-    if (device) {
-        device->Release();
-        device = nullptr;
-    }
-}
-
 void DXWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
@@ -510,7 +487,7 @@ void DXWidget::resizeEvent(QResizeEvent* event)
 
     context->OMSetRenderTargets(0, nullptr, nullptr);
 
-    releaseRenderTarget();
+    releaseRenderTargetView();
 
     swapChain->ResizeBuffers(
         0,
@@ -520,10 +497,8 @@ void DXWidget::resizeEvent(QResizeEvent* event)
         0
         );
 
-    createRenderTarget();
+    createRenderTargetView();
 }
-
-
 
 //FBOレンダリング
 void DXWidget::FBO_Rendering(VideoFrame Frame)
@@ -536,13 +511,13 @@ void DXWidget::FBO_Rendering(VideoFrame Frame)
 
     if (!d3d_initialized) return;
 
-    if (!inputTexture || !fboTexture) {
-        qDebug() << "inputTexture or fboTexture is null";
+    if (!inputTexture || !outputTexture) {
+        qDebug() << "inputTexture or outputTexture is null";
         return;
     }
 
-    // inputTexture → fboTexture コピー
-    context->CopyResource(fboTexture, inputTexture);
+    // inputTexture → outputTexture コピー
+    context->CopyResource(outputTexture, inputTexture);
 
     if (encode_state == STATE_ENCODING) {
         downloadToDXTexture_and_Encode(Frame);
@@ -562,7 +537,7 @@ void DXWidget::Monitor_Rendering(VideoFrame Frame){
     {
         if (!d3d_initialized) return;
         if (!swapChain || !context || !device) return;
-        if (!fboSRV || !quadVB || !vs || !ps || !inputLayout || !samplerLinear) return;
+        if (!outputSRV || !quadVB || !vs || !ps || !inputLayout || !samplerLinear) return;
 
         // アスペクト計算（ここでx0,y0,x1,y1更新）
         DXresize();
@@ -605,7 +580,7 @@ void DXWidget::Monitor_Rendering(VideoFrame Frame){
         UINT offset = 0;
         context->IASetVertexBuffers(0, 1, &quadVB, &stride, &offset);
 
-        context->PSSetShaderResources(0, 1, &fboSRV);
+        context->PSSetShaderResources(0, 1, &outputSRV);
         context->PSSetSamplers(0, 1, &samplerLinear);
 
         context->Draw(4, 0);
@@ -619,8 +594,6 @@ void DXWidget::Monitor_Rendering(VideoFrame Frame){
         bbRTV->Release();
         backBuffer->Release();
     }
-
-     qDebug()<<"aaaaaaaaa";
 
     //ヒストグラム描画
     // {
@@ -833,10 +806,42 @@ void DXWidget::DXresize()
 }
 
 //画面をリセット(真っ黒にする)
-void DXWidget::DXreset(){
-    // glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    // glClear(GL_COLOR_BUFFER_BIT);
-    // context()->swapBuffers(context()->surface());
+void DXWidget::DXreset()
+{
+    if (!d3d_initialized) return;
+    if (!swapChain || !device || !context) return;
+
+    ID3D11Texture2D* backBuffer = nullptr;
+    HRESULT hr = swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
+    if (FAILED(hr) || !backBuffer) return;
+
+    ID3D11RenderTargetView* bbRTV = nullptr;
+    hr = device->CreateRenderTargetView(backBuffer, nullptr, &bbRTV);
+    if (FAILED(hr) || !bbRTV) {
+        backBuffer->Release();
+        return;
+    }
+
+    // viewport 設定（必須）
+    D3D11_VIEWPORT vp{};
+    vp.TopLeftX = 0;
+    vp.TopLeftY = 0;
+    vp.Width  = (float)(width() * devicePixelRatio());
+    vp.Height = (float)(height() * devicePixelRatio());
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    context->RSSetViewports(1, &vp);
+
+    // 黒でクリア
+    float clearColor[4] = {0, 0, 0, 1};
+    context->OMSetRenderTargets(1, &bbRTV, nullptr);
+    context->ClearRenderTargetView(bbRTV, clearColor);
+
+    // 表示更新
+    swapChain->Present(1, 0);
+
+    bbRTV->Release();
+    backBuffer->Release();
 }
 
 //シェーダーUniform、UI設定変更時
@@ -877,7 +882,6 @@ void DXWidget::initCudaTexture(int width, int height)
         cudaGraphicsUnregisterResource(cudaInputRes);
         cudaInputRes = nullptr;
     }
-
     if (inputTexture) {
         inputTexture->Release();
         inputTexture = nullptr;
@@ -923,7 +927,6 @@ void DXWidget::initCudaTexture(int width, int height)
         inputTexture,
         cudaGraphicsRegisterFlagsNone
         );
-
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsD3D11RegisterResource failed:" << cudaGetErrorString(err);
         cudaInputRes = nullptr;
@@ -935,7 +938,6 @@ void DXWidget::initCudaTexture(int width, int height)
         inputSRV->Release();
         inputSRV = nullptr;
     }
-
     hr = device->CreateShaderResourceView(inputTexture, nullptr, &inputSRV);
     if (FAILED(hr)) {
         qDebug() << "CreateShaderResourceView(inputSRV) failed";
@@ -944,7 +946,6 @@ void DXWidget::initCudaTexture(int width, int height)
     int curDev = -1;
     cudaGetDevice(&curDev);
     qDebug() << "CUDA current device =" << curDev;
-
 }
 
 //OpenGL→CUDAの初期化、登録など
@@ -953,22 +954,17 @@ void DXWidget::initTextureCuda(int width, int height)
     // ==========================
     // 既存CUDA登録解除
     // ==========================
-    if (cudaResource2) {
-        cudaGraphicsUnregisterResource(cudaResource2);
-        cudaResource2 = nullptr;
-    }
-    if (cudaTempRes) {
-        cudaGraphicsUnregisterResource(cudaTempRes);
-        cudaTempRes = nullptr;
+    if (cudaOutputRes) {
+        cudaGraphicsUnregisterResource(cudaOutputRes);
+        cudaOutputRes = nullptr;
     }
 
     // ==========================
     // 既存DirectXリソース破棄
     // ==========================
-    if (fboSRV) { fboSRV->Release(); fboSRV = nullptr; }
-    if (fboRTV) { fboRTV->Release(); fboRTV = nullptr; }
-    if (fboTexture) { fboTexture->Release(); fboTexture = nullptr; }
-
+    if (outputSRV) { outputSRV->Release(); outputSRV = nullptr; }
+    if (outputRTV) { outputRTV->Release(); outputRTV = nullptr; }
+    if (outputTexture) { outputTexture->Release(); outputTexture = nullptr; }
     if (tempSRV) { tempSRV->Release(); tempSRV = nullptr; }
     if (tempRTV) { tempRTV->Release(); tempRTV = nullptr; }
     if (tempTexture) { tempTexture->Release(); tempTexture = nullptr; }
@@ -989,21 +985,19 @@ void DXWidget::initTextureCuda(int width, int height)
     desc.CPUAccessFlags = 0;
     desc.MiscFlags = 0;
 
-    HRESULT hr = device->CreateTexture2D(&desc, nullptr, &fboTexture);
+    HRESULT hr = device->CreateTexture2D(&desc, nullptr, &outputTexture);
     if (FAILED(hr)) {
-        qDebug() << "CreateTexture2D (fboTexture) failed";
+        qDebug() << "CreateTexture2D (outputTexture) failed";
         return;
     }
-
-    hr = device->CreateRenderTargetView(fboTexture, nullptr, &fboRTV);
+    hr = device->CreateRenderTargetView(outputTexture, nullptr, &outputRTV);
     if (FAILED(hr)) {
-        qDebug() << "CreateRenderTargetView (fboRTV) failed";
+        qDebug() << "CreateRenderTargetView (outputRTV) failed";
         return;
     }
-
-    hr = device->CreateShaderResourceView(fboTexture, nullptr, &fboSRV);
+    hr = device->CreateShaderResourceView(outputTexture, nullptr, &outputSRV);
     if (FAILED(hr)) {
-        qDebug() << "CreateShaderResourceView (fboSRV) failed";
+        qDebug() << "CreateShaderResourceView (outputSRV) failed";
         return;
     }
 
@@ -1015,13 +1009,11 @@ void DXWidget::initTextureCuda(int width, int height)
         qDebug() << "CreateTexture2D (tempTexture) failed";
         return;
     }
-
     hr = device->CreateRenderTargetView(tempTexture, nullptr, &tempRTV);
     if (FAILED(hr)) {
         qDebug() << "CreateRenderTargetView (tempRTV) failed";
         return;
     }
-
     hr = device->CreateShaderResourceView(tempTexture, nullptr, &tempSRV);
     if (FAILED(hr)) {
         qDebug() << "CreateShaderResourceView (tempSRV) failed";
@@ -1032,39 +1024,18 @@ void DXWidget::initTextureCuda(int width, int height)
     // CUDA登録（ReadOnly）
     // ==========================
     cudaError_t err = cudaGraphicsD3D11RegisterResource(
-        &cudaResource2,
-        fboTexture,
+        &cudaOutputRes,
+        outputTexture,
         cudaGraphicsRegisterFlagsNone
         );
-
     if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsD3D11RegisterResource (fboTexture) error:"
+        qDebug() << "cudaGraphicsD3D11RegisterResource (outputTexture) error:"
                  << cudaGetErrorString(err);
-        cudaResource2 = nullptr;
+        cudaOutputRes = nullptr;
         return;
     }
-
-    err = cudaGraphicsD3D11RegisterResource(
-        &cudaTempRes,
-        tempTexture,
-        cudaGraphicsRegisterFlagsNone
-        );
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsD3D11RegisterResource (tempTexture) error:"
-                 << cudaGetErrorString(err);
-        cudaTempRes = nullptr;
-        return;
-    }
-
     qDebug() << "D3D11 textures registered to CUDA:" << width << "x" << height;
 }
-
-//初回、解像度が変わった場合再Malloc
-// void DXWidget::initCudaMalloc(int width, int height)
-// {
-
-// }
 
 //CUDAからDirectX11へ転送
 void DXWidget::uploadToDXTexture(VideoFrame Frame)
@@ -1078,20 +1049,11 @@ void DXWidget::uploadToDXTexture(VideoFrame Frame)
     int newH = VideoInfo.height * VideoInfo.height_scale;
 
     if (newW != width_ || newH != height_) {
-cudaSetDevice(g_openglDeviceID);   // ← D3D11と同じCUDA device
-        // initCudaMalloc(newW, newH);
-
-        // CUDA→D3D11 (inputTexture)
         initCudaTexture(newW, newH);
-
-        // D3D11→CUDA (outputTextureなど)
         initTextureCuda(newW, newH);
-
         initCudaHist();
-
         width_ = newW;
         height_ = newH;
-
         DXresize();
         return;
     }
@@ -1101,7 +1063,6 @@ cudaSetDevice(g_openglDeviceID);   // ← D3D11と同じCUDA device
         qDebug() << "入力データがNULLです";
         return;
     }
-
     if (!cudaInputRes) {
         qDebug() << "cudaInputRes is null";
         return;
@@ -1111,16 +1072,15 @@ cudaSetDevice(g_openglDeviceID);   // ← D3D11と同じCUDA device
     cudaError_t err;
     cudaArray_t array;
 
-    err = cudaGraphicsMapResources(1, &cudaInputRes, interop_stream);
+    err = cudaGraphicsMapResources(1, &cudaInputRes, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
         return;
     }
-
     err = cudaGraphicsSubResourceGetMappedArray(&array, cudaInputRes, 0, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(1, &cudaInputRes, interop_stream);
+        cudaGraphicsUnmapResources(1, &cudaInputRes, 0);
         return;
     }
 
@@ -1141,17 +1101,15 @@ cudaSetDevice(g_openglDeviceID);   // ← D3D11と同じCUDA device
         if (err != cudaSuccess) {
             qDebug() << "cudaMemcpy2DToArrayAsync error:" << cudaGetErrorString(err);
         }
-
         cudaEventRecord(interop_event, interop_stream);
         cudaEventSynchronize(interop_event);
-
     } else {
         qDebug() << "Invalid pitch: widthBytes > pitch!";
-        cudaGraphicsUnmapResources(1, &cudaInputRes, interop_stream);
+        cudaGraphicsUnmapResources(1, &cudaInputRes, 0);
         return;
     }
 
-    err = cudaGraphicsUnmapResources(1, &cudaInputRes, interop_stream);
+    err = cudaGraphicsUnmapResources(1, &cudaInputRes, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
         return;
@@ -1159,37 +1117,34 @@ cudaSetDevice(g_openglDeviceID);   // ← D3D11と同じCUDA device
 
     // DirectX11 描画へ
     FBO_Rendering(Frame);
-
     fpsCount++;
 }
 
 //DirectX11からCUDAへ転送+エンコード
 void DXWidget::downloadToDXTexture_and_Encode(VideoFrame Frame)
 {
-    if (!cudaResource2) {
-        qDebug() << "cudaResource2 is nullptr, can't map";
+    if (!cudaOutputRes) {
+        qDebug() << "cudaOutputRes is nullptr, can't map";
         return;
     }
-
     if (!Frame.d_encode_rgba) {
         qDebug() << "Frame.d_encode_rgba is nullptr";
         return;
     }
-
     cudaArray_t array;
     cudaError_t err;
 
     // Map (D3D11 Texture -> CUDA)
-    err = cudaGraphicsMapResources(1, &cudaResource2, interop_stream);
+    err = cudaGraphicsMapResources(1, &cudaOutputRes, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
         return;
     }
 
-    err = cudaGraphicsSubResourceGetMappedArray(&array, cudaResource2, 0, 0);
+    err = cudaGraphicsSubResourceGetMappedArray(&array, cudaOutputRes, 0, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
+        cudaGraphicsUnmapResources(1, &cudaOutputRes, 0);
         return;
     }
 
@@ -1197,7 +1152,6 @@ void DXWidget::downloadToDXTexture_and_Encode(VideoFrame Frame)
     size_t widthBytes = width_ * 4;
 
     if (widthBytes <= Frame.encode_pitch) {
-
         err = cudaMemcpy2DFromArrayAsync(
             Frame.d_encode_rgba,
             Frame.encode_pitch,
@@ -1208,22 +1162,19 @@ void DXWidget::downloadToDXTexture_and_Encode(VideoFrame Frame)
             cudaMemcpyDeviceToDevice,
             interop_stream
             );
-
         if (err != cudaSuccess) {
             qDebug() << "cudaMemcpy2DFromArrayAsync error:" << cudaGetErrorString(err);
         }
-
         cudaEventRecord(interop_event, interop_stream);
         cudaEventSynchronize(interop_event);
-
     } else {
         qDebug() << "Invalid pitch: widthBytes > pitch!";
-        cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
+        cudaGraphicsUnmapResources(1, &cudaOutputRes, 0);
         return;
     }
 
     // Unmap
-    err = cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
+    err = cudaGraphicsUnmapResources(1, &cudaOutputRes, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
         return;
@@ -1285,15 +1236,15 @@ void DXWidget::initCudaHist()
         d_hist_data = nullptr;
     }
 
-    // --- 4. D3D11 Texture (fboTexture) → CUDA Resource 登録 ---
-    if (!fboTexture) {
-        qDebug() << "fboTexture is nullptr";
+    // --- 4. D3D11 Texture (outputTexture) → CUDA Resource 登録 ---
+    if (!outputTexture) {
+        qDebug() << "outputTexture is nullptr";
         return;
     }
 
     cudaError_t err = cudaGraphicsD3D11RegisterResource(
         &cudaResource_hist,
-        fboTexture,
+        outputTexture,
         cudaGraphicsRegisterFlagsNone
         );
 
@@ -1322,7 +1273,7 @@ void DXWidget::initCudaHist()
     err = cudaGraphicsD3D11RegisterResource(
         &cudaResource_hist_draw,
         histVB,
-        cudaGraphicsRegisterFlagsWriteDiscard
+        cudaGraphicsRegisterFlagsNone
         );
 
     if (err != cudaSuccess) {
@@ -1402,6 +1353,8 @@ void DXWidget::histgram_Analysys()
                     sizeof(HistStats),
                     cudaMemcpyDeviceToHost,
                     hist_stream);
+
+    qDebug()<<h_hist_stats.min_b;
 
     // ==========================
     // D3D11 VertexBuffer に書き込み（VBOの代替）
