@@ -6,7 +6,6 @@
 #include <QWaitCondition>
 #include <QMutex>
 #include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
 #include <QDebug>
 #include <QFile>
 #include "src/main/__global__.h"
@@ -29,19 +28,7 @@ struct VideoDecorder {
     AVCodecContext* codec_ctx = nullptr;
     int stream_index=0;
     const AVCodec* decoder;
-    AVBufferRef* hw_device_ctx = nullptr;
-
-    //リングバッファ
-    std::vector<AVFrame*> hw_frames;
-
-    //中間バッファ
-    uint8_t* d_y = nullptr;
-    size_t y_pitch = 0;
-    uint8_t* d_uv = nullptr;
-    size_t uv_pitch = 0;
-
-    cudaStream_t st = nullptr;
-    cudaEvent_t ev = nullptr;
+    AVFrame* Frame;
 };
 
 class decode_thread : public QObject {
@@ -119,13 +106,14 @@ protected:
     const char* input_filename;
     std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;
+    AVBufferRef* hw_device_ctx = nullptr;
     DecodeState decode_state = STATE_DECODE_READY;
     DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
 
     //CUDA
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
-    cudaStream_t st=nullptr;
-    cudaEvent_t ev=nullptr;
+    cudaStream_t stream=nullptr;
+    cudaEvent_t events=nullptr;
     VideoFrame Frame{};
 
     //CPUデコード用
@@ -150,9 +138,6 @@ protected:
     QElapsedTimer elapsedTimer;
     int interval_ms;
 
-    //リング設定
-    int ringSize = 12;
-    int ringNo = 0;
 };
 
 #endif // DECODE_THREAD_H

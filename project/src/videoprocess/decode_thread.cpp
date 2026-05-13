@@ -63,18 +63,13 @@ decode_thread::~decode_thread() {
     };
 
     auto safe_free_frames = [&]() {
-        //ハードウェアフレームを解放
-        for (int i=0;i<vd.size();i++) {
-            //ハードウェアフレームを解放
-            for (AVFrame* &f : vd[i].hw_frames) {
-                if (f) {
-                    av_frame_unref(f);
-                    av_frame_free(&f);
-                    f = nullptr;
-                }
+        for (int i = 0; i < vd.size(); i++) {
+            if (vd[i].Frame) {
+                av_frame_free(&vd[i].Frame);
+                vd[i].Frame = nullptr;
             }
-            vd[i].hw_frames.clear();
         }
+
         if (audio_frame) {
             av_frame_free(&audio_frame);
             audio_frame = nullptr;
@@ -82,11 +77,9 @@ decode_thread::~decode_thread() {
     };
 
     auto safe_free_hwctx = [&]() {
-        for (int i = 0; i < vd.size(); i++) {
-            if (vd[i].hw_device_ctx) {
-                av_buffer_unref(&vd[i].hw_device_ctx);
-                vd[i].hw_device_ctx = nullptr;
-            }
+        if (hw_device_ctx) {
+            av_buffer_unref(&hw_device_ctx);
+            hw_device_ctx = nullptr;
         }
     };
 
@@ -108,41 +101,24 @@ decode_thread::~decode_thread() {
         }
     };
 
-    auto safe_free_stream = [&]() {
-        for (int i = 0; i < vd.size(); i++) {
-            //Stream削除
-            if(vd[i].st){
-                cudaStreamSynchronize(vd[i].st);
-                cudaStreamDestroy(vd[i].st);
-                vd[i].st=nullptr;
-            }
-            //event削除
-            if (vd[i].ev) {
-                cudaEventDestroy(vd[i].ev);
-                vd[i].ev = nullptr;
-            }
-        }
-    };
-
     try {
         safe_free_codec();
         safe_free_format();
         safe_free_frames();
         safe_free_hwctx();
         safe_free_packet();
-        safe_free_stream();
     } catch (...) {
         qWarning() << "Exception during FFmpeg cleanup (ignored)";
     }
 
-    if(st){
-        cudaStreamDestroy(st);
-        st=nullptr;
+    if(stream){
+        cudaStreamDestroy(stream);
+        stream=nullptr;
     }
 
-    if (ev) {
-        cudaEventDestroy(ev);
-        ev = nullptr;
+    if (events) {
+        cudaEventDestroy(events);
+        events = nullptr;
     }
 
     if(Frame.d_decode_rgba){
@@ -340,10 +316,6 @@ void decode_thread::processFrame() {
     }else{
         drop_flag=true;
     }
-
-    //リングを回す
-    ringNo ++;
-    if(ringNo>=ringSize) ringNo = 0;
 
     //デコード修了指示が出た場合は全ての処理を完了してから修了を通知
     if(thread_stop_flag){
