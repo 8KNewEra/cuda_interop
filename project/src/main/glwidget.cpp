@@ -12,22 +12,58 @@ DXWidget::DXWidget(QWidget* parent)
     setAttribute(Qt::WA_PaintOnScreen);
     setAttribute(Qt::WA_NoSystemBackground);
 
+    if (!initD3D11Device()) {
+        qDebug() << "initD3D11Device failed";
+        return;
+    }
+
+    if (!initSwapChain()) {
+        qDebug() << "initSwapChain failed";
+        return;
+    }
+
+    if (!createRenderTargetView()) {
+        qDebug() << "createRenderTargetView failed";
+        return;
+    }
+
+    if (!D3D11_sharder_compile()) {
+        qDebug() << "D3D11_sharder_compile failed";
+        return;
+    }
+
+    if (!createQuadVB()) {
+        qDebug() << "createQuadVB failed";
+        return;
+    }
+
+    if (!createSampler()) {
+        qDebug() << "createSampler failed";
+        return;
+    }
+
+    if (!initDirect2D()) {
+        qDebug() << "initDirect2D failed";
+        return;
+    }
+
     if (CUDA_IMG_Proc == nullptr) {
         CUDA_IMG_Proc = new CUDA_ImageProcess();
     }
 
+    // CUDA device を D3D11 に合わせる
+    getCudaDeviceIDFromD3D11();
+    cudaSetDevice(g_openglDeviceID);
+
+    // CUDA Stream/Event作成
     cudaStreamCreate(&interop_stream);
     cudaEventCreate(&interop_event);
-
     cudaStreamCreate(&hist_stream);
     cudaEventCreate(&hist_event);
 
-    if (!initializeD3D()) {
-        qDebug() << "initializeD3D failed";
-        return;
-    }
+    fpsTimer.start();
+    d3d_initialized = true;
 
-    // ★ connect後に必ず届く
     QTimer::singleShot(0, this, [this]() {
         DXreset();
         emit initialized();
@@ -134,183 +170,8 @@ DXWidget::~DXWidget()
     qDebug() << "DXWidget: Destructor called";
 }
 
-bool DXWidget::initializeD3D()
-{
-    HWND hwnd = (HWND)winId();
-    if (!hwnd) {
-        qDebug() << "HWND is null";
-        return false;
-    }
 
-    // --------------------------
-    // SwapChain設定
-    // --------------------------
-    DXGI_SWAP_CHAIN_DESC sd{};
-    sd.BufferCount = 2;
-    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sd.OutputWindow = hwnd;
-    sd.SampleDesc.Count = 1;
-    sd.Windowed = TRUE;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
-    UINT createFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-
-#ifdef _DEBUG
-    createFlags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
-
-    // --------------------------
-    // DXGI Factory作成
-    // --------------------------
-    IDXGIFactory1* factory = nullptr;
-    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory);
-    if (FAILED(hr) || !factory) {
-        qDebug() << "CreateDXGIFactory1 failed";
-        return false;
-    }
-
-    // --------------------------
-    // CUDA GPU情報取得
-    // --------------------------
-    queryCudaGPUs();
-
-    // CUDA device のPCI情報取得
-    int cudaDev = g_openglDeviceID;
-    int pciBus = 0;
-    int pciDevice = 0;
-    int pciDomain = 0;
-
-    cudaDeviceGetAttribute(&pciBus, cudaDevAttrPciBusId, cudaDev);
-    cudaDeviceGetAttribute(&pciDevice, cudaDevAttrPciDeviceId, cudaDev);
-    cudaDeviceGetAttribute(&pciDomain, cudaDevAttrPciDomainId, cudaDev);
-
-    qDebug() << "CUDA target device =" << cudaDev
-             << "PCI =" << pciDomain << ":" << pciBus << ":" << pciDevice;
-
-    // --------------------------
-    // Adapter選択
-    // --------------------------
-    IDXGIAdapter1* adapter = nullptr;
-
-    // 本来PCI一致検索が必要だが、今回は最初のAdapterを使用
-    // (ここを改善するならSetupAPIでPCIバス一致を取る)
-    hr = factory->EnumAdapters1(0, &adapter);
-
-    factory->Release();
-
-    if (FAILED(hr) || !adapter) {
-        qDebug() << "No DXGI adapter found";
-        return false;
-    }
-
-    DXGI_ADAPTER_DESC1 adesc{};
-    adapter->GetDesc1(&adesc);
-    qDebug() << "D3D Adapter =" << QString::fromWCharArray(adesc.Description);
-
-    // --------------------------
-    // D3D11 Device作成
-    // --------------------------
-    D3D_FEATURE_LEVEL featureLevel;
-    hr = D3D11CreateDeviceAndSwapChain(
-        adapter,
-        D3D_DRIVER_TYPE_UNKNOWN,
-        nullptr,
-        createFlags,
-        nullptr,
-        0,
-        D3D11_SDK_VERSION,
-        &sd,
-        &swapChain,
-        &device,
-        &featureLevel,
-        &context
-        );
-
-    adapter->Release();
-
-    if (FAILED(hr)) {
-        qDebug() << "D3D11CreateDeviceAndSwapChain failed";
-        return false;
-    }
-
-    // --------------------------
-    // RenderTarget作成
-    // --------------------------
-    if (!createRenderTargetView()) {
-        qDebug() << "createRenderTargetView failed";
-        return false;
-    }
-
-    // --------------------------
-    // CUDA device を D3D11 に合わせる
-    // --------------------------
-    getCudaDeviceIDFromD3D11();
-    cudaSetDevice(g_openglDeviceID);
-
-    // --------------------------
-    // CUDA Stream/Event作成
-    // --------------------------
-    cudaStreamCreate(&interop_stream);
-    cudaEventCreate(&interop_event);
-
-    cudaStreamCreate(&hist_stream);
-    cudaEventCreate(&hist_event);
-
-    // --------------------------
-    // Shader / Quad / Sampler
-    // --------------------------
-    if (!D3D11_sharder_compile()) {
-        qDebug() << "D3D11_sharder_compile failed";
-        return false;
-    }
-
-    if (!createQuadVB()) {
-        qDebug() << "createQuadVB failed";
-        return false;
-    }
-
-    if (!createSampler()) {
-        qDebug() << "createSampler failed";
-        return false;
-    }
-
-    // --------------------------
-    // 初期化完了
-    // --------------------------
-    fpsTimer.start();
-    d3d_initialized = true;
-
-    qDebug() << "[OK] initializeD3D completed";
-    return true;
-}
-
-bool DXWidget::createRenderTargetView()
-{
-    if (!swapChain || !device) return false;
-
-    ID3D11Texture2D* backBuffer = nullptr;
-    HRESULT hr = swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
-    if (FAILED(hr)) {
-        qDebug() << "swapChain->GetBuffer failed";
-        return false;
-    }
-    hr = device->CreateRenderTargetView(backBuffer, nullptr, &rtv);
-    backBuffer->Release();
-    if (FAILED(hr)) {
-        qDebug() << "CreateRenderTargetView failed";
-        return false;
-    }
-    return true;
-}
-
-void DXWidget::releaseRenderTargetView()
-{
-    if (rtv) {
-        rtv->Release();
-        rtv = nullptr;
-    }
-}
 
 bool DXWidget::D3D11_sharder_compile()
 {
@@ -479,11 +340,127 @@ bool DXWidget::createSampler()
     return true;
 }
 
+
+
+
+
+bool DXWidget::initD3D11Device()
+{
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+
+#ifdef _DEBUG
+    flags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+
+    D3D_FEATURE_LEVEL fl;
+    HRESULT hr = D3D11CreateDevice(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        flags,
+        nullptr,
+        0,
+        D3D11_SDK_VERSION,
+        &device,
+        &fl,
+        &context
+        );
+
+    if (FAILED(hr)) {
+        qDebug() << "D3D11CreateDevice failed:" << hr;
+        return false;
+    }
+
+    return true;
+}
+
+bool DXWidget::initSwapChain()
+{
+    HWND hwnd = (HWND)winId();
+    if (!hwnd) return false;
+
+    IDXGIDevice* dxgiDevice = nullptr;
+    device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
+
+    IDXGIAdapter* adapter = nullptr;
+    dxgiDevice->GetAdapter(&adapter);
+
+    IDXGIFactory2* factory2 = nullptr;
+    adapter->GetParent(__uuidof(IDXGIFactory2), (void**)&factory2);
+
+    DXGI_SWAP_CHAIN_DESC1 sd{};
+    sd.Width = width();
+    sd.Height = height();
+    sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    sd.SampleDesc.Count = 1;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.BufferCount = 2;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    sd.Scaling = DXGI_SCALING_STRETCH;
+    sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+
+    IDXGISwapChain1* sc1 = nullptr;
+    HRESULT hr = factory2->CreateSwapChainForHwnd(
+        device,
+        (HWND)winId(),
+        &sd,
+        nullptr,
+        nullptr,
+        &sc1
+        );
+
+    if (FAILED(hr)) {
+        qDebug() << "CreateSwapChainForHwnd failed:"
+                 << QString("0x%1").arg((uint32_t)hr, 8, 16, QChar('0'));
+        return false;
+    }
+
+    // IDXGISwapChain に変換して保持するなら
+    swapChain = sc1; // swapChainをIDXGISwapChain1*にするのがベスト
+
+    factory2->Release();
+    adapter->Release();
+    dxgiDevice->Release();
+
+    if (FAILED(hr) || !swapChain) {
+        qDebug() << "CreateSwapChainForHwnd failed:" << hr;
+        return false;
+    }
+
+    return true;
+}
+
+bool DXWidget::createRenderTargetView()
+{
+    if (!swapChain || !device) return false;
+
+    ID3D11Texture2D* backBuffer = nullptr;
+    HRESULT hr = swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
+    if (FAILED(hr)) {
+        qDebug() << "swapChain->GetBuffer failed";
+        return false;
+    }
+    hr = device->CreateRenderTargetView(backBuffer, nullptr, &rtv);
+    backBuffer->Release();
+    if (FAILED(hr)) {
+        qDebug() << "CreateRenderTargetView failed";
+        return false;
+    }
+    return true;
+}
+
+void DXWidget::releaseRenderTargetView()
+{
+    if (rtv) {
+        rtv->Release();
+        rtv = nullptr;
+    }
+}
+
 void DXWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
-
-    if (!d3d_initialized) return;
+    if (!swapChain) return;
 
     context->OMSetRenderTargets(0, nullptr, nullptr);
 
@@ -499,6 +476,143 @@ void DXWidget::resizeEvent(QResizeEvent* event)
 
     createRenderTargetView();
 }
+
+
+
+bool DXWidget::initDirect2D()
+{
+    HRESULT hr = D2D1CreateFactory(
+        D2D1_FACTORY_TYPE_SINGLE_THREADED,
+        __uuidof(ID2D1Factory1),
+        nullptr,
+        (void**)&d2dFactory
+        );
+
+    if (FAILED(hr) || !d2dFactory) return false;
+
+    IDXGIDevice* dxgiDevice = nullptr;
+    hr = device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
+    if (FAILED(hr) || !dxgiDevice) return false;
+
+    hr = d2dFactory->CreateDevice(dxgiDevice, &d2dDevice);
+    dxgiDevice->Release();
+    if (FAILED(hr) || !d2dDevice) return false;
+
+    hr = d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &d2dContext);
+    if (FAILED(hr) || !d2dContext) return false;
+
+    hr = DWriteCreateFactory(
+        DWRITE_FACTORY_TYPE_SHARED,
+        __uuidof(IDWriteFactory),
+        (IUnknown**)&dwFactory
+        );
+    if (FAILED(hr) || !dwFactory) return false;
+
+    hr = dwFactory->CreateTextFormat(
+        L"Consolas",
+        nullptr,
+        DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        18.0f,
+        L"ja-jp",
+        &textFormat
+        );
+    if (FAILED(hr) || !textFormat) return false;
+
+    hr = d2dContext->CreateSolidColorBrush(
+        D2D1::ColorF(D2D1::ColorF::White),
+        &textBrush
+        );
+    if (FAILED(hr) || !textBrush) return false;
+
+    return true;
+}
+
+void DXWidget::beginTextDraw()
+{
+    d2dDrawing = false;
+
+    if (!swapChain || !d2dContext) return;
+
+    if (d2dTargetBitmap) {
+        d2dTargetBitmap->Release();
+        d2dTargetBitmap = nullptr;
+    }
+
+    IDXGISurface* dxgiSurface = nullptr;
+    HRESULT hr = swapChain->GetBuffer(0, __uuidof(IDXGISurface), (void**)&dxgiSurface);
+    if (FAILED(hr) || !dxgiSurface) {
+        qDebug() << "GetBuffer IDXGISurface failed";
+        return;
+    }
+
+    D2D1_BITMAP_PROPERTIES1 props =
+        D2D1::BitmapProperties1(
+            D2D1_BITMAP_OPTIONS_TARGET,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE)
+            );
+
+    hr = d2dContext->CreateBitmapFromDxgiSurface(dxgiSurface, &props, &d2dTargetBitmap);
+    dxgiSurface->Release();
+
+    if (FAILED(hr) || !d2dTargetBitmap) {
+        qDebug() << "CreateBitmapFromDxgiSurface failed:"
+                 << QString("0x%1").arg((uint32_t)hr, 8, 16, QChar('0'));
+        return;
+    }
+
+    d2dContext->SetTarget(d2dTargetBitmap);
+
+    d2dContext->BeginDraw();
+    d2dDrawing = true;
+}
+
+void DXWidget::drawTextOverlay(const wchar_t* text, float x, float y)
+{
+    if (!d2dContext || !textFormat || !textBrush) return;
+
+    D2D1_RECT_F rect = D2D1::RectF(x, y, x + 1000, y + 400);
+
+    d2dContext->DrawTextW(
+        text,
+        (UINT32)wcslen(text),
+        textFormat,
+        rect,
+        textBrush
+        );
+}
+
+void DXWidget::endTextDraw()
+{
+    if (!d2dContext) return;
+    if (!d2dDrawing) return;   // ★ BeginDrawしてないならEndDrawしない
+
+    HRESULT hr = d2dContext->EndDraw();
+    d2dDrawing = false;
+
+    if (hr == D2DERR_RECREATE_TARGET) {
+        qDebug() << "D2DERR_RECREATE_TARGET";
+
+        if (d2dTargetBitmap) {
+            d2dTargetBitmap->Release();
+            d2dTargetBitmap = nullptr;
+        }
+        return;
+    }
+
+    if (FAILED(hr)) {
+        qDebug() << "Direct2D EndDraw failed:"
+                 << QString("0x%1").arg((uint32_t)hr, 8, 16, QChar('0'));
+    }
+}
+
+
+
+
+
+
+
 
 //FBOレンダリング
 void DXWidget::FBO_Rendering(VideoFrame Frame)
@@ -553,13 +667,15 @@ void DXWidget::Monitor_Rendering(VideoFrame Frame){
             return;
         }
 
+        // backbuffer RTV
         context->OMSetRenderTargets(1, &bbRTV, nullptr);
 
-        // まず全体を黒でクリア（黒帯）
+        // 黒クリア
         float clearColor[4] = {0,0,0,1};
         context->ClearRenderTargetView(bbRTV, clearColor);
 
-        // viewportを「表示領域」に限定
+        // viewport設定
+        DXresize();
         D3D11_VIEWPORT vp{};
         vp.TopLeftX = (float)x0;
         vp.TopLeftY = (float)y0;
@@ -569,7 +685,7 @@ void DXWidget::Monitor_Rendering(VideoFrame Frame){
         vp.MaxDepth = 1.0f;
         context->RSSetViewports(1, &vp);
 
-        // pipeline
+        // quad描画
         context->VSSetShader(vs, nullptr, 0);
         context->PSSetShader(ps, nullptr, 0);
 
@@ -589,6 +705,12 @@ void DXWidget::Monitor_Rendering(VideoFrame Frame){
         ID3D11ShaderResourceView* nullSRV[1] = { nullptr };
         context->PSSetShaderResources(0, 1, nullSRV);
 
+        // ---- Direct2D文字描画 ----
+        beginTextDraw();
+        drawTextOverlay(L"FPS: 60.0\nResolution: 1920x1080", 20, 20);
+        endTextDraw();
+
+        // Present
         swapChain->Present(1, 0);
 
         bbRTV->Release();
@@ -1208,82 +1330,58 @@ void DXWidget::encode_mode(int flag){
 //ヒストグラム周り
 void DXWidget::initCudaHist()
 {
-    // --- 1. 既存 CUDA Graphics Resource を解放 ---
-    if (cudaResource_hist) {
-        cudaGraphicsUnregisterResource(cudaResource_hist);
-        cudaResource_hist = nullptr;
-    }
-
     if (cudaResource_hist_draw) {
         cudaGraphicsUnregisterResource(cudaResource_hist_draw);
         cudaResource_hist_draw = nullptr;
     }
 
-    // --- 2. 既存 D3D11 Buffer を削除 ---
     if (histVB) {
         histVB->Release();
         histVB = nullptr;
     }
 
-    // --- 3. 既存 CUDA メモリ を解放 ---
     if (d_hist_stats) {
         cudaFree(d_hist_stats);
         d_hist_stats = nullptr;
     }
-
     if (d_hist_data) {
         cudaFree(d_hist_data);
         d_hist_data = nullptr;
     }
 
-    // --- 4. D3D11 Texture (outputTexture) → CUDA Resource 登録 ---
-    if (!outputTexture) {
-        qDebug() << "outputTexture is nullptr";
+    if (!cudaOutputRes) {
+        qDebug() << "cudaOutputRes is nullptr (outputTexture not registered)";
         return;
     }
 
-    cudaError_t err = cudaGraphicsD3D11RegisterResource(
-        &cudaResource_hist,
-        outputTexture,
-        cudaGraphicsRegisterFlagsNone
-        );
+    // cudaResource_hist は作らない。cudaOutputResを使う
+    cudaResource_hist = cudaOutputRes;
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsD3D11RegisterResource (hist texture) failed:"
-                 << cudaGetErrorString(err);
-        cudaResource_hist = nullptr;
-        return;
-    }
-
-    // --- 5. D3D11 VertexBuffer 作成（OpenGL VBOの代替） ---
+    // VBO(D3D11 buffer) 作成して CUDA register
     D3D11_BUFFER_DESC vbDesc{};
     vbDesc.ByteWidth = num_bins * 3 * 3 * sizeof(float);
     vbDesc.Usage = D3D11_USAGE_DEFAULT;
     vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     vbDesc.CPUAccessFlags = 0;
-    vbDesc.MiscFlags = 0;
 
     HRESULT hr = device->CreateBuffer(&vbDesc, nullptr, &histVB);
-    if (FAILED(hr)) {
+    if (FAILED(hr) || !histVB) {
         qDebug() << "CreateBuffer(histVB) failed";
         return;
     }
 
-    // --- 6. D3D11 Buffer → CUDA Resource 登録 ---
-    err = cudaGraphicsD3D11RegisterResource(
+    cudaError_t err = cudaGraphicsD3D11RegisterResource(
         &cudaResource_hist_draw,
         histVB,
         cudaGraphicsRegisterFlagsNone
         );
 
     if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsD3D11RegisterResource (histVB) failed:"
-                 << cudaGetErrorString(err);
+        qDebug() << "cudaGraphicsD3D11RegisterResource(histVB) failed:" << cudaGetErrorString(err);
         cudaResource_hist_draw = nullptr;
         return;
     }
 
-    // --- 7. CUDA 側のメモリを確保 ---
     cudaMalloc(&d_hist_stats, sizeof(HistStats));
     cudaMalloc(&d_hist_data, sizeof(HistData));
 }

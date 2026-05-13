@@ -21,8 +21,13 @@
 #include <cuda_runtime.h>
 #include <cuda_d3d11_interop.h>
 #include <d3dcompiler.h>
+#include <d2d1_1.h>
+#include <dwrite.h>
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib,"d3d11.lib")
+#pragma comment(lib,"dxgi.lib")
+#pragma comment(lib,"d2d1.lib")
+#pragma comment(lib,"dwrite.lib")
 #pragma comment(lib,"dxgi.lib")
 
 struct Vertex
@@ -69,10 +74,11 @@ private:
     // --------------------------
     // DirectX11 core
     // --------------------------
+    bool d2dDrawing = false;
     bool d3d_initialized = false;
     ID3D11Device* device = nullptr;
     ID3D11DeviceContext* context = nullptr;
-    IDXGISwapChain* swapChain = nullptr;
+    IDXGISwapChain1* swapChain = nullptr;
     ID3D11RenderTargetView* rtv = nullptr;
     ID3D11VertexShader* vs = nullptr;
     ID3D11PixelShader*  ps = nullptr;
@@ -91,7 +97,8 @@ private:
     ID3D11ShaderResourceView* outputSRV = nullptr;
 
     // DirectX 初期化系
-    bool initializeD3D();
+    bool initD3D11Device();
+    bool initSwapChain();
     bool D3D11_sharder_compile();
     bool createRenderTargetView();
     void releaseRenderTargetView();
@@ -196,6 +203,30 @@ private:
     // --------------------------
     bool audio_mode = false;
     QVector<QByteArray> audio_pcm{};
+
+
+
+
+
+
+
+
+
+
+
+
+    // Direct2D / DirectWrite
+    ID2D1Factory1* d2dFactory = nullptr;
+    ID2D1Device* d2dDevice = nullptr;
+    ID2D1DeviceContext* d2dContext = nullptr;
+    ID2D1Bitmap1* d2dTargetBitmap = nullptr;
+    IDWriteFactory* dwFactory = nullptr;
+    IDWriteTextFormat* textFormat = nullptr;
+    ID2D1SolidColorBrush* textBrush = nullptr;
+    bool initDirect2D();
+    void beginTextDraw();
+    void endTextDraw();
+    void drawTextOverlay(const wchar_t* text, float x, float y);
 };
 
 #endif // DXWIDGET_H
