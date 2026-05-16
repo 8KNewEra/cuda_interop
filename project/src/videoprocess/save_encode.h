@@ -33,6 +33,7 @@ struct VideoEncoder {
     size_t uv_pitch = 0;
 
     // リングバッファ
+    int ringNo = 0;
     AVBufferRef*    hw_frames_ctx = nullptr;
     std::vector<AVFrame*> hw_frames;
 
@@ -50,6 +51,7 @@ public:
 
 private:
     void initialized_ffmpeg_hardware_context(int i);
+    AVRational fps_to_rational(double fps);
     void initialized_ffmpeg_codec_context(int i,int max_split);
     int height_,width_;
 
@@ -78,8 +80,7 @@ private:
     AVAudioFifo* audio_fifo = nullptr;
 
     //リング設定
-    int ringSize = 60;
-    int ringNo = 0;
+    int ringSize = 1200;
 };
 
 #endif // SAVE_ENCODE_H

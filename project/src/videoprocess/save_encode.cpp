@@ -35,6 +35,7 @@ save_encode::save_encode(int h,int w) {
 
         ve[i].stream->time_base = ve[i].codec_ctx->time_base;
         ve[i].stream->avg_frame_rate = ve[i].codec_ctx->framerate;
+        ve[i].stream->r_frame_rate   = ve[i].codec_ctx->framerate;
         ret = avcodec_parameters_from_context(ve[i].stream->codecpar, ve[i].codec_ctx);
         if (ret < 0) throw std::runtime_error("Failed to copy codec parameters");
 
@@ -76,9 +77,23 @@ save_encode::save_encode(int h,int w) {
     ret = avio_open(&fmt_ctx->pb, encodeSettings.encode_path.toUtf8().constData(), AVIO_FLAG_WRITE);
     if (ret < 0) throw std::runtime_error("Failed to open output file");
 
+    qDebug() << "FINAL enc_tb="
+             << ve[0].codec_ctx->time_base.num << "/"
+             << ve[0].codec_ctx->time_base.den;
+    qDebug() << "FINAL st_tb="
+             << ve[0].stream->time_base.num << "/"
+             << ve[0].stream->time_base.den;
+
     // ④ ヘッダ書き込みは全 stream 作成後
     ret = avformat_write_header(fmt_ctx, nullptr);
     if (ret < 0) throw std::runtime_error("Failed to write header");
+
+    qDebug() << "FINAL enc_tb="
+             << ve[0].codec_ctx->time_base.num << "/"
+             << ve[0].codec_ctx->time_base.den;
+    qDebug() << "FINAL st_tb="
+             << ve[0].stream->time_base.num << "/"
+             << ve[0].stream->time_base.den;
 
     //Stream作成
     cudaStreamCreateWithFlags(
@@ -362,7 +377,7 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     ve[i].codec_ctx->pix_fmt = hw_pix_fmt;
 
     //フレームレート設定
-    AVRational fps = av_d2q(encodeSettings.save_fps, 100000);
+    AVRational fps = fps_to_rational(encodeSettings.save_fps);
     ve[i].codec_ctx->framerate = fps;
     ve[i].codec_ctx->time_base = av_inv_q(fps);
 
@@ -394,6 +409,7 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     av_dict_set(&opts, "tune", encodeSettings.tune.toUtf8().constData(), 0);
     av_dict_set_int(&opts, "g", encodeSettings.gop_size, 0);
     av_dict_set_int(&opts, "bf", encodeSettings.b_frames, 0);
+    av_dict_set(&opts, "rc-lookahead", "0", 0);
     av_dict_set(&opts, "zerolatency", "1", 0);
     av_dict_set(&opts, "async_depth", "1", 0);
 
@@ -417,6 +433,20 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     int ret = avcodec_open2(ve[i].codec_ctx, codec, &opts);
     if (ret < 0) throw std::runtime_error("Failed to open codec");
     av_dict_free(&opts);
+}
+
+AVRational save_encode::fps_to_rational(double fps)
+{
+    // よくあるNTSC系は固定で返す（誤差吸収）
+    if (fabs(fps - 59.94) < 0.01) return AVRational{60000, 1001};
+    if (fabs(fps - 29.97) < 0.01) return AVRational{30000, 1001};
+    if (fabs(fps - 23.976) < 0.01) return AVRational{24000, 1001};
+
+    // それ以外は整数fpsに丸める（例: 60.0, 30.0）
+    int fps_i = (int)llround(fps);
+    if (fps_i <= 0) fps_i = 30;
+
+    return AVRational{fps_i, 1};
 }
 
 //CUDAデバイスコンテキスト初期化
@@ -541,7 +571,7 @@ void save_encode::encode(VideoFrame Frame){
     {
         if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
         {
-            AVFrame* out = ve[i].hw_frames[ringNo];
+            AVFrame* out = ve[i].hw_frames[ve[i].ringNo];
             ve[i].d_y     = out->data[0];
             ve[i].y_pitch = out->linesize[0];
             ve[i].d_uv    = out->data[1];
@@ -600,12 +630,14 @@ void save_encode::encode(VideoFrame Frame){
     //各GPUへ転送
     for(int i = 0; i < ve.size(); i++)
     {
-        if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
-            continue; // primaryはコピー不要
-
-        AVFrame* out = ve[i].hw_frames[ringNo];
         cudaStreamWaitEvent(ve[i].st, ev, 0);
 
+        if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID){
+            cudaEventRecord(ve[i].ev, ve[i].st);
+            continue; // primaryはコピー不要
+        }
+
+        AVFrame* out = ve[i].hw_frames[ve[i].ringNo];
         cudaMemcpy2DAsync(
             out->data[0], out->linesize[0],
             ve[i].d_y, ve[i].y_pitch,
@@ -629,64 +661,19 @@ void save_encode::encode(VideoFrame Frame){
     // 全タイル完了待ち
     for(int i = 0; i < ve.size(); i++)
     {
-        if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
-            continue;
-
         cudaEventSynchronize(ve[i].ev);
     }
 
     // ------------------------
     // エンコード
     // ------------------------
-    // 1. 全 encoder に frame を送る（リング対応 + EAGAIN対応）
+    // 1. 全 encoder に frame を送る
     for (int i = 0; i < ve.size(); i++) {
-        AVFrame* out = ve[i].hw_frames[ringNo];
-        out->pts = frame_index;
-        retry_send:
-            int ret = avcodec_send_frame(ve[i].codec_ctx, out);
-            if (ret == 0) {
-                continue; // OK
-            }
-            if (ret == AVERROR(EAGAIN)) {
-                // 詰まっているので packet を吐き出す
-                while (true) {
-                    ret = avcodec_receive_packet(ve[i].codec_ctx, packet);
-
-                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                        av_packet_unref(packet);
-                        break;
-                    }
-
-                    if (ret < 0) {
-                        qDebug() << "receive_packet error:" << ret;
-                        av_packet_unref(packet);
-                        break;
-                    }
-
-                    av_packet_rescale_ts(packet,
-                                         ve[i].codec_ctx->time_base,
-                                         ve[i].stream->time_base);
-
-                    packet->stream_index = ve[i].stream->index;
-
-                    int wret = av_interleaved_write_frame(fmt_ctx, packet);
-                    av_packet_unref(packet);
-
-                    if (wret < 0) {
-                        qDebug() << "write_frame error:" << wret;
-                        break;
-                    }
-                }
-                // packet吐いたので再送
-                goto retry_send;
-            }
-            // その他エラー
-            qDebug() << "send_frame error:" << ret;
+        ve[i].hw_frames[ve[i].ringNo]->pts = frame_index;
+        avcodec_send_frame(ve[i].codec_ctx, ve[i].hw_frames[ve[i].ringNo]);
     }
 
     // ---- mux（順序保証）----
-    if (packet->duration == 0)
-        packet->duration = 1;
     for (int i = 0; i < ve.size(); i++) {
         while (true) {
             int ret = avcodec_receive_packet(ve[i].codec_ctx, packet);
@@ -714,10 +701,6 @@ void save_encode::encode(VideoFrame Frame){
     // ========================
     encode_audio(Frame);
     frame_index+=1;
-
-    //リングを回す
-    ringNo ++;
-    if(ringNo>=ringSize) ringNo = 0;
 }
 
 //音声エンコード
