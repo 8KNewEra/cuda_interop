@@ -582,6 +582,11 @@ void save_encode::encode(VideoFrame Frame){
         }
     }
 
+    //ダミーカーネルで完全な同期
+    CUDA_IMG_Proc->Dummy(st);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
+
     // ------------------------
     // CUDA NV12変換
     // ------------------------
@@ -630,7 +635,10 @@ void save_encode::encode(VideoFrame Frame){
     //変換完了のイベントを待つだけにする
     cudaEventRecord(ev, st);
 
-    qDebug()<<ve[0].ringNo;
+    //ダミーカーネルで完全な同期
+    CUDA_IMG_Proc->Dummy(st);
+    cudaEventRecord(ev, st);
+    cudaEventSynchronize(ev);
 
     //各GPUへ転送
     for(int i = 0; i < ve.size(); i++)
@@ -665,6 +673,10 @@ void save_encode::encode(VideoFrame Frame){
     for(int i = 0; i < ve.size(); i++)
     {
         cudaEventSynchronize(ve[i].hw_frames[ve[i].ringNo].ready);
+        //ダミーカーネルで完全な同期
+        CUDA_IMG_Proc->Dummy(ve[i].st);
+        cudaEventRecord(ve[i].hw_frames[ve[i].ringNo].ready, ve[i].st);
+        cudaEventSynchronize(ve[i].hw_frames[ve[i].ringNo].ready);
     }
 
     // ------------------------
@@ -672,47 +684,32 @@ void save_encode::encode(VideoFrame Frame){
     // ------------------------
     // 1. 全 encoder に frame を送る（リング対応 + EAGAIN対応）
     for (int i = 0; i < ve.size(); i++) {
+
         AVFrame* out = ve[i].hw_frames[ve[i].ringNo].frame;
+
         out->pts = frame_index;
+
     retry_send:
         int ret = avcodec_send_frame(ve[i].codec_ctx, out);
+
         if (ret == 0) {
-            continue; // OK
+            ve[i].ringNo++;
+            if (ve[i].ringNo >= ringSize) ve[i].ringNo = 0;
+            continue;
         }
+
         if (ret == AVERROR(EAGAIN)) {
-            // 詰まっているので packet を吐き出す
-            while (true) {
-                ret = avcodec_receive_packet(ve[i].codec_ctx, packet);
 
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                    av_packet_unref(packet);
-                    break;
-                }
-
-                if (ret < 0) {
-                    qDebug() << "receive_packet error:" << ret;
-                    av_packet_unref(packet);
-                    break;
-                }
-
-                av_packet_rescale_ts(packet,
-                                     ve[i].codec_ctx->time_base,
-                                     ve[i].stream->time_base);
-
+            while (avcodec_receive_packet(ve[i].codec_ctx, packet) == 0) {
+                av_packet_rescale_ts( packet, ve[i].codec_ctx->time_base, ve[i].stream->time_base );
                 packet->stream_index = ve[i].stream->index;
-
-                int wret = av_interleaved_write_frame(fmt_ctx, packet);
+                av_interleaved_write_frame(fmt_ctx, packet);
                 av_packet_unref(packet);
-
-                if (wret < 0) {
-                    qDebug() << "write_frame error:" << wret;
-                    break;
-                }
             }
-            // packet吐いたので再送
+
             goto retry_send;
         }
-        // その他エラー
+
         qDebug() << "send_frame error:" << ret;
     }
 
@@ -726,12 +723,7 @@ void save_encode::encode(VideoFrame Frame){
                 break;
             }
 
-            av_packet_rescale_ts(
-                packet,
-                ve[i].codec_ctx->time_base,
-                ve[i].stream->time_base
-                );
-
+            av_packet_rescale_ts( packet, ve[i].codec_ctx->time_base, ve[i].stream->time_base );
             packet->stream_index = ve[i].stream->index;
 
             av_interleaved_write_frame(fmt_ctx, packet);
@@ -739,19 +731,11 @@ void save_encode::encode(VideoFrame Frame){
         }
     }
 
-
-
     // ========================
     // Audio encode（★ここ）
     // ========================
     encode_audio(Frame);
     frame_index+=1;
-    for (int i = 0; i < ve.size(); i++) {
-        ve[i].ringNo++;
-        if(ve[i].ringNo>=ringSize){
-            ve[i].ringNo = 0;
-        }
-    }
 }
 
 //音声エンコード
