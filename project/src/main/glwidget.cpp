@@ -248,7 +248,6 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
     if (encode_state==STATE_ENCODING) {
         // GPUエンコード用処理
         downloadToGLTexture_and_Encode(Frame);
-        Monitor_Rendering(Frame);
     } else if(encode_state==STATE_NOT_ENCODE){
         //画面に描画
         Monitor_Rendering(Frame);

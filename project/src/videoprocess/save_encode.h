@@ -22,6 +22,11 @@ extern "C" {
 
 extern int g_openglDeviceID;
 
+struct FrameSlot {
+    AVFrame* frame = nullptr;
+    cudaEvent_t ready = nullptr;   // このslotのコピー完了通知
+};
+
 struct VideoEncoder {
     AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
     AVCodecContext* codec_ctx = nullptr;
@@ -35,10 +40,9 @@ struct VideoEncoder {
     // リングバッファ
     int ringNo = 0;
     AVBufferRef*    hw_frames_ctx = nullptr;
-    std::vector<AVFrame*> hw_frames;
+    std::vector<FrameSlot> hw_frames;
 
     cudaStream_t st = nullptr;
-    cudaEvent_t ev = nullptr;
 };
 
 

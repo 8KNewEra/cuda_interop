@@ -64,10 +64,13 @@ save_encode::save_encode(int h,int w) {
             );
 
         //event作成
-        cudaEventCreateWithFlags(
-            &ve[i].ev,
-            cudaEventDisableTiming
-            );
+        for(int j=0;j<ringSize;j++){
+            cudaEventCreateWithFlags(
+                &ve[i].hw_frames[j].ready,
+                cudaEventDisableTiming
+                );
+        }
+
     }
 
     if(VideoInfo.audio)
@@ -259,11 +262,11 @@ save_encode::~save_encode() {
     // ---- 各メモリ解放 ----
     for(int i=0;i<ve.size();i++){
         //ハードウェアフレームを解放
-        for (AVFrame* &f : ve[i].hw_frames) {
-            if (f) {
-                av_frame_unref(f);
-                av_frame_free(&f);
-                f = nullptr;
+        for(int j=0;j<ringSize;j++){
+            if (ve[i].hw_frames[j].frame) {
+                av_frame_unref(ve[i].hw_frames[j].frame);
+                av_frame_free(&ve[i].hw_frames[j].frame);
+                ve[i].hw_frames[j].frame = nullptr;
             }
         }
         ve[i].hw_frames.clear();
@@ -300,9 +303,9 @@ save_encode::~save_encode() {
             ve[i].st=nullptr;
         }
         //event削除
-        if (ve[i].ev) {
-            cudaEventDestroy(ve[i].ev);
-            ve[i].ev = nullptr;
+        for(int j=0;j<ringSize;j++){
+            cudaEventDestroy(ve[i].hw_frames[j].ready);
+            ve[i].hw_frames[j].ready = nullptr;
         }
     }
 
@@ -490,7 +493,7 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
             av_frame_free(&f);
             throw std::runtime_error("Failed to alloc hw_frame ring buffer");
         }
-        ve[i].hw_frames[k] = f;
+        ve[i].hw_frames[k].frame = f;
     }
 }
 
@@ -571,7 +574,7 @@ void save_encode::encode(VideoFrame Frame){
     {
         if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
         {
-            AVFrame* out = ve[i].hw_frames[ve[i].ringNo];
+            AVFrame* out = ve[i].hw_frames[ve[i].ringNo].frame;
             ve[i].d_y     = out->data[0];
             ve[i].y_pitch = out->linesize[0];
             ve[i].d_uv    = out->data[1];
@@ -633,11 +636,11 @@ void save_encode::encode(VideoFrame Frame){
         cudaStreamWaitEvent(ve[i].st, ev, 0);
 
         if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID){
-            cudaEventRecord(ve[i].ev, ve[i].st);
+            cudaEventRecord(ve[i].hw_frames[ve[i].ringNo].ready, ve[i].st);
             continue; // primaryはコピー不要
         }
 
-        AVFrame* out = ve[i].hw_frames[ve[i].ringNo];
+        AVFrame* out = ve[i].hw_frames[ve[i].ringNo].frame;
         cudaMemcpy2DAsync(
             out->data[0], out->linesize[0],
             ve[i].d_y, ve[i].y_pitch,
@@ -656,21 +659,48 @@ void save_encode::encode(VideoFrame Frame){
             ve[i].st
             );
 
-        cudaEventRecord(ve[i].ev, ve[i].st);
+        cudaEventRecord(ve[i].hw_frames[ve[i].ringNo].ready, ve[i].st);
     }
     // 全タイル完了待ち
-    for(int i = 0; i < ve.size(); i++)
-    {
-        cudaEventSynchronize(ve[i].ev);
+    for (int i = 0; i < ve.size(); i++) {
+        cudaEventSynchronize(ve[i].hw_frames[ve[i].ringNo].ready);
     }
 
     // ------------------------
     // エンコード
     // ------------------------
     // 1. 全 encoder に frame を送る
-    for (int i = 0; i < ve.size(); i++) {
-        ve[i].hw_frames[ve[i].ringNo]->pts = frame_index;
-        avcodec_send_frame(ve[i].codec_ctx, ve[i].hw_frames[ve[i].ringNo]);
+    for (int i = 0; i < ve.size(); i++)
+    {
+        AVFrame* f = ve[i].hw_frames[ve[i].ringNo].frame;
+        f->pts = frame_index;
+
+    retry_send:
+        cudaEventSynchronize(ve[i].hw_frames[ve[i].ringNo].ready);
+        int ret = avcodec_send_frame(ve[i].codec_ctx, f);
+
+        if (ret == AVERROR(EAGAIN)) {
+            // 詰まってるので吐く
+            while (avcodec_receive_packet(ve[i].codec_ctx, packet) == 0) {
+
+                if (packet->duration == 0)
+                    packet->duration = 1001; // stream_tb=1/30000 の場合
+
+                av_packet_rescale_ts(packet,
+                                     ve[i].codec_ctx->time_base,
+                                     ve[i].stream->time_base);
+
+                packet->stream_index = ve[i].stream->index;
+                av_interleaved_write_frame(fmt_ctx, packet);
+                av_packet_unref(packet);
+            }
+            goto retry_send;
+        }
+
+        if (ret < 0) {
+            qDebug() << "send_frame error:" << ret;
+            continue;
+        }
     }
 
     // ---- mux（順序保証）----
@@ -682,15 +712,17 @@ void save_encode::encode(VideoFrame Frame){
                 av_packet_unref(packet);
                 break;
             }
+            if (ret < 0) {
+                qDebug() << "receive_packet error:" << ret;
+                av_packet_unref(packet);
+                break;
+            }
 
-            av_packet_rescale_ts(
-                packet,
-                ve[i].codec_ctx->time_base,
-                ve[i].stream->time_base
-                );
+            av_packet_rescale_ts(packet,
+                                 ve[i].codec_ctx->time_base,
+                                 ve[i].stream->time_base);
 
             packet->stream_index = ve[i].stream->index;
-
             av_interleaved_write_frame(fmt_ctx, packet);
             av_packet_unref(packet);
         }
@@ -700,6 +732,11 @@ void save_encode::encode(VideoFrame Frame){
     // Audio encode（★ここ）
     // ========================
     encode_audio(Frame);
+
+    for(int i=0;i<ve.size();i++){
+        ve[i].ringNo++;
+        if (ve[i].ringNo >= ringSize) ve[i].ringNo = 0;
+    }
     frame_index+=1;
 }
 
