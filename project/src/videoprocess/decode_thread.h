@@ -28,7 +28,9 @@ struct VideoDecorder {
     AVCodecContext* codec_ctx = nullptr;
     int stream_index=0;
     const AVCodec* decoder;
-    AVFrame* Frame;
+    std::vector<AVFrame*> hw_frames;
+    cudaStream_t st = nullptr;
+    cudaEvent_t ev = nullptr;
 };
 
 class decode_thread : public QObject {
@@ -138,6 +140,9 @@ protected:
     QElapsedTimer elapsedTimer;
     int interval_ms;
 
+    //リング設定
+    int ringNo = 0;
+    int ringSize = 60;
 };
 
 #endif // DECODE_THREAD_H

@@ -64,12 +64,13 @@ decode_thread::~decode_thread() {
 
     auto safe_free_frames = [&]() {
         for (int i = 0; i < vd.size(); i++) {
-            if (vd[i].Frame) {
-                av_frame_free(&vd[i].Frame);
-                vd[i].Frame = nullptr;
+            for (int j = 0; j < ringSize; j++) {
+                if (vd[i].hw_frames[j]) {
+                    av_frame_free(&vd[i].hw_frames[j]);
+                    vd[i].hw_frames[j] = nullptr;
+                }
             }
         }
-
         if (audio_frame) {
             av_frame_free(&audio_frame);
             audio_frame = nullptr;

@@ -96,13 +96,17 @@ bool nvgpudecode::initialized_ffmpeg()
         vd.emplace_back();
         auto& dec = vd.back();
 
-        dec.stream_index = stream_index;
-        dec.Frame = av_frame_alloc();
-        if (!dec.Frame) {
-            Error_String = "av_frame_alloc failed";
-            return false;
+        //リングバッファフレーム作成
+        dec.hw_frames.resize(ringSize);
+        for (int j = 0; j < ringSize; j++) {
+            dec.hw_frames[j] = av_frame_alloc();
+            if (!dec.hw_frames[j]) {
+                Error_String = "av_frame_alloc failed";
+                return false;
+            }
         }
 
+        dec.stream_index = stream_index;
         const AVStream* st = fmt_ctx->streams[stream_index];
         const char* codec_name = avcodec_get_name(st->codecpar->codec_id);
 
@@ -297,7 +301,7 @@ bool nvgpudecode::initialized_ffmpeg()
         audioSink = new QAudioSink(fmt);
         audioOutput = audioSink->start();
 
-        VideoInfo.audio = true;
+        VideoInfo.audio = false;
     }
 
     // ------------------------
@@ -381,10 +385,10 @@ bool nvgpudecode::get_last_frame_pts() {
         if (ret < 0) {
             // EOFに到達：デコーダに残りを流す
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
-            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                last_pts = vd[0].Frame->best_effort_timestamp;
-                VideoInfo.width = vd[0].Frame->width;
-                VideoInfo.height = vd[0].Frame->height;
+            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[0]) == 0) {
+                last_pts = vd[0].hw_frames[0]->best_effort_timestamp;
+                VideoInfo.width = vd[0].hw_frames[0]->width;
+                VideoInfo.height = vd[0].hw_frames[0]->height;
                 frame_received = true;
             }
             break;
@@ -392,10 +396,10 @@ bool nvgpudecode::get_last_frame_pts() {
 
         if (packet->stream_index == vd[0].stream_index) {
             if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
-                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
-                    last_pts = vd[0].Frame->best_effort_timestamp;
-                    VideoInfo.width = vd[0].Frame->width;
-                    VideoInfo.height = vd[0].Frame->height;
+                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[0]) == 0) {
+                    last_pts = vd[0].hw_frames[0]->best_effort_timestamp;
+                    VideoInfo.width = vd[0].hw_frames[0]->width;
+                    VideoInfo.height = vd[0].hw_frames[0]->height;
                     frame_received = true;
                 }
             }
@@ -478,7 +482,7 @@ void nvgpudecode::get_singledecode_image() {
 
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
                 av_packet_unref(packet);
                 break;
             }
@@ -511,7 +515,7 @@ void nvgpudecode::get_singledecode_image() {
         // ----------- VIDEO PACKET -----------
         if (packet->stream_index == vd[0].stream_index) {
             if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
-                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
                     av_packet_unref(packet);
                     break;
                 }
@@ -567,7 +571,7 @@ void nvgpudecode::get_multidecode_image() {
         if (ret < 0) {
             for (int i = 0; i < vd.size(); i++) {
                 avcodec_send_packet(vd[i].codec_ctx, nullptr);
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
+                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
                     got_frame[i] = true;
                     got_count++;
                 }
@@ -592,7 +596,7 @@ void nvgpudecode::get_multidecode_image() {
         for (int i = 0; i < vd.size(); i++) {
             if (packet->stream_index == vd[i].stream_index && !got_frame[i]) {
                 if (avcodec_send_packet(vd[i].codec_ctx, packet) == 0) {
-                    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
+                    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
                         got_frame[i] = true;
                         got_count++;
                     }
@@ -702,28 +706,28 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     if (vd.size() == 2) {
         //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x2_to_rgba_merge(
-            vd[0].Frame->data[0],vd[0].Frame->linesize[0], vd[0].Frame->data[1],vd[0].Frame->linesize[1],
-            vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
+            vd[0].hw_frames[ringNo]->data[0],vd[0].hw_frames[ringNo]->linesize[0], vd[0].hw_frames[ringNo]->data[1],vd[0].hw_frames[ringNo]->linesize[1],
+            vd[1].hw_frames[ringNo]->data[0],vd[1].hw_frames[ringNo]->linesize[0], vd[1].hw_frames[ringNo]->data[1],vd[1].hw_frames[ringNo]->linesize[1],
             Frame.d_decode_rgba,Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
     }else if (vd.size() == 4) {
         //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x4_to_rgba_merge(
-            vd[0].Frame->data[0],vd[0].Frame->linesize[0], vd[0].Frame->data[1],vd[0].Frame->linesize[1],
-            vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
-            vd[2].Frame->data[0],vd[2].Frame->linesize[0], vd[2].Frame->data[1],vd[2].Frame->linesize[1],
-            vd[3].Frame->data[0],vd[3].Frame->linesize[0], vd[3].Frame->data[1],vd[3].Frame->linesize[1],
+            vd[0].hw_frames[ringNo]->data[0],vd[0].hw_frames[ringNo]->linesize[0], vd[0].hw_frames[ringNo]->data[1],vd[0].hw_frames[ringNo]->linesize[1],
+            vd[1].hw_frames[ringNo]->data[0],vd[1].hw_frames[ringNo]->linesize[0], vd[1].hw_frames[ringNo]->data[1],vd[1].hw_frames[ringNo]->linesize[1],
+            vd[2].hw_frames[ringNo]->data[0],vd[2].hw_frames[ringNo]->linesize[0], vd[2].hw_frames[ringNo]->data[1],vd[2].hw_frames[ringNo]->linesize[1],
+            vd[3].hw_frames[ringNo]->data[0],vd[3].hw_frames[ringNo]->linesize[0], vd[3].hw_frames[ringNo]->data[1],vd[3].hw_frames[ringNo]->linesize[1],
             Frame.d_decode_rgba, Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
     }else if(vd.size() == 8){
         //NV12→RGBA→結合
         CUDA_IMG_Proc->nv12x8_to_rgba_merge(
-            vd[0].Frame->data[0],vd[0].Frame->linesize[0], vd[0].Frame->data[1],vd[0].Frame->linesize[1],
-            vd[1].Frame->data[0],vd[1].Frame->linesize[0], vd[1].Frame->data[1],vd[1].Frame->linesize[1],
-            vd[2].Frame->data[0],vd[2].Frame->linesize[0], vd[2].Frame->data[1],vd[2].Frame->linesize[1],
-            vd[3].Frame->data[0],vd[3].Frame->linesize[0], vd[3].Frame->data[1],vd[3].Frame->linesize[1],
-            vd[4].Frame->data[0],vd[4].Frame->linesize[0], vd[4].Frame->data[1],vd[4].Frame->linesize[1],
-            vd[5].Frame->data[0],vd[5].Frame->linesize[0], vd[5].Frame->data[1],vd[5].Frame->linesize[1],
-            vd[6].Frame->data[0],vd[6].Frame->linesize[0], vd[6].Frame->data[1],vd[6].Frame->linesize[1],
-            vd[7].Frame->data[0],vd[7].Frame->linesize[0], vd[7].Frame->data[1],vd[7].Frame->linesize[1],
+            vd[0].hw_frames[ringNo]->data[0],vd[0].hw_frames[ringNo]->linesize[0], vd[0].hw_frames[ringNo]->data[1],vd[0].hw_frames[ringNo]->linesize[1],
+            vd[1].hw_frames[ringNo]->data[0],vd[1].hw_frames[ringNo]->linesize[0], vd[1].hw_frames[ringNo]->data[1],vd[1].hw_frames[ringNo]->linesize[1],
+            vd[2].hw_frames[ringNo]->data[0],vd[2].hw_frames[ringNo]->linesize[0], vd[2].hw_frames[ringNo]->data[1],vd[2].hw_frames[ringNo]->linesize[1],
+            vd[3].hw_frames[ringNo]->data[0],vd[3].hw_frames[ringNo]->linesize[0], vd[3].hw_frames[ringNo]->data[1],vd[3].hw_frames[ringNo]->linesize[1],
+            vd[4].hw_frames[ringNo]->data[0],vd[4].hw_frames[ringNo]->linesize[0], vd[4].hw_frames[ringNo]->data[1],vd[4].hw_frames[ringNo]->linesize[1],
+            vd[5].hw_frames[ringNo]->data[0],vd[5].hw_frames[ringNo]->linesize[0], vd[5].hw_frames[ringNo]->data[1],vd[5].hw_frames[ringNo]->linesize[1],
+            vd[6].hw_frames[ringNo]->data[0],vd[6].hw_frames[ringNo]->linesize[0], vd[6].hw_frames[ringNo]->data[1],vd[6].hw_frames[ringNo]->linesize[1],
+            vd[7].hw_frames[ringNo]->data[0],vd[7].hw_frames[ringNo]->linesize[0], vd[7].hw_frames[ringNo]->data[1],vd[7].hw_frames[ringNo]->linesize[1],
             Frame.d_decode_rgba, Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
     }else{
         // NV12 → RGBA
@@ -731,10 +735,10 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             CUDA_IMG_Proc->NV12_to_RGBA_8bit(
                 Frame.d_decode_rgba,
                 Frame.decode_pitch,
-                vd[0].Frame->data[0],
-                vd[0].Frame->linesize[0],
-                vd[0].Frame->data[1],
-                vd[0].Frame->linesize[1],
+                vd[0].hw_frames[ringNo]->data[0],
+                vd[0].hw_frames[ringNo]->linesize[0],
+                vd[0].hw_frames[ringNo]->data[1],
+                vd[0].hw_frames[ringNo]->linesize[1],
                 VideoInfo.width*VideoInfo.width_scale,
                 VideoInfo.height*VideoInfo.height_scale,
                 stream
@@ -743,10 +747,10 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
             CUDA_IMG_Proc->NV12_to_RGBA_10bit(
                 Frame.d_decode_rgba,
                 Frame.decode_pitch,
-                vd[0].Frame->data[0],
-                vd[0].Frame->linesize[0],
-                vd[0].Frame->data[1],
-                vd[0].Frame->linesize[1],
+                vd[0].hw_frames[ringNo]->data[0],
+                vd[0].hw_frames[ringNo]->linesize[0],
+                vd[0].hw_frames[ringNo]->data[1],
+                vd[0].hw_frames[ringNo]->linesize[1],
                 VideoInfo.width*VideoInfo.width_scale,
                 VideoInfo.height*VideoInfo.height_scale,
                 stream
@@ -765,15 +769,15 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
 
     //フレーム番号取得
     if(seek_flag){
-        Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = Frame.FrameNo;
         back1FrameNo = Frame.FrameNo-1;
     }else if(back1frame_flag||high_res_slider_flag){
-        Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = Frame.FrameNo;
     }else{
         back1FrameNo = Frame.FrameNo;
-        Frame.FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
         slider_No = Frame.FrameNo;
     }
     seek_flag = false;
@@ -783,6 +787,10 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     Frame.hour = time / 3600;
     Frame.minute = (int(time) % 3600) / 60;
     Frame.second = fmod(time, 60.0);
+
+    //リングを回す
+    ringNo++;
+    if(ringNo>=ringSize) ringNo = 0;
 
     emit send_decode_image(Frame,false,video_reverse_flag);
 }
@@ -846,7 +854,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
             // ---------- EOF ----------
             if (ret < 0) {
                 avcodec_send_packet(vd[0].codec_ctx, nullptr);
-                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
                     av_packet_unref(packet);
                     break;
                 }
@@ -872,7 +880,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
             // ----------- VIDEO PACKET -----------
             if (packet->stream_index == vd[0].stream_index) {
                 if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
-                    if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].Frame) == 0) {
+                    if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
                         av_packet_unref(packet);
                         break;
                     }
@@ -882,7 +890,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
         //ターゲットフレームの番号かどうか判定
         back1FrameNo = FrameNo;
-        FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){
@@ -923,7 +931,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
             if (ret < 0) {
                 for (int i = 0; i < vd.size(); i++) {
                     avcodec_send_packet(vd[i].codec_ctx, nullptr);
-                    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
+                    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
                         got_frame[i] = true;
                         got_count++;
                     }
@@ -936,7 +944,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
             for (int i = 0; i < vd.size(); i++) {
                 if (packet->stream_index == vd[i].stream_index && !got_frame[i]) {
                     if (avcodec_send_packet(vd[i].codec_ctx, packet) == 0) {
-                        if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].Frame) == 0) {
+                        if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
                             got_frame[i] = true;
                             got_count++;
                         }
@@ -953,7 +961,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
 
         //フレーム番号記憶
         back1FrameNo = FrameNo;
-        FrameNo = vd[0].Frame->best_effort_timestamp / VideoInfo.pts_per_frame;
+        FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo<=FrameNo){

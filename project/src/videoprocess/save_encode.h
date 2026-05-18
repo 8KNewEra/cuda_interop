@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 #include <QDebug>
 #include <QFile>
+#include <queue>
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "src/main/__global__.h"
 
@@ -42,6 +43,11 @@ struct VideoEncoder {
     AVBufferRef*    hw_frames_ctx = nullptr;
     std::vector<FrameSlot> hw_frames;
 
+    std::queue<int> inflight;
+    std::mutex inflight_mtx;
+    std::condition_variable inflight_cv;
+    int max_inflight = 32; // ★これが重要（調整ポイント）
+
     cudaStream_t st = nullptr;
 };
 
@@ -61,7 +67,7 @@ private:
 
     // --- FFmpeg 関連 ---
     AVPacket* packet = nullptr;
-    std::vector<VideoEncoder> ve;   // デフォルトコンストラクタで N 個作成
+    std::vector<std::unique_ptr<VideoEncoder>> ve;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;          // 出力ファイルのフォーマットコンテキスト
     int64_t frame_index = 0;                         // PTS 管理用
 
@@ -85,6 +91,9 @@ private:
 
     //リング設定
     int ringSize = 1200;
+    // inflight FIFO
+    void wait_inflight(VideoEncoder& enc);
+    void drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet);
 };
 
 #endif // SAVE_ENCODE_H
