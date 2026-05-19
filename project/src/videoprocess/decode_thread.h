@@ -142,7 +142,7 @@ protected:
 
     //リング設定
     int ringNo = 0;
-    int ringSize = 60;
+    int ringSize = 1;
 };
 
 #endif // DECODE_THREAD_H

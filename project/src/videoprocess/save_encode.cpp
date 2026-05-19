@@ -568,175 +568,193 @@ void save_encode::init_audio_encoder()
 }
 
 //映像エンコード
-void save_encode::encode(VideoFrame Frame){
-    //gpu0のフレームはそのままhw_frameに書き込み
-    for(int i = 0; i < ve.size(); i++)
+void save_encode::encode(VideoFrame Frame)
+{
+    // ==========================================================
+    // 0) primary GPUの場合、hw_frameを直接書き込み先にする
+    // ==========================================================
+    for (int i = 0; i < (int)ve.size(); i++)
     {
         if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
         {
             AVFrame* out = ve[i]->hw_frames[ve[i]->ringNo].frame;
-            ve[i]->d_y     = out->data[0];
-            ve[i]->y_pitch = out->linesize[0];
-            ve[i]->d_uv    = out->data[1];
-            ve[i]->uv_pitch= out->linesize[1];
+            ve[i]->d_y      = out->data[0];
+            ve[i]->y_pitch  = out->linesize[0];
+            ve[i]->d_uv     = out->data[1];
+            ve[i]->uv_pitch = out->linesize[1];
         }
     }
 
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(st);
-    cudaEventRecord(ev, st);
-    cudaEventSynchronize(ev);
-
-    // ------------------------
-    // CUDA NV12変換
-    // ------------------------
-    //本カーネル
-    if(ve.size()==1){
-        //RGBAをNV12に変換してffmpegへ転送
-        CUDA_IMG_Proc->Flip_RGBA_to_NV12(ve[0]->d_y,ve[0]->y_pitch, ve[0]->d_uv,ve[0]->uv_pitch,Frame.d_encode_rgba, Frame.encode_pitch,width_,height_,st);
-    }else if(ve.size()==2){
-        CUDA_IMG_Proc->rgba_to_nv12x2_flip_split(
-            Frame.d_encode_rgba,Frame.encode_pitch,
-            ve[0]->d_y,ve[0]->y_pitch, ve[0]->d_uv,ve[0]->uv_pitch,
-            ve[1]->d_y,ve[1]->y_pitch, ve[1]->d_uv,ve[1]->uv_pitch,
-            width_,height_,
-            width_/encodeSettings.width_tile,
-            height_/encodeSettings.height_tile,
-            st);
-    }else if(ve.size()==4){
-        //RGBAをNV12に変換してffmpegへ転送
-        CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
-            Frame.d_encode_rgba,Frame.encode_pitch,
-            ve[0]->d_y,ve[0]->y_pitch, ve[0]->d_uv,ve[0]->uv_pitch,
-            ve[1]->d_y,ve[1]->y_pitch, ve[1]->d_uv,ve[1]->uv_pitch,
-            ve[2]->d_y,ve[2]->y_pitch, ve[2]->d_uv,ve[2]->uv_pitch,
-            ve[3]->d_y,ve[3]->y_pitch, ve[3]->d_uv,ve[3]->uv_pitch,
-            width_,height_,
-            width_/encodeSettings.width_tile,
-            height_/encodeSettings.height_tile,
-            st);
-    }else if(ve.size()==8){
-        //RGBAをNV12に変換してffmpegへ転送
-        CUDA_IMG_Proc->rgba_to_nv12x8_flip_split(
-            Frame.d_encode_rgba,Frame.encode_pitch,
-            ve[0]->d_y,ve[0]->y_pitch, ve[0]->d_uv,ve[0]->uv_pitch,
-            ve[1]->d_y,ve[1]->y_pitch, ve[1]->d_uv,ve[1]->uv_pitch,
-            ve[2]->d_y,ve[2]->y_pitch, ve[2]->d_uv,ve[2]->uv_pitch,
-            ve[3]->d_y,ve[3]->y_pitch, ve[3]->d_uv,ve[3]->uv_pitch,
-            ve[4]->d_y,ve[4]->y_pitch, ve[4]->d_uv,ve[4]->uv_pitch,
-            ve[5]->d_y,ve[5]->y_pitch, ve[5]->d_uv,ve[5]->uv_pitch,
-            ve[6]->d_y,ve[6]->y_pitch, ve[6]->d_uv,ve[6]->uv_pitch,
-            ve[7]->d_y,ve[7]->y_pitch, ve[7]->d_uv,ve[7]->uv_pitch,
-            width_,height_,
-            width_/encodeSettings.width_tile,
-            height_/encodeSettings.height_tile,
-            st);
+    // ==========================================================
+    // 1) CUDA NV12変換
+    // ==========================================================
+    if (ve.size() == 1) {
+        CUDA_IMG_Proc->Flip_RGBA_to_NV12(
+            ve[0]->d_y, ve[0]->y_pitch,
+            ve[0]->d_uv, ve[0]->uv_pitch,
+            Frame.d_encode_rgba, Frame.encode_pitch,
+            width_, height_,
+            st
+            );
     }
-    //変換完了のイベントを待つだけにする
-    cudaEventRecord(ev, st);
+    else if (ve.size() == 2) {
+        CUDA_IMG_Proc->rgba_to_nv12x2_flip_split(
+            Frame.d_encode_rgba, Frame.encode_pitch,
+            ve[0]->d_y, ve[0]->y_pitch, ve[0]->d_uv, ve[0]->uv_pitch,
+            ve[1]->d_y, ve[1]->y_pitch, ve[1]->d_uv, ve[1]->uv_pitch,
+            width_, height_,
+            width_ / encodeSettings.width_tile,
+            height_ / encodeSettings.height_tile,
+            st
+            );
+    }
+    else if (ve.size() == 4) {
+        CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
+            Frame.d_encode_rgba, Frame.encode_pitch,
+            ve[0]->d_y, ve[0]->y_pitch, ve[0]->d_uv, ve[0]->uv_pitch,
+            ve[1]->d_y, ve[1]->y_pitch, ve[1]->d_uv, ve[1]->uv_pitch,
+            ve[2]->d_y, ve[2]->y_pitch, ve[2]->d_uv, ve[2]->uv_pitch,
+            ve[3]->d_y, ve[3]->y_pitch, ve[3]->d_uv, ve[3]->uv_pitch,
+            width_, height_,
+            width_ / encodeSettings.width_tile,
+            height_ / encodeSettings.height_tile,
+            st
+            );
+    }
+    else if (ve.size() == 8) {
+        CUDA_IMG_Proc->rgba_to_nv12x8_flip_split(
+            Frame.d_encode_rgba, Frame.encode_pitch,
+            ve[0]->d_y, ve[0]->y_pitch, ve[0]->d_uv, ve[0]->uv_pitch,
+            ve[1]->d_y, ve[1]->y_pitch, ve[1]->d_uv, ve[1]->uv_pitch,
+            ve[2]->d_y, ve[2]->y_pitch, ve[2]->d_uv, ve[2]->uv_pitch,
+            ve[3]->d_y, ve[3]->y_pitch, ve[3]->d_uv, ve[3]->uv_pitch,
+            ve[4]->d_y, ve[4]->y_pitch, ve[4]->d_uv, ve[4]->uv_pitch,
+            ve[5]->d_y, ve[5]->y_pitch, ve[5]->d_uv, ve[5]->uv_pitch,
+            ve[6]->d_y, ve[6]->y_pitch, ve[6]->d_uv, ve[6]->uv_pitch,
+            ve[7]->d_y, ve[7]->y_pitch, ve[7]->d_uv, ve[7]->uv_pitch,
+            width_, height_,
+            width_ / encodeSettings.width_tile,
+            height_ / encodeSettings.height_tile,
+            st
+            );
+    }
 
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(st);
+    // ==========================================================
+    // 2) GPU変換完了同期（これが最強）
+    // ==========================================================
     cudaEventRecord(ev, st);
     cudaEventSynchronize(ev);
 
-    //各GPUへ転送
-    for(int i = 0; i < ve.size(); i++)
+    // ==========================================================
+    // 3) 各GPUへ転送
+    // ==========================================================
+    for (int i = 0; i < (int)ve.size(); i++)
     {
         cudaStreamWaitEvent(ve[i]->st, ev, 0);
-        if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID) {
-            // primaryはコピー不要
-            cudaEventRecord(ve[i]->hw_frames[ve[i]->ringNo].ready,st);
+
+        if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
+        {
+            cudaEventRecord(ve[i]->hw_frames[ve[i]->ringNo].ready, ve[i]->st);
             continue;
         }
 
         AVFrame* out = ve[i]->hw_frames[ve[i]->ringNo].frame;
+
         cudaMemcpy2DAsync(
-            out->data[0], out->linesize[0],      // dst (リング)
-            ve[i]->d_y, ve[i]->y_pitch,            // src
+            out->data[0], out->linesize[0],
+            ve[i]->d_y, ve[i]->y_pitch,
             width_ / encodeSettings.width_tile,
             height_ / encodeSettings.height_tile,
             cudaMemcpyDeviceToDevice,
             ve[i]->st
             );
+
         cudaMemcpy2DAsync(
-            out->data[1], out->linesize[1],      // dst (リング)
-            ve[i]->d_uv, ve[i]->uv_pitch,          // src
-            (width_ / encodeSettings.width_tile),
+            out->data[1], out->linesize[1],
+            ve[i]->d_uv, ve[i]->uv_pitch,
+            width_ / encodeSettings.width_tile,
             (height_ / encodeSettings.height_tile) / 2,
             cudaMemcpyDeviceToDevice,
             ve[i]->st
             );
+
         cudaEventRecord(ve[i]->hw_frames[ve[i]->ringNo].ready, ve[i]->st);
     }
-    // 全タイル完了待ち
-    for(int i = 0; i < ve.size(); i++)
+
+    // ==========================================================
+    // 4) 全GPUコピー完了待ち（ここがbarrier）
+    // ==========================================================
+    for (int i = 0; i < (int)ve.size(); i++)
     {
         cudaEventSynchronize(ve[i]->hw_frames[ve[i]->ringNo].ready);
     }
 
-    // ------------------------
-    // エンコード送信
-    // ------------------------
-    for (int i = 0; i < ve.size(); i++)
+    // ==========================================================
+    // 5) send_frame（必ず成功するまで回す）
+    // ==========================================================
+    for (int i = 0; i < (int)ve.size(); i++)
     {
         VideoEncoder& enc = *ve[i];
 
-        // ★ inflight制限（ここが本命）
+        // inflight制限（詰まったら止める）
         wait_inflight(enc);
 
         int slot = enc.ringNo;
         FrameSlot& fs = enc.hw_frames[slot];
 
-        // GPU書き込み完了を待つ
-        cudaEventSynchronize(fs.ready);
-
         AVFrame* f = fs.frame;
         f->pts = frame_index;
 
-    retry_send:
-        uint8_t* y = f->data[0];
-        uint8_t* uv = f->data[1];
+        while (true)
+        {
+            int ret = avcodec_send_frame(enc.codec_ctx, f);
 
-        // qDebug() << "SEND pts=" << f->pts
-        //          << " ptrY=" << (void*)y
-        //          << " ptrUV=" << (void*)uv;
-        int ret = avcodec_send_frame(enc.codec_ctx, f);
-
-        if (ret == 0) {
-            // send成功 → inflightにslot登録
+            if (ret == 0)
             {
-                std::lock_guard<std::mutex> lock(enc.inflight_mtx);
-                enc.inflight.push(slot);
+                // inflight登録
+                {
+                    std::lock_guard<std::mutex> lock(enc.inflight_mtx);
+                    enc.inflight.push(slot);
+                }
+
+                enc.ringNo++;
+                if (enc.ringNo >= (int)enc.hw_frames.size())
+                    enc.ringNo = 0;
+
+                break;
             }
 
-            // ringを進める
-            enc.ringNo++;
-            if (enc.ringNo >= (int)enc.hw_frames.size())
-                enc.ringNo = 0;
+            if (ret == AVERROR(EAGAIN))
+            {
+                drain_encoder(enc, fmt_ctx, packet);
+                continue;
+            }
 
-            continue;
+            qDebug() << "send_frame error:" << ret;
+            break;
         }
-
-        if (ret == AVERROR(EAGAIN)) {
-            // 詰まったら吐く
-            drain_encoder(enc, fmt_ctx, packet);
-            goto retry_send;
-        }
-
-        qDebug() << "send_frame error:" << ret;
     }
 
-    // ---- mux drain（必須）----
-    for (int i = 0; i < ve.size(); i++) {
+    // ==========================================================
+    // 6) barrier drain（ここが重要）
+    //    「出せるpacketは全部吐き切る」
+    // ==========================================================
+    for (int i = 0; i < (int)ve.size(); i++)
+    {
         drain_encoder(*ve[i], fmt_ctx, packet);
     }
 
-    // ========================
-    // Audio encode（★ここ）
-    // ========================
+    // ==========================================================
+    // 7) mux IO 完了保証（バックプレッシャー対策）
+    // ==========================================================
+    avio_flush(fmt_ctx->pb);
+
+    // ==========================================================
+    // 8) Audio
+    // ==========================================================
     encode_audio(Frame);
-    frame_index+=1;
+
+    frame_index++;
 }
 
 void save_encode::drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet)

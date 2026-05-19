@@ -90,7 +90,7 @@ private:
     AVAudioFifo* audio_fifo = nullptr;
 
     //リング設定
-    int ringSize = 1200;
+    int ringSize = 48;
     // inflight FIFO
     void wait_inflight(VideoEncoder& enc);
     void drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet);
