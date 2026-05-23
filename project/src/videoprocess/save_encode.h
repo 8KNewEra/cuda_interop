@@ -26,6 +26,11 @@ extern int g_openglDeviceID;
 struct FrameSlot {
     AVFrame* frame = nullptr;
     cudaEvent_t ready = nullptr;   // このslotのコピー完了通知
+
+    uint8_t* d_y = nullptr;
+    size_t y_pitch = 0;
+    uint8_t* d_uv = nullptr;
+    size_t uv_pitch = 0;
 };
 
 struct VideoEncoder {
@@ -33,13 +38,7 @@ struct VideoEncoder {
     AVCodecContext* codec_ctx = nullptr;
     AVStream*       stream    = nullptr;
 
-    uint8_t* d_y = nullptr;
-    size_t y_pitch = 0;
-    uint8_t* d_uv = nullptr;
-    size_t uv_pitch = 0;
-
     // リングバッファ
-    int ringNo = 0;
     AVBufferRef*    hw_frames_ctx = nullptr;
     std::vector<FrameSlot> hw_frames;
 
@@ -90,6 +89,7 @@ private:
     AVAudioFifo* audio_fifo = nullptr;
 
     //リング設定
+    int ringNo = 0;
     int ringSize = 48;
     // inflight FIFO
     void wait_inflight(VideoEncoder& enc);
