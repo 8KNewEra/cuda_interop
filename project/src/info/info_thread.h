@@ -5,8 +5,6 @@
 #include <QTimer>
 #include "src/main/__global__.h"
 
-extern int g_openglDeviceID;
-
 class info_thread : public QThread {
     Q_OBJECT
 

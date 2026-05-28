@@ -21,8 +21,6 @@ extern "C" {
 #include "libswresample/swresample.h"
 }
 
-extern int g_openglDeviceID;
-
 struct FrameSlot {
     AVFrame* frame = nullptr;
     cudaEvent_t ready = nullptr;   // このslotのコピー完了通知
@@ -60,7 +58,6 @@ public:
 
 private:
     void initialized_ffmpeg_hardware_context(int i);
-    AVRational fps_to_rational(double fps);
     void initialized_ffmpeg_codec_context(int i,int max_split);
     int height_,width_;
 
@@ -89,8 +86,6 @@ private:
     AVAudioFifo* audio_fifo = nullptr;
 
     //リング設定
-    int ringNo = 0;
-    int ringSize = 48;
     // inflight FIFO
     void wait_inflight(VideoEncoder& enc);
     void drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet);

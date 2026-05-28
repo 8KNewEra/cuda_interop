@@ -22,8 +22,6 @@ extern "C" {
 #include "libswresample/swresample.h"
 }
 
-extern int g_openglDeviceID;
-
 struct VideoDecorder {
     AVCodecContext* codec_ctx = nullptr;
     int stream_index=0;

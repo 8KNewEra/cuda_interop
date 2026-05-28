@@ -1381,7 +1381,8 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
     if(run_decode_thread){
         //シグナルセット
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
-        if(encode_state==STATE_ENCODING){
+        //エンコード時はそのままデコードスレッドにシグナルを出して最速でデコードする
+        if(encode_state==STATE_ENCODING&&g_EncodeRingNo<=g_EncodeRingSize-3){
             QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
         }
 

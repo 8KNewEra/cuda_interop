@@ -262,5 +262,8 @@ struct GPUInfo {
 };
 
 extern std::vector<GPUInfo> g_GPUInfo;
+extern int g_openglDeviceID;
+extern int g_EncodeRingNo;
+extern int g_EncodeRingSize;
 
 #endif // __GLOBAL___H

@@ -15,8 +15,6 @@
 #include <cuda_gl_interop.h>
 #include <QTimer>
 
-extern int g_openglDeviceID;
-
 class GLWidget : public QOpenGLWindow, protected QOpenGLFunctions_4_5_Core
 {
     Q_OBJECT

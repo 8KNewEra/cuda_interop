@@ -17,8 +17,6 @@ namespace Ui {
 class encode_setting;
 }
 
-extern int g_openglDeviceID;
-
 class encode_setting : public QWidget
 {
     Q_OBJECT

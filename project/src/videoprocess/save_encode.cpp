@@ -42,7 +42,7 @@ save_encode::save_encode(int h,int w) {
         this->ve[i]->stream = ve[i]->stream;
 
         //GPU転送用のメモリを確保
-        for(int j=0;j<ringSize;j++){
+        for(int j=0;j<g_EncodeRingSize;j++){
             if(encodeSettings.tile_gpu_map[i] != g_openglDeviceID){
                 cudaMallocPitch(
                     &ve[i]->hw_frames[j].d_y,
@@ -66,7 +66,7 @@ save_encode::save_encode(int h,int w) {
             );
 
         //event作成
-        for(int j=0;j<ringSize;j++){
+        for(int j=0;j<g_EncodeRingSize;j++){
             cudaEventCreateWithFlags(
                 &ve[i]->hw_frames[j].ready,
                 cudaEventDisableTiming
@@ -264,7 +264,7 @@ save_encode::~save_encode() {
     // ---- 各メモリ解放 ----
     for(int i=0;i<ve.size();i++){
         //ハードウェアフレームを解放
-        for(int j=0;j<ringSize;j++){
+        for(int j=0;j<g_EncodeRingSize;j++){
             if (ve[i]->hw_frames[j].frame) {
                 av_frame_unref(ve[i]->hw_frames[j].frame);
                 av_frame_free(&ve[i]->hw_frames[j].frame);
@@ -288,7 +288,7 @@ save_encode::~save_encode() {
             ve[i]->hw_device_ctx = nullptr;
         }
         //メモリ開放
-        for (int j = 0; j < ringSize; j++) {
+        for (int j = 0; j < g_EncodeRingSize; j++) {
             if(encodeSettings.tile_gpu_map[i] != g_openglDeviceID){
                 if (ve[i]->hw_frames[j].d_y) {
                     cudaFree(ve[i]->hw_frames[j].d_y);
@@ -307,7 +307,7 @@ save_encode::~save_encode() {
             ve[i]->st=nullptr;
         }
         //event削除
-        for(int j=0;j<ringSize;j++){
+        for(int j=0;j<g_EncodeRingSize;j++){
             cudaEventDestroy(ve[i]->hw_frames[j].ready);
             ve[i]->hw_frames[j].ready = nullptr;
         }
@@ -384,7 +384,7 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     ve[i]->codec_ctx->pix_fmt = hw_pix_fmt;
 
     //フレームレート設定
-    AVRational fps = fps_to_rational(encodeSettings.save_fps);
+    AVRational fps = av_d2q(encodeSettings.save_fps, 100000);
     ve[i]->codec_ctx->framerate = fps;
     ve[i]->codec_ctx->time_base = av_inv_q(fps);
 
@@ -442,20 +442,6 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     av_dict_free(&opts);
 }
 
-AVRational save_encode::fps_to_rational(double fps)
-{
-    // よくあるNTSC系は固定で返す（誤差吸収）
-    if (fabs(fps - 59.94) < 0.01) return AVRational{60000, 1001};
-    if (fabs(fps - 29.97) < 0.01) return AVRational{30000, 1001};
-    if (fabs(fps - 23.976) < 0.01) return AVRational{24000, 1001};
-
-    // それ以外は整数fpsに丸める（例: 60.0, 30.0）
-    int fps_i = (int)llround(fps);
-    if (fps_i <= 0) fps_i = 30;
-
-    return AVRational{fps_i, 1};
-}
-
 //CUDAデバイスコンテキスト初期化
 void save_encode::initialized_ffmpeg_hardware_context(int i)
 {
@@ -474,17 +460,17 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
     frames_ctx->sw_format = AV_PIX_FMT_NV12;
     frames_ctx->width     = width_  / encodeSettings.width_tile;
     frames_ctx->height    = height_ / encodeSettings.height_tile;
-    frames_ctx->initial_pool_size = ringSize + 4;
+    frames_ctx->initial_pool_size = g_EncodeRingSize + 4;
     ret = av_hwframe_ctx_init(ve[i]->hw_frames_ctx);
     if (ret < 0) {
         throw std::runtime_error("Failed to init frames_ctx");
     }
 
     // hw_frameリング確保
-    ve[i]->hw_frames.resize(ringSize);
+    ve[i]->hw_frames.resize(g_EncodeRingSize);
 
     // リングバッファ構築 AVFrame/cudamalloc
-    for (int j = 0; j < ringSize; j++) {
+    for (int j = 0; j < g_EncodeRingSize; j++) {
         AVFrame* f = av_frame_alloc();
         if (!f) throw std::runtime_error("av_frame_alloc failed");
 
@@ -581,11 +567,11 @@ void save_encode::encode(VideoFrame Frame)
     {
         if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
         {
-            AVFrame* out = ve[i]->hw_frames[ringNo].frame;
-            ve[i]->hw_frames[ringNo].d_y      = out->data[0];
-            ve[i]->hw_frames[ringNo].y_pitch  = out->linesize[0];
-            ve[i]->hw_frames[ringNo].d_uv     = out->data[1];
-            ve[i]->hw_frames[ringNo].uv_pitch = out->linesize[1];
+            AVFrame* out = ve[i]->hw_frames[g_EncodeRingNo].frame;
+            ve[i]->hw_frames[g_EncodeRingNo].d_y      = out->data[0];
+            ve[i]->hw_frames[g_EncodeRingNo].y_pitch  = out->linesize[0];
+            ve[i]->hw_frames[g_EncodeRingNo].d_uv     = out->data[1];
+            ve[i]->hw_frames[g_EncodeRingNo].uv_pitch = out->linesize[1];
         }
     }
 
@@ -594,8 +580,8 @@ void save_encode::encode(VideoFrame Frame)
     // ==========================================================
     if (ve.size() == 1) {
         CUDA_IMG_Proc->Flip_RGBA_to_NV12(
-            ve[0]->hw_frames[ringNo].d_y, ve[0]->hw_frames[ringNo].y_pitch,
-            ve[0]->hw_frames[ringNo].d_uv, ve[0]->hw_frames[ringNo].uv_pitch,
+            ve[0]->hw_frames[g_EncodeRingNo].d_y, ve[0]->hw_frames[g_EncodeRingNo].y_pitch,
+            ve[0]->hw_frames[g_EncodeRingNo].d_uv, ve[0]->hw_frames[g_EncodeRingNo].uv_pitch,
             Frame.d_encode_rgba, Frame.encode_pitch,
             width_, height_,
             st
@@ -604,8 +590,8 @@ void save_encode::encode(VideoFrame Frame)
     else if (ve.size() == 2) {
         CUDA_IMG_Proc->rgba_to_nv12x2_flip_split(
             Frame.d_encode_rgba, Frame.encode_pitch,
-            ve[0]->hw_frames[ringNo].d_y, ve[0]->hw_frames[ringNo].y_pitch, ve[0]->hw_frames[ringNo].d_uv, ve[0]->hw_frames[ringNo].uv_pitch,
-            ve[1]->hw_frames[ringNo].d_y, ve[1]->hw_frames[ringNo].y_pitch, ve[1]->hw_frames[ringNo].d_uv, ve[1]->hw_frames[ringNo].uv_pitch,
+            ve[0]->hw_frames[g_EncodeRingNo].d_y, ve[0]->hw_frames[g_EncodeRingNo].y_pitch, ve[0]->hw_frames[g_EncodeRingNo].d_uv, ve[0]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[1]->hw_frames[g_EncodeRingNo].d_y, ve[1]->hw_frames[g_EncodeRingNo].y_pitch, ve[1]->hw_frames[g_EncodeRingNo].d_uv, ve[1]->hw_frames[g_EncodeRingNo].uv_pitch,
             width_, height_,
             width_ / encodeSettings.width_tile,
             height_ / encodeSettings.height_tile,
@@ -615,10 +601,10 @@ void save_encode::encode(VideoFrame Frame)
     else if (ve.size() == 4) {
         CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
             Frame.d_encode_rgba, Frame.encode_pitch,
-            ve[0]->hw_frames[ringNo].d_y, ve[0]->hw_frames[ringNo].y_pitch, ve[0]->hw_frames[ringNo].d_uv, ve[0]->hw_frames[ringNo].uv_pitch,
-            ve[1]->hw_frames[ringNo].d_y, ve[1]->hw_frames[ringNo].y_pitch, ve[1]->hw_frames[ringNo].d_uv, ve[1]->hw_frames[ringNo].uv_pitch,
-            ve[2]->hw_frames[ringNo].d_y, ve[2]->hw_frames[ringNo].y_pitch, ve[2]->hw_frames[ringNo].d_uv, ve[2]->hw_frames[ringNo].uv_pitch,
-            ve[3]->hw_frames[ringNo].d_y, ve[3]->hw_frames[ringNo].y_pitch, ve[3]->hw_frames[ringNo].d_uv, ve[3]->hw_frames[ringNo].uv_pitch,
+            ve[0]->hw_frames[g_EncodeRingNo].d_y, ve[0]->hw_frames[g_EncodeRingNo].y_pitch, ve[0]->hw_frames[g_EncodeRingNo].d_uv, ve[0]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[1]->hw_frames[g_EncodeRingNo].d_y, ve[1]->hw_frames[g_EncodeRingNo].y_pitch, ve[1]->hw_frames[g_EncodeRingNo].d_uv, ve[1]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[2]->hw_frames[g_EncodeRingNo].d_y, ve[2]->hw_frames[g_EncodeRingNo].y_pitch, ve[2]->hw_frames[g_EncodeRingNo].d_uv, ve[2]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[3]->hw_frames[g_EncodeRingNo].d_y, ve[3]->hw_frames[g_EncodeRingNo].y_pitch, ve[3]->hw_frames[g_EncodeRingNo].d_uv, ve[3]->hw_frames[g_EncodeRingNo].uv_pitch,
             width_, height_,
             width_ / encodeSettings.width_tile,
             height_ / encodeSettings.height_tile,
@@ -628,14 +614,14 @@ void save_encode::encode(VideoFrame Frame)
     else if (ve.size() == 8) {
         CUDA_IMG_Proc->rgba_to_nv12x8_flip_split(
             Frame.d_encode_rgba, Frame.encode_pitch,
-            ve[0]->hw_frames[ringNo].d_y, ve[0]->hw_frames[ringNo].y_pitch, ve[0]->hw_frames[ringNo].d_uv, ve[0]->hw_frames[ringNo].uv_pitch,
-            ve[1]->hw_frames[ringNo].d_y, ve[1]->hw_frames[ringNo].y_pitch, ve[1]->hw_frames[ringNo].d_uv, ve[1]->hw_frames[ringNo].uv_pitch,
-            ve[2]->hw_frames[ringNo].d_y, ve[2]->hw_frames[ringNo].y_pitch, ve[2]->hw_frames[ringNo].d_uv, ve[2]->hw_frames[ringNo].uv_pitch,
-            ve[3]->hw_frames[ringNo].d_y, ve[3]->hw_frames[ringNo].y_pitch, ve[3]->hw_frames[ringNo].d_uv, ve[3]->hw_frames[ringNo].uv_pitch,
-            ve[4]->hw_frames[ringNo].d_y, ve[4]->hw_frames[ringNo].y_pitch, ve[4]->hw_frames[ringNo].d_uv, ve[4]->hw_frames[ringNo].uv_pitch,
-            ve[5]->hw_frames[ringNo].d_y, ve[5]->hw_frames[ringNo].y_pitch, ve[5]->hw_frames[ringNo].d_uv, ve[5]->hw_frames[ringNo].uv_pitch,
-            ve[6]->hw_frames[ringNo].d_y, ve[6]->hw_frames[ringNo].y_pitch, ve[6]->hw_frames[ringNo].d_uv, ve[6]->hw_frames[ringNo].uv_pitch,
-            ve[7]->hw_frames[ringNo].d_y, ve[7]->hw_frames[ringNo].y_pitch, ve[7]->hw_frames[ringNo].d_uv, ve[7]->hw_frames[ringNo].uv_pitch,
+            ve[0]->hw_frames[g_EncodeRingNo].d_y, ve[0]->hw_frames[g_EncodeRingNo].y_pitch, ve[0]->hw_frames[g_EncodeRingNo].d_uv, ve[0]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[1]->hw_frames[g_EncodeRingNo].d_y, ve[1]->hw_frames[g_EncodeRingNo].y_pitch, ve[1]->hw_frames[g_EncodeRingNo].d_uv, ve[1]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[2]->hw_frames[g_EncodeRingNo].d_y, ve[2]->hw_frames[g_EncodeRingNo].y_pitch, ve[2]->hw_frames[g_EncodeRingNo].d_uv, ve[2]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[3]->hw_frames[g_EncodeRingNo].d_y, ve[3]->hw_frames[g_EncodeRingNo].y_pitch, ve[3]->hw_frames[g_EncodeRingNo].d_uv, ve[3]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[4]->hw_frames[g_EncodeRingNo].d_y, ve[4]->hw_frames[g_EncodeRingNo].y_pitch, ve[4]->hw_frames[g_EncodeRingNo].d_uv, ve[4]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[5]->hw_frames[g_EncodeRingNo].d_y, ve[5]->hw_frames[g_EncodeRingNo].y_pitch, ve[5]->hw_frames[g_EncodeRingNo].d_uv, ve[5]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[6]->hw_frames[g_EncodeRingNo].d_y, ve[6]->hw_frames[g_EncodeRingNo].y_pitch, ve[6]->hw_frames[g_EncodeRingNo].d_uv, ve[6]->hw_frames[g_EncodeRingNo].uv_pitch,
+            ve[7]->hw_frames[g_EncodeRingNo].d_y, ve[7]->hw_frames[g_EncodeRingNo].y_pitch, ve[7]->hw_frames[g_EncodeRingNo].d_uv, ve[7]->hw_frames[g_EncodeRingNo].uv_pitch,
             width_, height_,
             width_ / encodeSettings.width_tile,
             height_ / encodeSettings.height_tile,
@@ -658,15 +644,15 @@ void save_encode::encode(VideoFrame Frame)
 
         if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
         {
-            cudaEventRecord(ve[i]->hw_frames[ringNo].ready, ve[i]->st);
+            cudaEventRecord(ve[i]->hw_frames[g_EncodeRingNo].ready, ve[i]->st);
             continue;
         }
 
-        AVFrame* out = ve[i]->hw_frames[ringNo].frame;
+        AVFrame* out = ve[i]->hw_frames[g_EncodeRingNo].frame;
 
         cudaMemcpy2DAsync(
             out->data[0], out->linesize[0],
-            ve[i]->hw_frames[ringNo].d_y, ve[i]->hw_frames[ringNo].y_pitch,
+            ve[i]->hw_frames[g_EncodeRingNo].d_y, ve[i]->hw_frames[g_EncodeRingNo].y_pitch,
             width_ / encodeSettings.width_tile,
             height_ / encodeSettings.height_tile,
             cudaMemcpyDeviceToDevice,
@@ -675,14 +661,14 @@ void save_encode::encode(VideoFrame Frame)
 
         cudaMemcpy2DAsync(
             out->data[1], out->linesize[1],
-            ve[i]->hw_frames[ringNo].d_uv, ve[i]->hw_frames[ringNo].uv_pitch,
+            ve[i]->hw_frames[g_EncodeRingNo].d_uv, ve[i]->hw_frames[g_EncodeRingNo].uv_pitch,
             width_ / encodeSettings.width_tile,
             (height_ / encodeSettings.height_tile) / 2,
             cudaMemcpyDeviceToDevice,
             ve[i]->st
             );
 
-        cudaEventRecord(ve[i]->hw_frames[ringNo].ready, ve[i]->st);
+        cudaEventRecord(ve[i]->hw_frames[g_EncodeRingNo].ready, ve[i]->st);
     }
 
     // ==========================================================
@@ -690,7 +676,7 @@ void save_encode::encode(VideoFrame Frame)
     // ==========================================================
     for (int i = 0; i < (int)ve.size(); i++)
     {
-        cudaEventSynchronize(ve[i]->hw_frames[ringNo].ready);
+        cudaEventSynchronize(ve[i]->hw_frames[g_EncodeRingNo].ready);
     }
 
     // ==========================================================
@@ -703,7 +689,7 @@ void save_encode::encode(VideoFrame Frame)
         // inflight制限（詰まったら止める）
         wait_inflight(enc);
 
-        int slot = ringNo;
+        int slot = g_EncodeRingNo;
         FrameSlot& fs = enc.hw_frames[slot];
 
         AVFrame* f = fs.frame;
@@ -754,9 +740,9 @@ void save_encode::encode(VideoFrame Frame)
     // ==========================================================
     encode_audio(Frame);
 
-    ringNo++;
-    if (ringNo >= ringSize)
-        ringNo = 0;
+    g_EncodeRingNo++;
+    if (g_EncodeRingNo >= g_EncodeRingSize)
+        g_EncodeRingNo = 0;
 
     frame_index++;
 }
