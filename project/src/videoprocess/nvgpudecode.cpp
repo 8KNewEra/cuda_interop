@@ -301,7 +301,7 @@ bool nvgpudecode::initialized_ffmpeg()
         audioSink = new QAudioSink(fmt);
         audioOutput = audioSink->start();
 
-        VideoInfo.audio = false;
+        VideoInfo.audio = true;
     }
 
     // ------------------------

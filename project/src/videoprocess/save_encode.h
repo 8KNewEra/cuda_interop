@@ -7,6 +7,7 @@
 #include <QDebug>
 #include <QFile>
 #include <queue>
+#include "qmutex.h"
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "src/main/__global__.h"
 
@@ -48,6 +49,12 @@ struct VideoEncoder {
     cudaStream_t st = nullptr;
 };
 
+struct AudioJob
+{
+    QVector<QByteArray> audio_pcm;
+    QVector<int> audio_pts;
+};
+
 
 class save_encode
 {
@@ -60,6 +67,8 @@ private:
     void initialized_ffmpeg_hardware_context(int i);
     void initialized_ffmpeg_codec_context(int i,int max_split);
     int height_,width_;
+
+    void encode_video(VideoFrame Frame);;
 
     // --- FFmpeg 関連 ---
     AVPacket* packet = nullptr;
@@ -75,18 +84,29 @@ private:
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
     cudaStream_t st = nullptr;
     cudaEvent_t ev = nullptr;
+    QMutex muxMutex;
 
     //音声
     void init_audio_encoder();
-    void encode_audio(VideoFrame Frame);
+    void encode_audio(AudioJob Frame);
     SwrContext* swr_enc = nullptr;
     AVCodecContext* audio_enc_ctx = nullptr;
     AVStream*       audio_stream  = nullptr;
     int64_t         audio_pts     = 0;
     AVAudioFifo* audio_fifo = nullptr;
 
-    //リング設定
-    // inflight FIFO
+    //音声エンコードスレッド関連
+    std::queue<AudioJob> audioQueue;
+    std::mutex audioMutex;
+    std::condition_variable audioCV;
+    std::thread audioThread;
+    std::atomic<bool> audioRunning = false;
+    std::mutex audioEncMutex;
+    void audio_loop();
+    void stop_audio_thread();
+    void audio_flush();
+
+    //リング設定(映像エンコード)
     void wait_inflight(VideoEncoder& enc);
     void drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet);
 };

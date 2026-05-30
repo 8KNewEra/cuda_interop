@@ -75,8 +75,15 @@ save_encode::save_encode(int h,int w) {
 
     }
 
-    if(VideoInfo.audio)
+    if(VideoInfo.audio){
         init_audio_encoder();
+        audioRunning = true;
+        audioThread =
+            std::thread(
+                &save_encode::audio_loop,
+                this
+                );
+    }
 
     // ③ ファイルオープンは1回
     ret = avio_open(&fmt_ctx->pb, encodeSettings.encode_path.toUtf8().constData(), AVIO_FLAG_WRITE);
@@ -151,12 +158,16 @@ save_encode::~save_encode() {
 
                     packet->stream_index = ve[i]->stream->index;
 
-                    int wret = av_interleaved_write_frame(fmt_ctx, packet);
-                    if (wret < 0) {
-                        char err[256];
-                        av_strerror(wret, err, sizeof(err));
-                        qDebug() << "write_frame error:" << wret << err;
+                    {
+                        QMutexLocker locker(&muxMutex);
+                        int wret = av_interleaved_write_frame(fmt_ctx, packet);
+                        if (wret < 0) {
+                            char err[256];
+                            av_strerror(wret, err, sizeof(err));
+                            qDebug() << "write_frame error:" << wret << err;
+                        }
                     }
+
 
                     av_packet_unref(packet);
                     continue;
@@ -189,61 +200,7 @@ save_encode::~save_encode() {
         }
     }
 
-    // ==========================
-    // Audio flush（AAC）
-    // ==========================
-    if (audio_enc_ctx && audio_fifo) {
-        const int fs = audio_enc_ctx->frame_size;
-        int remain = av_audio_fifo_size(audio_fifo);
-
-        if (remain > 0) {
-            AVFrame* f = av_frame_alloc();
-            f->nb_samples = fs;
-            f->format = audio_enc_ctx->sample_fmt;
-            f->sample_rate = audio_enc_ctx->sample_rate;
-            av_channel_layout_copy(&f->ch_layout, &audio_enc_ctx->ch_layout);
-
-            av_frame_get_buffer(f, 0);
-
-            // FIFO → frame
-            av_audio_fifo_read(audio_fifo, (void**)f->data, remain);
-
-            // 不足分を silence で埋める
-            av_samples_set_silence(
-                f->data,
-                remain,
-                fs - remain,
-                audio_enc_ctx->ch_layout.nb_channels,
-                audio_enc_ctx->sample_fmt
-                );
-
-            // PTS
-            f->pts = audio_pts;
-            audio_pts += remain; // ★ 実サンプル数で進める
-
-            avcodec_send_frame(audio_enc_ctx, f);
-            av_frame_free(&f);
-        }
-
-        // NULL frame で drain
-        avcodec_send_frame(audio_enc_ctx, nullptr);
-
-        // ★ packet drain loop
-        AVPacket pkt;
-        av_init_packet(&pkt);
-
-        while (avcodec_receive_packet(audio_enc_ctx, &pkt) == 0) {
-            av_packet_rescale_ts(
-                &pkt,
-                audio_enc_ctx->time_base,
-                audio_stream->time_base
-                );
-
-            pkt.stream_index = audio_stream->index;
-            av_interleaved_write_frame(fmt_ctx, &pkt);
-            av_packet_unref(&pkt);
-        }
-    }
+    stop_audio_thread();
 
     // ==========================
     // ファイルの終了処理
@@ -557,8 +514,35 @@ void save_encode::init_audio_encoder()
     audio_pts = 0;
 }
 
-//映像エンコード
+//エンコード
 void save_encode::encode(VideoFrame Frame)
+{
+    if (!Frame.audio_pcm.isEmpty()&&VideoInfo.audio)
+    {
+        AudioJob job;
+
+        job.audio_pcm =
+            Frame.audio_pcm;
+
+        job.audio_pts =
+            Frame.audio_pts;
+
+        {
+            std::lock_guard<std::mutex>
+                lock(audioMutex);
+
+            audioQueue.push(
+                std::move(job)
+                );
+        }
+        audioCV.notify_one();
+    }
+
+    encode_video(Frame);
+}
+
+//映像エンコード
+void save_encode::encode_video(VideoFrame Frame)
 {
     // ==========================================================
     // 0) primary GPUの場合、hw_frameを直接書き込み先にする
@@ -730,16 +714,6 @@ void save_encode::encode(VideoFrame Frame)
         drain_encoder(*ve[i], fmt_ctx, packet);
     }
 
-    // ==========================================================
-    // 7) mux IO 完了保証（バックプレッシャー対策）
-    // ==========================================================
-    avio_flush(fmt_ctx->pb);
-
-    // ==========================================================
-    // 8) Audio
-    // ==========================================================
-    encode_audio(Frame);
-
     g_EncodeRingNo++;
     if (g_EncodeRingNo >= g_EncodeRingSize)
         g_EncodeRingNo = 0;
@@ -747,6 +721,7 @@ void save_encode::encode(VideoFrame Frame)
     frame_index++;
 }
 
+//映像フレームドレイン
 void save_encode::drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet)
 {
     while (true) {
@@ -761,7 +736,12 @@ void save_encode::drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVP
 
 
             packet->stream_index = enc.stream->index;
-            av_interleaved_write_frame(fmt_ctx, packet);
+
+            {
+                QMutexLocker locker(&muxMutex);
+                av_interleaved_write_frame(fmt_ctx, packet);
+            }
+
             av_packet_unref(packet);
 
             // ★ packetが出たら slotを1個解放
@@ -785,6 +765,7 @@ void save_encode::drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVP
     }
 }
 
+//inflight制御
 void save_encode::wait_inflight(VideoEncoder& enc)
 {
     std::unique_lock<std::mutex> lock(enc.inflight_mtx);
@@ -795,7 +776,7 @@ void save_encode::wait_inflight(VideoEncoder& enc)
 }
 
 //音声エンコード
-void save_encode::encode_audio(VideoFrame Frame)
+void save_encode::encode_audio(AudioJob Frame)
 {
     if (!audio_enc_ctx || !audio_fifo || !swr_enc) return;
 
@@ -874,8 +855,130 @@ void save_encode::encode_audio(VideoFrame Frame)
                 audio_stream->time_base
                 );
             pkt.stream_index = audio_stream->index;
-            av_interleaved_write_frame(fmt_ctx, &pkt);
+
+            {
+                QMutexLocker locker(&muxMutex);
+                av_interleaved_write_frame(fmt_ctx, &pkt);
+            }
+
             av_packet_unref(&pkt);
         }
     }
+}
+
+//音声エンコードスレッドループ
+void save_encode::audio_loop()
+{
+    while (audioRunning)
+    {
+        AudioJob job;
+
+        {
+            std::unique_lock<std::mutex> lock(audioMutex);
+
+            audioCV.wait(lock, [&] {
+                return !audioQueue.empty()
+                || !audioRunning;
+            });
+
+            if (!audioRunning &&
+                audioQueue.empty())
+                break;
+
+            job = std::move(audioQueue.front());
+            audioQueue.pop();
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(audioEncMutex);
+            encode_audio(job);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(audioEncMutex);
+        audio_flush();
+    }
+}
+
+//音声エンコード終了処理
+void save_encode::audio_flush(){
+    // ==========================
+    // Audio flush（AAC）
+    // ==========================
+    if (audio_enc_ctx && audio_fifo) {
+        const int fs = audio_enc_ctx->frame_size;
+        int remain = av_audio_fifo_size(audio_fifo);
+
+        if (remain > 0) {
+            AVFrame* f = av_frame_alloc();
+            f->nb_samples = fs;
+            f->format = audio_enc_ctx->sample_fmt;
+            f->sample_rate = audio_enc_ctx->sample_rate;
+            av_channel_layout_copy(&f->ch_layout, &audio_enc_ctx->ch_layout);
+
+            av_frame_get_buffer(f, 0);
+
+            // FIFO → frame
+            av_audio_fifo_read(audio_fifo, (void**)f->data, remain);
+
+            // 不足分を silence で埋める
+            av_samples_set_silence(
+                f->data,
+                remain,
+                fs - remain,
+                audio_enc_ctx->ch_layout.nb_channels,
+                audio_enc_ctx->sample_fmt
+                );
+
+            // PTS
+            f->pts = audio_pts;
+            audio_pts += remain; // ★ 実サンプル数で進める
+
+            avcodec_send_frame(audio_enc_ctx, f);
+            av_frame_free(&f);
+        }
+
+        // NULL frame で drain
+        avcodec_send_frame(audio_enc_ctx, nullptr);
+
+        // ★ packet drain loop
+        AVPacket pkt;
+        av_init_packet(&pkt);
+
+        while (avcodec_receive_packet(audio_enc_ctx, &pkt) == 0) {
+            av_packet_rescale_ts(
+                &pkt,
+                audio_enc_ctx->time_base,
+                audio_stream->time_base
+                );
+
+            pkt.stream_index = audio_stream->index;
+
+            {
+                QMutexLocker locker(&muxMutex);
+                av_interleaved_write_frame(fmt_ctx, &pkt);
+            }
+
+            av_packet_unref(&pkt);
+        }
+    }
+}
+
+//音声エンコード終了
+void save_encode::stop_audio_thread()
+{
+    {
+        std::lock_guard<std::mutex>
+            lock(audioMutex);
+
+        audioRunning = false;
+    }
+
+    audioCV.notify_all();
+
+    if (audioThread.joinable())
+        audioThread.join();
+
+    qDebug() << "audio joined";
 }
