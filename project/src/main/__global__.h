@@ -14,7 +14,6 @@ extern "C" {
     #include <libavutil/samplefmt.h>
 }
 
-
 // アプリ設定を保持する構造体
 struct AppSettings
 {
@@ -39,9 +38,6 @@ struct AppSettings
     bool gaussianfilterEnabled = false;
     bool averagingfilterEnabled = false;
 };
-
-extern AppSettings g_AppSettings;
-
 
 // エンコード設定の構造体
 struct EncodeSettings {
@@ -261,6 +257,7 @@ struct GPUInfo {
     bool av1_forced_disabled = false;
 };
 
+extern AppSettings g_AppSettings;
 extern std::vector<GPUInfo> g_GPUInfo;
 extern int g_openglDeviceID;
 extern int g_EncodeRingNo;

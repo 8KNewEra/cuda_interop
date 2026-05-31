@@ -6,11 +6,10 @@
 #include <QStyleFactory>
 
 std::vector<GPUInfo> g_GPUInfo;
+AppSettings g_AppSettings{};
+int g_openglDeviceID=0;
 int g_EncodeRingNo = 0;
 int g_EncodeRingSize = 36;
-int g_openglDeviceID=0;
-cudaDeviceProp g_prop={};
-AppSettings g_AppSettings{};
 
 int main(int argc, char *argv[])
 {

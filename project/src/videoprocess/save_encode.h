@@ -108,7 +108,7 @@ private:
 
     //リング設定(映像エンコード)
     void wait_inflight(VideoEncoder& enc);
-    void drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet);
+    void drain_video_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet);
 };
 
 #endif // SAVE_ENCODE_H

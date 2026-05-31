@@ -75,6 +75,7 @@ save_encode::save_encode(int h,int w) {
 
     }
 
+    //音声エンコーダー作成
     if(VideoInfo.audio){
         init_audio_encoder();
         audioRunning = true;
@@ -89,23 +90,9 @@ save_encode::save_encode(int h,int w) {
     ret = avio_open(&fmt_ctx->pb, encodeSettings.encode_path.toUtf8().constData(), AVIO_FLAG_WRITE);
     if (ret < 0) throw std::runtime_error("Failed to open output file");
 
-    qDebug() << "FINAL enc_tb="
-             << ve[0]->codec_ctx->time_base.num << "/"
-             << ve[0]->codec_ctx->time_base.den;
-    qDebug() << "FINAL st_tb="
-             << ve[0]->stream->time_base.num << "/"
-             << ve[0]->stream->time_base.den;
-
     // ④ ヘッダ書き込みは全 stream 作成後
     ret = avformat_write_header(fmt_ctx, nullptr);
     if (ret < 0) throw std::runtime_error("Failed to write header");
-
-    qDebug() << "FINAL enc_tb="
-             << ve[0]->codec_ctx->time_base.num << "/"
-             << ve[0]->codec_ctx->time_base.den;
-    qDebug() << "FINAL st_tb="
-             << ve[0]->stream->time_base.num << "/"
-             << ve[0]->stream->time_base.den;
 
     //Stream作成
     cudaStreamCreateWithFlags(
@@ -190,7 +177,7 @@ save_encode::~save_encode() {
     // まず普通に drain しきる
     while (drain_video_once()) {}
 
-    // ★ 最後だけ追加で100ms粘る（NVENC遅延対策）
+    // 最後だけ追加で100ms粘る（NVENC遅延対策）
     for (int t = 0; t < 100; t++) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
@@ -200,6 +187,9 @@ save_encode::~save_encode() {
         }
     }
 
+    // ==========================
+    // audioスレッド終了とflush処理
+    // ==========================
     stop_audio_thread();
 
     // ==========================
@@ -218,7 +208,9 @@ save_encode::~save_encode() {
     avformat_free_context(fmt_ctx);
     fmt_ctx = nullptr;
 
-    // ---- 各メモリ解放 ----
+    // ==========================
+    // 各メモリ解放
+    // ==========================
     for(int i=0;i<ve.size();i++){
         //ハードウェアフレームを解放
         for(int j=0;j<g_EncodeRingSize;j++){
@@ -696,7 +688,7 @@ void save_encode::encode_video(VideoFrame Frame)
 
             if (ret == AVERROR(EAGAIN))
             {
-                drain_encoder(enc, fmt_ctx, packet);
+                drain_video_encoder(enc, fmt_ctx, packet);
                 continue;
             }
 
@@ -711,7 +703,7 @@ void save_encode::encode_video(VideoFrame Frame)
     // ==========================================================
     for (int i = 0; i < (int)ve.size(); i++)
     {
-        drain_encoder(*ve[i], fmt_ctx, packet);
+        drain_video_encoder(*ve[i], fmt_ctx, packet);
     }
 
     g_EncodeRingNo++;
@@ -722,7 +714,7 @@ void save_encode::encode_video(VideoFrame Frame)
 }
 
 //映像フレームドレイン
-void save_encode::drain_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet)
+void save_encode::drain_video_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet)
 {
     while (true) {
         int ret = avcodec_receive_packet(enc.codec_ctx, packet);
@@ -866,6 +858,24 @@ void save_encode::encode_audio(AudioJob Frame)
     }
 }
 
+//音声エンコード終了
+void save_encode::stop_audio_thread()
+{
+    {
+        std::lock_guard<std::mutex>
+            lock(audioMutex);
+
+        audioRunning = false;
+    }
+
+    audioCV.notify_all();
+
+    if (audioThread.joinable())
+        audioThread.join();
+
+    qDebug() << "audio joined";
+}
+
 //音声エンコードスレッドループ
 void save_encode::audio_loop()
 {
@@ -963,22 +973,4 @@ void save_encode::audio_flush(){
             av_packet_unref(&pkt);
         }
     }
-}
-
-//音声エンコード終了
-void save_encode::stop_audio_thread()
-{
-    {
-        std::lock_guard<std::mutex>
-            lock(audioMutex);
-
-        audioRunning = false;
-    }
-
-    audioCV.notify_all();
-
-    if (audioThread.joinable())
-        audioThread.join();
-
-    qDebug() << "audio joined";
 }
