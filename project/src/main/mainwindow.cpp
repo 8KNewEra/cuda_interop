@@ -1669,6 +1669,7 @@ void MainWindow::start_encode(){
 
         //エンコード開始
         encode_state = STATE_ENCODING;
+        fpsstream->change_speed(VideoInfo.fps);
         decodestream->encode_state = encode_state;
         glWidget->encode_mode(encode_state);
         glWidget->MinFrame = VideoInfo.start_range_framesNo;
@@ -1716,6 +1717,7 @@ void MainWindow::start_encode(){
 //エンコードウィンドウを閉じる
 void MainWindow::finished_encode(){
     encode_state = STATE_NOT_ENCODE;
+    fpsstream->change_speed(g_AppSettings.video_speed_ratio*VideoInfo.fps);
     glWidget->encode_mode(encode_state);
     decodestream->encode_state = encode_state;
     emit decode_please();
