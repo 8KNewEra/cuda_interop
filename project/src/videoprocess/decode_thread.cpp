@@ -322,4 +322,8 @@ void decode_thread::processFrame() {
     if(thread_stop_flag){
         emit finished();
     }
+
+    //リングを回す
+    ringNo++;
+    if(ringNo>=ringSize) ringNo = 0;
 }

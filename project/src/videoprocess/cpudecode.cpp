@@ -701,10 +701,6 @@ void cpudecode::gpu_upload(){
     Frame.minute = (int(time) % 3600) / 60;
     Frame.second = fmod(time, 60.0);
 
-    //リングを回す
-    ringNo++;
-    if(ringNo>=ringSize) ringNo = 0;
-
     emit send_decode_image(Frame,false,video_reverse_flag);
 }
 
