@@ -197,6 +197,7 @@ void decode_thread::startProcessing() {
 
 void decode_thread::stopProcessing() {
     thread_stop_flag = true;
+    get_decode_image();
     qDebug() << "decode_thread: stopProcessing called";
 }
 

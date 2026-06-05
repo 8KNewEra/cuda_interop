@@ -17,6 +17,7 @@ protected:
     bool get_last_frame_pts();
     void get_decode_audio();
     void gpu_upload();
+    void stop_audio_thread()override;
 };
 
 #endif // CPUDECODE_H

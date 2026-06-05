@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 #include <QDebug>
 #include <QFile>
+#include <queue>
 #include "src/main/__global__.h"
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "qaudiosink.h"
@@ -29,6 +30,12 @@ struct VideoDecorder {
     std::vector<AVFrame*> hw_frames;
     cudaStream_t st = nullptr;
     cudaEvent_t ev = nullptr;
+};
+
+struct AudioDecJob
+{
+    bool audio_flag = false;
+    AVPacket* packet = nullptr;
 };
 
 class decode_thread : public QObject {
@@ -80,6 +87,7 @@ protected:
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     bool get_last_frame_pts();
     void get_decode_audio();
+    virtual void stop_audio_thread()=0;
 
     //エラー処理
     QString Error_String="";
@@ -141,6 +149,14 @@ protected:
     //リング設定
     int ringNo = 0;
     int ringSize = 12;
+
+    //音声エンコードスレッド関連
+    std::queue<AudioDecJob> audioQueue;
+    std::mutex audioMutex;
+    std::condition_variable audioCV;
+    std::thread audioThread;
+    std::atomic<bool> audioRunning = false;
+    std::mutex audioEncMutex;
 };
 
 #endif // DECODE_THREAD_H

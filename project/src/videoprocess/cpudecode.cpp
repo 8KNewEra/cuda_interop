@@ -611,6 +611,24 @@ void cpudecode::get_decode_audio()
     }
 }
 
+//音声エンコード終了
+void cpudecode::stop_audio_thread()
+{
+    {
+        std::lock_guard<std::mutex>
+            lock(audioMutex);
+
+        audioRunning = false;
+    }
+
+    audioCV.notify_all();
+
+    if (audioThread.joinable())
+        audioThread.join();
+
+    qDebug() << "audio joined";
+}
+
 //GPUへアップロード
 void cpudecode::gpu_upload(){
     int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;

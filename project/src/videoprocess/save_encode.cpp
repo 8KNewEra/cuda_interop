@@ -511,7 +511,7 @@ void save_encode::encode(VideoFrame Frame)
 {
     if (!Frame.audio_pcm.isEmpty()&&VideoInfo.audio)
     {
-        AudioJob job;
+        AudioEncJob job;
 
         job.audio_pcm =
             Frame.audio_pcm;
@@ -768,7 +768,7 @@ void save_encode::wait_inflight(VideoEncoder& enc)
 }
 
 //音声エンコード
-void save_encode::encode_audio(AudioJob Frame)
+void save_encode::encode_audio(AudioEncJob Frame)
 {
     if (!audio_enc_ctx || !audio_fifo || !swr_enc) return;
 
@@ -881,7 +881,7 @@ void save_encode::audio_loop()
 {
     while (audioRunning)
     {
-        AudioJob job;
+        AudioEncJob job;
 
         {
             std::unique_lock<std::mutex> lock(audioMutex);

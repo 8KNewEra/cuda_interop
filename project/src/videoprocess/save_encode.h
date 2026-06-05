@@ -49,7 +49,7 @@ struct VideoEncoder {
     cudaStream_t st = nullptr;
 };
 
-struct AudioJob
+struct AudioEncJob
 {
     QVector<QByteArray> audio_pcm;
     QVector<int> audio_pts;
@@ -88,7 +88,7 @@ private:
 
     //音声
     void init_audio_encoder();
-    void encode_audio(AudioJob Frame);
+    void encode_audio(AudioEncJob Frame);
     SwrContext* swr_enc = nullptr;
     AVCodecContext* audio_enc_ctx = nullptr;
     AVStream*       audio_stream  = nullptr;
@@ -96,7 +96,7 @@ private:
     AVAudioFifo* audio_fifo = nullptr;
 
     //音声エンコードスレッド関連
-    std::queue<AudioJob> audioQueue;
+    std::queue<AudioEncJob> audioQueue;
     std::mutex audioMutex;
     std::condition_variable audioCV;
     std::thread audioThread;

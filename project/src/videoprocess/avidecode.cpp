@@ -592,6 +592,24 @@ void avidecode::get_decode_audio()
     }
 }
 
+//音声エンコード終了
+void avidecode::stop_audio_thread()
+{
+    {
+        std::lock_guard<std::mutex>
+            lock(audioMutex);
+
+        audioRunning = false;
+    }
+
+    audioCV.notify_all();
+
+    if (audioThread.joinable())
+        audioThread.join();
+
+    qDebug() << "audio joined";
+}
+
 //GPUへアップロード
 void avidecode::gpu_upload(){
     //ダミーカーネルで完全な同期

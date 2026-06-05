@@ -18,10 +18,13 @@ protected:
     void get_singledecode_image();
     void get_multidecode_image();
     void high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)override;
-    void get_decode_audio();
+    void get_decode_audio(AVPacket* packet);
     void CUDA_RGBA_to_merge();
     void high_res_seek_frame_single(int FrameNo);
     void high_res_seek_frame_multi(int FrameNo);
+
+    void audio_loop();
+    void stop_audio_thread()override;
 
     int a=0;
 };

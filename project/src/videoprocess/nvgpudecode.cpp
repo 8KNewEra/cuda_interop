@@ -302,6 +302,14 @@ bool nvgpudecode::initialized_ffmpeg()
         audioOutput = audioSink->start();
 
         VideoInfo.audio = true;
+
+        //スレッド起動
+        audioRunning = true;
+        audioThread =
+            std::thread(
+                &nvgpudecode::audio_loop,
+                this
+                );
     }
 
     // ------------------------
@@ -507,7 +515,20 @@ void nvgpudecode::get_singledecode_image() {
 
         // ----------- AUDIO PACKET -----------
         if (packet->stream_index == audio_stream_index) {
-            get_decode_audio();
+            //キューに投げる
+            AudioDecJob job;
+            job.audio_flag = true;
+            job.packet = av_packet_clone(packet);;
+            {
+                std::lock_guard<std::mutex>
+                    lock(audioMutex);
+
+                audioQueue.push(
+                    std::move(job)
+                    );
+            }
+            audioCV.notify_one();
+
             av_packet_unref(packet);
             continue;
         }
@@ -587,8 +608,23 @@ void nvgpudecode::get_multidecode_image() {
             break;
         }
 
+
+        // ----------- AUDIO PACKET -----------
         if (packet->stream_index == audio_stream_index) {
-            get_decode_audio();
+            //キューに投げる
+            AudioDecJob job;
+            job.audio_flag = true;
+            job.packet = av_packet_clone(packet);;
+            {
+                std::lock_guard<std::mutex>
+                    lock(audioMutex);
+
+                audioQueue.push(
+                    std::move(job)
+                    );
+            }
+            audioCV.notify_one();
+
             av_packet_unref(packet);
             continue;
         }
@@ -615,7 +651,7 @@ void nvgpudecode::get_multidecode_image() {
 }
 
 //オーディオ
-void nvgpudecode::get_decode_audio()
+void nvgpudecode::get_decode_audio(AVPacket* packet)
 {
     if (avcodec_send_packet(audio_ctx, packet) < 0)
         return;
@@ -692,6 +728,55 @@ void nvgpudecode::get_decode_audio()
 
         // エンコードスレッドへ（別スレッド）
         emit send_audio(pcm);
+    }
+}
+
+//音声エンコード終了
+void nvgpudecode::stop_audio_thread()
+{
+    {
+        std::lock_guard<std::mutex>
+            lock(audioMutex);
+
+        audioRunning = false;
+    }
+
+    audioCV.notify_all();
+
+    if (audioThread.joinable())
+        audioThread.join();
+
+    qDebug() << "audio joined";
+}
+
+//音声エンコードスレッドループ
+void nvgpudecode::audio_loop()
+{
+    while (audioRunning)
+    {
+        AudioDecJob job;
+
+        {
+            std::unique_lock<std::mutex> lock(audioMutex);
+
+            audioCV.wait(lock, [&] {
+                return !audioQueue.empty()
+                || !audioRunning;
+            });
+
+            if (!audioRunning &&
+                audioQueue.empty())
+                break;
+
+            job = std::move(audioQueue.front());
+            audioQueue.pop();
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(audioEncMutex);
+            get_decode_audio(job.packet);
+            av_packet_unref(job.packet);
+        }
     }
 }
 
