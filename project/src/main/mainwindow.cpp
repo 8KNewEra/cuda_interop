@@ -974,32 +974,60 @@ void MainWindow::toggleFullScreen()
 //ファイルを開く
 void MainWindow::Open_Video_File()
 {
-    QString startDir = QFileInfo(g_AppSettings.decode_path).absolutePath();
+    QString startDir =
+        QFileInfo(g_AppSettings.decode_path).absolutePath();
 
-    if (startDir.isEmpty() || !QDir(startDir).exists()) {
+    if (startDir.isEmpty() || !QDir(startDir).exists())
+    {
         startDir = QDir::homePath();
     }
 
-    QString filePath = QFileDialog::getOpenFileName(
-        this,
-        tr("動画ファイルを開く"),
-        startDir,
+    QFileDialog* dlg = new QFileDialog(this);
+
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+
+    dlg->setWindowTitle(tr("動画ファイルを開く"));
+
+    dlg->setDirectory(startDir);
+
+    dlg->setFileMode(QFileDialog::ExistingFile);
+
+    dlg->setNameFilter(
         tr("動画ファイル (*.mp4 *.avi)")
         );
 
-    // ファイルが選択されたかどうかを確認
-    if (!filePath.isEmpty()) {
-        qDebug() << "選択されたファイル:" << filePath;
-        g_AppSettings.decode_path = filePath;
+    connect(
+        dlg,
+        &QFileDialog::fileSelected,
+        this,
+        [this](const QString& filePath)
+        {
+            qDebug()
+            << "選択されたファイル:"
+            << filePath;
 
-        Close_Video_File();
-        ui->info->setEnabled(false);
-        ui->actionOpenFile->setEnabled(false);
+            g_AppSettings.decode_path =
+                filePath;
 
-        start_decode_thread(g_AppSettings.decode_path);
-    } else {
-        qDebug() << "ファイル選択がキャンセルされました";
-    }
+            Close_Video_File();
+
+            ui->info->setEnabled(false);
+            ui->actionOpenFile->setEnabled(false);
+
+            start_decode_thread(filePath);
+        });
+
+    connect(
+        dlg,
+        &QFileDialog::rejected,
+        this,
+        []
+        {
+            qDebug()
+            << "ファイル選択がキャンセルされました";
+        });
+
+    dlg->open(); // ← 非同期表示
 }
 
 //ファイルを閉じる
