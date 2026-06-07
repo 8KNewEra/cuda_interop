@@ -44,13 +44,13 @@ public:
 
 protected:
     void initializeGL() override;
+    void paintGL() override;
 
 private:
     void initTextureCuda(int width,int height);
     void initCudaTexture(int width,int height);
     void initCudaMalloc(int width,int height);
     void setShaderUniform(int width,int height);
-    void Monitor_Rendering(VideoFrame Frame);
     void initCudaHist();
     void histgram_Analysys();
     void downloadToGLTexture_and_Encode(VideoFrame Frame);

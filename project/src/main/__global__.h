@@ -110,6 +110,7 @@ private:
 
 // エンコード設定の構造体
 struct DecodeInfo {
+    bool video_open_flag = false;
     std::string Path = "D:/test2.mp4";
     std::string Name = "";
 

@@ -250,18 +250,18 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
         downloadToGLTexture_and_Encode(Frame);
     } else if(encode_state==STATE_NOT_ENCODE){
         //画面に描画
-        Monitor_Rendering(Frame);
+        update();
     }
 }
 
 //画面描画
-void GLWidget::Monitor_Rendering(VideoFrame Frame){
+void GLWidget::paintGL(){
     // QElapsedTimer timer;
     // timer.start();
     painter.begin(this);
 
     //動画フレーム描画
-    {
+    if(VideoInfo.video_open_flag){
         //描画処理
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -276,11 +276,9 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
             GL_LINEAR
             );
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    }
 
-    //ヒストグラム描画
-    {
-        if(g_AppSettings.histgram_flag){
+        //ヒストグラム描画
+        if(g_AppSettings.histgram_flag&&cudaResource_hist&&cudaResource2){
             //ヒストグラムCUDA集計
             histgram_Analysys();
             auto labels = make_nice_y_labels(h_hist_stats.max_y_axis);
@@ -412,19 +410,15 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
                 //painter.drawText(rect.adjusted(0, 60, 0, 0), Qt::AlignLeft,"Axis Y: max:" + QString::number(h_stats.max_y_axis));
             }
         }
-    }
 
-    //FPSを算出
-    {
+        //FPSを算出
         if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
             fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
             fpsCount = 0;
             fpsTimer.restart();
         }
-    }
 
-    //動画情報描画
-    {
+        //動画情報描画
         if(g_AppSettings.videoInfo_flag){
             painter.setPen(Qt::white);
             painter.setFont(QFont("Consolas", 16));
@@ -441,14 +435,19 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
             painter.drawText(2, 120 + 20*g_GPUInfo.size(), "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
             painter.drawText(2, 140 + 20*g_GPUInfo.size(), "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
             painter.drawText(2, 160 + 20*g_GPUInfo.size(), "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
-            painter.drawText(2, 180 + 20*g_GPUInfo.size(), "Current Frame:" + QString::number(Frame.FrameNo)+"\n");
+            //painter.drawText(2, 180 + 20*g_GPUInfo.size(), "Current Frame:" + QString::number(Frame.FrameNo)+"\n");
             if(VideoInfo.audio)
                 painter.drawText(2, 200 + 20*g_GPUInfo.size(), "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
         }
     }
 
+    //ファイルが閉じている時は真っ黒に
+    if(!VideoInfo.video_open_flag){
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+
     painter.end();
-    context()->swapBuffers(context()->surface());
 
     // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
     // qDebug()<<seconds;
@@ -486,9 +485,7 @@ void GLWidget::GLresize() {
 
 //画面をリセット(真っ黒にする)
 void GLWidget::GLreset(){
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    context()->swapBuffers(context()->surface());
+    update();
 }
 
 //シェーダーUniform、UI設定変更時
@@ -809,15 +806,6 @@ void GLWidget::initCudaHist() {
 
 //OpenGLからCUDAへ転送+ヒストグラム解析
 void GLWidget::histgram_Analysys(){
-    if (!cudaResource_hist) {
-        qDebug() << "cudaResource_analysis is nullptr, can't map";
-        return;
-    }
-    if (!cudaResource2) {
-        qDebug() << "cudaResource_analysis is nullptr, can't map";
-        return;
-    }
-
     //一括マップ
     cudaGraphicsResource* resources[] = { cudaResource_hist, cudaResource_hist_draw };
     cudaError_t err = cudaGraphicsMapResources(2, resources, 0);

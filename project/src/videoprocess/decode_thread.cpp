@@ -164,6 +164,7 @@ decode_thread::~decode_thread() {
     delete CUDA_IMG_Proc;
     CUDA_IMG_Proc=nullptr;
 
+    VideoInfo.video_open_flag = false;
     qDebug() << "decode_thread: resources released cleanly";
 }
 
@@ -188,6 +189,7 @@ void decode_thread::receve_decode_flag(){
 void decode_thread::startProcessing() {
     if(initialized_ffmpeg()){
         Error_String="";
+        VideoInfo.video_open_flag = true;
         qDebug() << "Live Thread: Start Processing";
     }else{
         emit decode_error(Error_String);
