@@ -82,6 +82,10 @@ public:
     bool histgram_normalize(float* vbo,int num_bins,HistData* Histdata,HistStats* input_stats);
     bool histogram_status(HistData* Histdata,HistStats* input_stats);
 
+    //AIフレーム補間用
+    bool CHW_Float_to_RGBA(gpuFrame input_frame,gpuFrame output_frame,cudaStream_t stream);
+    bool RGBA_to_CHW_Float(gpuFrame input_frame,gpuFrame output_frame,cudaStream_t stream);
+
     //使わないやつ
     bool image_combine_x2(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,int width, int height,cudaStream_t stream);
     bool image_combine_x4(uint8_t* out, size_t pitchOut,uint8_t* img1, size_t pitch1,uint8_t* img2, size_t pitch2,uint8_t* img3, size_t pitch3,uint8_t* img4, size_t pitch4,int width, int height, int blend,cudaStream_t stream);

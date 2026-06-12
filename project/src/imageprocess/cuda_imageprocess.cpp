@@ -79,6 +79,10 @@ extern "C"{
     __global__ void histgram_normalize_kernel(float* vbo,int num_bins,HistData* Histdata,HistStats* input_stats);
     __global__ void histgram_status_kernel(HistData* Histdata,HistStats* out_stats);
 
+    //AIフレーム補間用
+    __global__ void rgba_to_chw_float_kernel(gpuFrame src_frame, gpuFrame dst_frame);
+    __global__ void chw_float_to_rgba_kernel(gpuFrame src_frame, gpuFrame dst_frame);
+
     //以下使っていないがいずれ使うかも？
     __global__ void gradetion_kernel(uint8_t* output_rgba, int output_rgba_step,const uint8_t* input_rgba, int input_rgba_step,int width, int height);
     __global__ void image_combine_x2_kernel(uint8_t* out, size_t pitchOut,const uint8_t* img1, size_t pitch1,const uint8_t* img2, size_t pitch2,int width, int height);
@@ -904,6 +908,52 @@ bool CUDA_ImageProcess::Gradation(uint8_t *output,size_t pitch_output,uint8_t *i
     dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
 
     cudaError_t err =cudaLaunchKernel((const void*)gradetion_kernel,
+                                       grid, block, args, 0, stream);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+bool CUDA_ImageProcess::RGBA_to_CHW_Float(gpuFrame input_frame,gpuFrame output_frame,cudaStream_t stream){
+    void* args[] = {&input_frame, &output_frame};
+
+    dim3 block(32,32);
+    dim3 grid((output_frame.width+block.x-1)/block.x, (output_frame.height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)rgba_to_chw_float_kernel,
+                                       grid, block, args, 0, stream);
+
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
+        return false;
+    }
+
+    return true;
+}
+
+bool CUDA_ImageProcess::CHW_Float_to_RGBA(gpuFrame input_frame,gpuFrame output_frame,cudaStream_t stream){
+    void* args[] = {&input_frame, &output_frame};
+
+    dim3 block(32,32);
+    dim3 grid((output_frame.width+block.x-1)/block.x, (output_frame.height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)chw_float_to_rgba_kernel,
                                        grid, block, args, 0, stream);
 
     if (err != cudaSuccess) {

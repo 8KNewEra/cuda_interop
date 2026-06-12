@@ -10,8 +10,18 @@ GLWidget::GLWidget(QWindow *parent)
     cudaResource2(nullptr),
     inputTextureID(0)
 {
+    // GLWidgetのコンストラクタや初期化関数の中
+    QTimer* renderTimer = new QTimer(this);
+    connect(renderTimer, &QTimer::timeout, this, &GLWidget::uploadToGLTexture1);
+
+    // OpenGLスレッドは最速で回す 1ms 1000fps
+    renderTimer->start(5);
+
     if(CUDA_IMG_Proc==nullptr){
         CUDA_IMG_Proc=new CUDA_ImageProcess();
+    }
+    if(AI_Img_Proc==nullptr){
+        AI_Img_Proc = new AI_ImageProcess();
     }
 
     qDebug() << "GLWidget: Contructor called";
@@ -37,6 +47,15 @@ GLWidget::~GLWidget() {
         fbo = 0;
     }
 
+    if (stream) {
+        cudaStreamSynchronize(stream);
+        cudaStreamDestroy(stream);
+        stream = nullptr;
+    }
+    if (event) {
+        cudaEventDestroy(event);
+        event = nullptr;
+    }
     if (interop_stream) {
         cudaStreamSynchronize(interop_stream);
         cudaStreamDestroy(interop_stream);
@@ -184,10 +203,14 @@ void GLWidget::initializeGL()
     getCudaDeviceIDFromOpenGL();
 
     //stream
+    cudaStreamCreate(&stream);
+    cudaEventCreate(&event);
     cudaStreamCreate(&interop_stream);
     cudaEventCreate(&interop_event);
     cudaStreamCreate(&hist_stream);
     cudaEventCreate(&hist_event);
+
+    AI_Img_Proc->initRifeTensorRT(1024,1024);
 
     // === 初期化完了 ===
     fpsTimer.start();
@@ -603,13 +626,147 @@ void GLWidget::initTextureCuda(int width,int height) {
 }
 
 //初回、解像度が変わった場合再Malloc
-void GLWidget::initCudaMalloc(int width, int height)
-{
+gpuFrame GLWidget::getPooledBuffer(int width ,int height) {
+    // プールのサイズが足りない場合は初回だけ拡張
+    if (m_gpu_frame_pool.size() < POOL_SIZE) {
+        m_gpu_frame_pool.resize(POOL_SIZE);
+    }
 
+    // 次のバッファの参照を取得
+    gpuFrame& buf = m_gpu_frame_pool[m_pool_index];
+
+    // 解像度や型が変わった場合、再確保
+    buf.create(width,height,4);
+
+    // インデックスを循環させる
+    m_pool_index = (m_pool_index + 1) % POOL_SIZE;
+
+    return buf;
+}
+
+// キューイングのみ
+void GLWidget::FrameQueing(gpuFrame currentFrame) {
+    if (!currentFrame.data) return;
+
+    // 解像度が違う場合は初期化
+    //解像度の変更に対応
+    if (VideoInfo.width*VideoInfo.width_scale != width_ || VideoInfo.height*VideoInfo.height_scale != height_) {
+        initCudaTexture(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
+        initTextureCuda(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
+        setShaderUniform(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
+        initCudaHist();
+        width_=VideoInfo.width*VideoInfo.width_scale;
+        height_=VideoInfo.height*VideoInfo.height_scale;
+        GLresize();
+        return;
+    }
+
+    // フレーム補間処理とキューへフレーム追加
+    if (m_prev_frame.data) {
+
+        // 💡 1. MFG_MODE (1, 2, 3, 4...) をそのまま中間フレームの「必要枚数」として定義
+        int num_interp_frames = static_cast<int>(MFG_MODE-1);
+
+        // AIへ引き渡すための中間フレーム用ベクター
+        std::vector<gpuFrame> interpolated_frames;
+
+        if (MFG_MODE != MFG_Disable && num_interp_frames > 0) {
+
+            // 💡 2. 必要な枚数分、プールからRGBAバッファを一括で贅沢に取得！
+            interpolated_frames.resize(num_interp_frames);
+            for (int i = 0; i < num_interp_frames; ++i) {
+                interpolated_frames[i] = getPooledBuffer(width_, height_);
+            }
+
+            // 💡 3. 先ほど作った最強の動的補間関数をコール
+            // 過去フレーム(m_prev_frame) と 現在フレーム(current_rgba_buf) の間に、
+            // 指定された枚数分の中間フレームが一気に一括生成されます。
+            AI_Img_Proc->rife_interpolate(m_prev_frame, currentFrame, interpolated_frames, stream, CUDA_IMG_Proc);
+        }
+
+        // ====================================================
+        // 💡 4. キューへの詰め込み（時系列順を100%完全厳守！）
+        // ====================================================
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        if (MFG_MODE != MFG_Disable) {
+            // 先ほどソート順でAIから出力されているため、
+            // 配列の 0番目（最古）から順番にキューへ push すれば、自動的に完璧な時系列順になります。
+            for (const auto& interp_frame : interpolated_frames) {
+                m_render_queue.push(interp_frame);   // 中間フレーム群 (A.25 -> A.50 -> A.75...)
+            }
+        }
+        m_render_queue.push(currentFrame);  // 最後に現在の本物フレーム (B.00)
+    } else {
+        // 初回フレームのみ
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        m_render_queue.push(currentFrame);
+    }
+
+    // 次ループで使用する過去フレームとして保存
+    m_prev_frame = currentFrame;
+}
+
+void GLWidget::uploadToGLTexture1(){
+    gpuFrame frameToRender;
+
+    // ====================================================
+    // キューのサイズを最大48枚に制限（古いものは自動破棄）
+    // ====================================================
+    {
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        if (m_render_queue.empty()) {
+            return; // キューが空なら何もしない
+        }
+
+        // キューの中身が10枚を超えていたら、古い順（front）から容赦なく捨てる
+        while (m_render_queue.size() > 48) {
+            m_render_queue.pop();
+        }
+        frameToRender = m_render_queue.front();
+        m_render_queue.pop();
+    }
+
+    // ====================================================
+    // CUDA -> OpenGL のテクスチャ転送 (Interop)
+    // ====================================================
+    if (!frameToRender.data) return;
+    cudaError_t err = cudaGraphicsMapResources(1, &cudaResource1, 0);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
+        return;
+    }
+
+    cudaArray_t array;
+    err = cudaGraphicsSubResourceGetMappedArray(&array, cudaResource1, 0, 0);
+    if (err == cudaSuccess) {
+        size_t pitch = frameToRender.pitch;
+        size_t widthBytes = frameToRender.width * 4;
+
+        if (widthBytes <= pitch) {
+            cudaMemcpy2DToArray(
+                array,
+                0, 0,
+                frameToRender.data,
+                pitch,
+                widthBytes,
+                frameToRender.height,
+                cudaMemcpyDeviceToDevice
+                );
+        } else {
+            qDebug() << "Invalid pitch: widthBytes > pitch!";
+        }
+    } else {
+        qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
+    }
+    cudaGraphicsUnmapResources(1, &cudaResource1, 0);
+
+    VideoFrame Frame;
+    FBO_Rendering(Frame);
+    fpsCount++;
 }
 
 //CUDAからOpenGLへ転送
-void GLWidget::uploadToGLTexture(VideoFrame Frame) {
+void GLWidget::uploadToGLTexture2(VideoFrame Frame) {
     // QElapsedTimer timer;
     // timer.start();
 
@@ -620,7 +777,6 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
 
     //解像度の変更に対応
     if (VideoInfo.width*VideoInfo.width_scale != width_ || VideoInfo.height*VideoInfo.height_scale != height_) {
-        initCudaMalloc(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         initCudaTexture(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         initTextureCuda(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
         setShaderUniform(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);

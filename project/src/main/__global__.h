@@ -14,6 +14,48 @@ extern "C" {
     #include <libavutil/samplefmt.h>
 }
 
+#define MFG_Disable 1
+#define MFG_x2 2
+#define MFG_x3 3
+#define MFG_x4 4
+#define MFG_x8 8
+
+struct gpuFrame {
+    uint8_t* data = nullptr;
+    size_t pitch = 0;
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+
+    // メモリを安全に確保・再確保する関数
+    void create(int width_, int height_, int channels_) {
+        if (width != width_ || height != height_ || channels != channels_) {
+            if (data != nullptr) {
+                cudaFree(data);
+                data = nullptr;
+            }
+
+            qDebug()<<"メモリ確保";
+            cudaMallocPitch(&data, &pitch, width_ * channels_, height_);
+            width = width_;
+            height = height_;
+            channels = channels_;
+        }
+    }
+
+    // 明示的にメモリを解放したい時のための関数
+    void release() {
+        if (data != nullptr) {
+            cudaFree(data);
+            data = nullptr;
+        }
+        width = 0;
+        height = 0;
+        channels = 0;
+        pitch = 0;
+    }
+};
+
 // アプリ設定を保持する構造体
 struct AppSettings
 {

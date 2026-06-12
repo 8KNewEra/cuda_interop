@@ -37,6 +37,7 @@ directstorage/
 obj_out/
 RIFE/
 engines/
+TensorRT/
 
 # ---- Logs / Temp ----
 *.log

@@ -43,7 +43,8 @@ SOURCES += \
     $$PWD/src/main/fps_thread.cpp \
     $$PWD/src/main/glwidget.cpp \
     $$PWD/src/main/main.cpp \
-    $$PWD/src/main/mainwindow.cpp
+    $$PWD/src/main/mainwindow.cpp \
+    src/imageprocess/ai_imageprocess.cpp
 
 HEADERS += \
     $$PWD/src/__global__.h \
@@ -63,6 +64,7 @@ HEADERS += \
     $$PWD/src/main/fps_thread.h \
     $$PWD/src/main/glwidget.h \
     $$PWD/src/main/mainwindow.h \
+    src/imageprocess/ai_imageprocess.h \
     src/main/__global__.h
 
 FORMS += \
@@ -122,6 +124,15 @@ LIBS += -lswresample
 LIBS += -lswscale
 LIBS += -lavutil
 
+# TensorRTリンク
+TensorRT_DIR = "$$PWD/TensorRT"
+
+INCLUDEPATH += $$TensorRT_DIR/include
+
+LIBS += -L$$TensorRT_DIR/lib \
+        -lnvinfer_11 \
+        -lnvinfer_plugin_11 \
+        -lnvonnxparser_11
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin

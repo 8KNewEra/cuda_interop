@@ -1436,7 +1436,14 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
         //描画を開始
         //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
         if(!pause_flag&&encode_state!=STATE_ENCODE_READY){
-            glWidget->uploadToGLTexture(Frame);
+            gpuFrame currentFrame;
+            currentFrame.data = Frame.d_decode_rgba;
+            currentFrame.width = VideoInfo.width*VideoInfo.width_scale;
+            currentFrame.height = VideoInfo.height*VideoInfo.height_scale;
+            currentFrame.channels = 4;
+            currentFrame.pitch = Frame.decode_pitch;
+            glWidget->FrameQueing(currentFrame);
+            //glWidget->uploadToGLTexture(Frame);
         }else if(pause_flag&&encode_state==STATE_NOT_ENCODE){
             glWidget->FBO_Rendering(Frame);
         }

@@ -1,6 +1,7 @@
 #ifndef GLWIDGET_H
 #define GLWIDGET_H
 
+#include "imageprocess/ai_imageprocess.h"
 #include "src/videoprocess/save_encode.h"
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "src/main/__global__.h"
@@ -14,6 +15,7 @@
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <QTimer>
+#include <queue>
 
 class GLWidget : public QOpenGLWindow, protected QOpenGLFunctions_4_5_Core
 {
@@ -26,7 +28,9 @@ signals:
 public:
     explicit GLWidget(QWindow *parent = nullptr);
     ~GLWidget();
-    void uploadToGLTexture(VideoFrame Frame);
+    void uploadToGLTexture2(VideoFrame Frame);
+    void uploadToGLTexture1();
+    void FrameQueing(gpuFrame frame);
     void encode_mode(int flag);
     void GLresize();
     void GLreset();
@@ -49,7 +53,6 @@ protected:
 private:
     void initTextureCuda(int width,int height);
     void initCudaTexture(int width,int height);
-    void initCudaMalloc(int width,int height);
     void setShaderUniform(int width,int height);
     void initCudaHist();
     void histgram_Analysys();
@@ -64,8 +67,11 @@ private:
     cudaGraphicsResource* cudaResource_hist=nullptr;
     cudaGraphicsResource* cudaResource_hist_draw=nullptr;
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
+    AI_ImageProcess* AI_Img_Proc;
     cudaStream_t interop_stream = nullptr;
     cudaEvent_t interop_event = nullptr;
+    cudaStream_t stream = nullptr;
+    cudaEvent_t event = nullptr;
 
     //OpenGL周り
     bool initialize_completed_flag=false;
@@ -126,6 +132,22 @@ private:
     // 音声
     bool audio_mode=false;
     QVector<QByteArray> audio_pcm{};
+
+    // 過去フレーム保持用
+    gpuFrame m_prev_frame;
+
+    // 描画待ちのフレームを貯めておくキュー
+    // ★ VRAMリークを防ぐためのメモリプール
+    static const int POOL_SIZE = 16;
+    std::vector<gpuFrame> m_gpu_frame_pool;
+    int m_pool_index = 0;
+
+    // プールから利用可能なGpuMatを取得する関数
+    gpuFrame getPooledBuffer(int width ,int height);
+
+    std::queue<gpuFrame> m_render_queue;
+    int MFG_MODE = MFG_x8;
+    std::mutex m_queue_mutex;
 };
 
 
