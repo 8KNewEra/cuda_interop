@@ -1434,18 +1434,12 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
         slider_No=Frame.FrameNo;
 
         //描画を開始
-        //コンテキストを作成
-        glWidget->makeCurrent();
-
         //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
         if(!pause_flag&&encode_state!=STATE_ENCODE_READY){
             glWidget->uploadToGLTexture(Frame);
-        }else if(encode_state==STATE_NOT_ENCODE){
+        }else if(pause_flag&&encode_state==STATE_NOT_ENCODE){
             glWidget->FBO_Rendering(Frame);
         }
-
-        //コンテキストを破棄
-        glWidget->doneCurrent();
 
         //デコードスレッドシグナル
         if(encode_state!=STATE_ENCODE_READY)

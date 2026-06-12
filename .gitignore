@@ -35,6 +35,8 @@ NVIDIAGPUComputingToolkit/
 ffmpeg/
 directstorage/
 obj_out/
+RIFE/
+engines/
 
 # ---- Logs / Temp ----
 *.log
