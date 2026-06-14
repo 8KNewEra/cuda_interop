@@ -18,13 +18,18 @@ class AI_ImageProcess : public QThread {
 public:
 
     AI_ImageProcess(QObject* parent = nullptr);
-    void testBuildTensorRTEngine();
+    void Build_RIFE_TensorRT_Engine();
+    void Build_SuperRes_TensorRT_Engine();
+    void init_RIFE_TensorRT(int width, int height);
+    void init_SuperRes_TensorRT(int width, int height);
     void initYoloTensorRT();
     void yolo_analysis(gpuFrame img);
     void initRifeTensorRT(int width,int height);
     void rife_interpolate(const gpuFrame& frame0, const gpuFrame& frame1,
                           std::vector<gpuFrame>& out_frames,
                           cudaStream_t stream, CUDA_ImageProcess *CUDA_Img_Proc) ;
+    void run_SuperRes(const gpuFrame& in_frame,gpuFrame& out_frames,
+                      cudaStream_t stream, CUDA_ImageProcess *CUDA_Img_Proc);
 
 private:
     // Yolo関連
@@ -69,6 +74,25 @@ private:
     };
 
     std::map<int, RifeEngineInstance> m_rife_instances;
+
+    struct SuperresEngineInstance {
+        int superresRatio = 2;  // 超解像倍率 (2, 3, 4...)
+
+        // TensorRTコアリソース
+        nvinfer1::IRuntime* runtime = nullptr;
+        nvinfer1::ICudaEngine* engine = nullptr;
+        nvinfer1::IExecutionContext* context = nullptr;
+
+        // VRAM生のポインタ
+        void* d_input = nullptr;
+        void* d_output = nullptr;
+
+        // カーネルへ渡す用ラッパー
+        gpuFrame gpu_float_input;
+        gpuFrame gpu_float_output;
+    };
+
+    SuperresEngineInstance m_superres_instances;
 };
 
 #endif // AI_IMAGEPROCESS_H

@@ -210,7 +210,8 @@ void GLWidget::initializeGL()
     cudaStreamCreate(&hist_stream);
     cudaEventCreate(&hist_event);
 
-    AI_Img_Proc->initRifeTensorRT(1024,1024);
+    AI_Img_Proc->init_RIFE_TensorRT(2048,1024);
+    AI_Img_Proc->init_SuperRes_TensorRT(2048,1024);
 
     // === 初期化完了 ===
     fpsTimer.start();
@@ -676,6 +677,7 @@ void GLWidget::FrameQueing(gpuFrame currentFrame) {
             interpolated_frames.resize(num_interp_frames);
             for (int i = 0; i < num_interp_frames; ++i) {
                 interpolated_frames[i] = getPooledBuffer(width_, height_);
+                //AI_Img_Proc->run_SuperRes(currentFrame,interpolated_frames[i],stream, CUDA_IMG_Proc);
             }
 
             // 💡 3. 先ほど作った最強の動的補間関数をコール
@@ -719,7 +721,7 @@ void GLWidget::uploadToGLTexture1(){
         }
 
         // キューの中身が10枚を超えていたら、古い順（front）から容赦なく捨てる
-        while (m_render_queue.size() > 48) {
+        while (m_render_queue.size() > MFG_MODE) {
             m_render_queue.pop();
         }
         frameToRender = m_render_queue.front();

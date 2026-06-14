@@ -138,7 +138,7 @@ private:
 
     // 描画待ちのフレームを貯めておくキュー
     // ★ VRAMリークを防ぐためのメモリプール
-    static const int POOL_SIZE = 16;
+    static const int POOL_SIZE = 400;
     std::vector<gpuFrame> m_gpu_frame_pool;
     int m_pool_index = 0;
 
@@ -146,7 +146,7 @@ private:
     gpuFrame getPooledBuffer(int width ,int height);
 
     std::queue<gpuFrame> m_render_queue;
-    int MFG_MODE = MFG_x8;
+    int MFG_MODE = MFG_x2;
     std::mutex m_queue_mutex;
 };
 

@@ -13,11 +13,12 @@ class MyTRTLogger : public nvinfer1::ILogger {
 
 AI_ImageProcess::AI_ImageProcess(QObject* parent)
     : QThread(parent) {
-    //testBuildTensorRTEngine();
+    //Build_RIFE_TensorRT_Engine();
+    //Build_SuperRes_TensorRT_Engine();
 }
 
-//ONNXビルド用
-void AI_ImageProcess::testBuildTensorRTEngine() {
+//RIFE ONNXビルド用
+void AI_ImageProcess::Build_RIFE_TensorRT_Engine() {
     // 💡 ONNXが格納されているフォルダパス
     QString modelsFolder = "E:/cuda_interop/project/models/";
 
@@ -117,99 +118,152 @@ void AI_ImageProcess::testBuildTensorRTEngine() {
     qDebug() << "==================================================";
 }
 
-//TensorRTの初期化
-void AI_ImageProcess::initYoloTensorRT() {
-    // // ====================================================
-    // // 1. Engineファイルの読み込みと Context の生成
-    // // ====================================================
-    // const QString enginePath = "D:/cuda_interop/glwidget_1/engine/yolo26x_4080S.engine";
-    // QFile file(enginePath);
-    // if (!file.open(QIODevice::ReadOnly)) {
-    //     qCritical() << "Engineファイルが開けません:" << enginePath;
-    //     return;
-    // }
-    // QByteArray engineData = file.readAll();
-    // file.close();
+//Real ESRGAN ONNXビルド用
+void AI_ImageProcess::Build_SuperRes_TensorRT_Engine()
+{
+    QString onnxPath =
+        "E:/cuda_interop/project/models/FSRCNN_x2.onnx";
+
+    QString enginePath =
+        "E:/cuda_interop/project/engines/FSRCNN_x2.engine";
+
+    auto builder =
+        std::unique_ptr<nvinfer1::IBuilder>(
+            nvinfer1::createInferBuilder(gLogger));
+
+    if (!builder)
+    {
+        qDebug() << "createInferBuilder failed";
+        return;
+    }
+
+    auto network =
+        std::unique_ptr<nvinfer1::INetworkDefinition>(
+            builder->createNetworkV2(0));
+
+    if (!network)
+    {
+        qDebug() << "createNetworkV2 failed";
+        return;
+    }
+
+    auto parser =
+        std::unique_ptr<nvonnxparser::IParser>(
+            nvonnxparser::createParser(
+                *network,
+                gLogger));
+
+    if (!parser)
+    {
+        qDebug() << "createParser failed";
+        return;
+    }
+
+    bool ok =
+        parser->parseFromFile(
+            onnxPath.toStdString().c_str(),
+            static_cast<int>(
+                nvinfer1::ILogger::Severity::kWARNING));
+
+    if (!ok)
+    {
+        qDebug() << "ONNX parse failed";
+
+        for (int i = 0; i < parser->getNbErrors(); i++)
+        {
+            qDebug()
+            << parser->getError(i)->desc();
+        }
+
+        return;
+    }
+
+    auto config =
+        std::unique_ptr<nvinfer1::IBuilderConfig>(
+            builder->createBuilderConfig());
+
+    if (!config)
+    {
+        qDebug() << "createBuilderConfig failed";
+        return;
+    }
+
+    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 4ULL << 30);
 
 
+    auto profile =
+        builder->createOptimizationProfile();
 
-    // // ランタイム、エンジン、コンテキストの生成
-    // m_runtime = nvinfer1::createInferRuntime(gLogger);
-    // m_engine = m_runtime->deserializeCudaEngine(engineData.constData(), engineData.size());
-    // if (!m_engine) {
-    //     qCritical() << "Engineのデシリアライズに失敗しました。";
-    //     return;
-    // }
+    if (!profile)
+    {
+        qDebug() << "createOptimizationProfile failed";
+        return;
+    }
 
-    // // ★ここでついに m_context が初期化されます！
-    // m_context = m_engine->createExecutionContext();
-    // if (!m_context) {
-    //     qCritical() << "Contextの生成に失敗しました。";
-    //     return;
-    // }
+    profile->setDimensions(
+        "input",
+        nvinfer1::OptProfileSelector::kMIN,
+        nvinfer1::Dims4(
+            1,
+            3,
+            1024,
+            2048));
 
-    // qDebug() << "TensorRT Engine loaded and Context created successfully!";
+    profile->setDimensions(
+        "input",
+        nvinfer1::OptProfileSelector::kOPT,
+        nvinfer1::Dims4(
+            1,
+            3,
+            1024,
+            2048));
 
-    // // ====================================================
-    // // 2. GPUメモリとCPUメモリの確保
-    // // ====================================================
-    // cudaMalloc(&m_d_input, 1 * 3 * 640 * 640 * sizeof(float));
-    // cudaMalloc(&m_d_output, 1 * 300 * 6 * sizeof(float));
+    profile->setDimensions(
+        "input",
+        nvinfer1::OptProfileSelector::kMAX,
+        nvinfer1::Dims4(
+            1,
+            3,
+            1024,
+            2048));
 
-    // m_h_output.resize(1 * 300 * 6);
+    config->addOptimizationProfile(
+        profile);
 
-    // // ====================================================
-    // // 3. OpenCVのゼロコピー用 GpuMat の準備
-    // // ====================================================
-    // float* d_ptr = static_cast<float*>(m_d_input);
-    // m_input_channels.clear();
-    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr));
-    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr + 640 * 640));
-    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr + 2 * 640 * 640));
-}
+    auto serializedEngine =
+        std::unique_ptr<nvinfer1::IHostMemory>(
+            builder->buildSerializedNetwork(
+                *network,
+                *config));
 
-//画像認識
-void AI_ImageProcess::yolo_analysis(gpuFrame img) { // ★値渡しではなく参照渡し(&)推奨
-    // if (img.empty() || !m_context) return;
+    if (!serializedEngine)
+    {
+        qDebug() << "buildSerializedNetwork failed";
+        return;
+    }
 
-    // // ====================================================
-    // // 1. 画像の前処理（すべてGPU上で完結）
-    // // ====================================================
-    // // ① 640x640にリサイズ
-    // cv::cuda::resize(img, m_gpu_resized, cv::Size(640, 640), 0, 0, cv::INTER_LINEAR, m_stream);
+    QFile file(enginePath);
 
-    // // ② RGBA から RGB に変換 ← ★ここを修正！
-    // cv::cuda::cvtColor(m_gpu_resized, m_gpu_rgb, cv::COLOR_RGBA2RGB, 0, m_stream);
+    if (!file.open(QIODevice::WriteOnly))
+    {
+        qDebug() << "cannot open engine file";
+        return;
+    }
 
-    // // ③ 0〜255の整数を、0.0〜1.0の少数（float）に変換
-    // m_gpu_rgb.convertTo(m_gpu_float, CV_32FC3, 1.0 / 255.0, m_stream);
+    file.write(
+        static_cast<const char*>(
+            serializedEngine->data()),
+        serializedEngine->size());
 
-    // // ④ HWC配列(RGBRGB...) を CHW配列(RRR...GGG...BBB...)に分割
-    // cv::cuda::split(m_gpu_float, m_input_channels, m_stream);
+    file.close();
 
-    // // ====================================================
-    // // 2. 推論の実行
-    // // ====================================================
-    // m_context->setTensorAddress("images", m_d_input);
-    // m_context->setTensorAddress("output0", m_d_output);
-
-    // cudaStream_t raw_stream = cv::cuda::StreamAccessor::getStream(m_stream);
-    // m_context->enqueueV3(raw_stream);
-
-    // // ====================================================
-    // // 3. 結果の取得（GPU -> CPU）
-    // // ====================================================
-    // size_t outputSize = 1 * 300 * 6 * sizeof(float);
-    // cudaMemcpyAsync(m_h_output.data(), m_d_output, outputSize, cudaMemcpyDeviceToHost, raw_stream);
-
-    // //qDebug()<<m_h_output;
-
-    // // GPUの全ての作業が終わるまで待機
-    // m_stream.waitForCompletion();
+    qDebug()
+        << "TensorRT Engine Saved:"
+        << enginePath;
 }
 
 // RIFE初期化 (任意の n 倍補間対応版)
-void AI_ImageProcess::initRifeTensorRT(int width, int height) {
+void AI_ImageProcess::init_RIFE_TensorRT(int width, int height) {
     QString engineFolder = "E:/cuda_interop/project/engines/";
 
     QDir dir(engineFolder);
@@ -376,6 +430,120 @@ void AI_ImageProcess::initRifeTensorRT(int width, int height) {
     qDebug() << "==================================================";
 }
 
+void AI_ImageProcess::init_SuperRes_TensorRT(int width, int height)
+{
+    QString enginePath =
+        "E:/cuda_interop/project/engines/FSRCNN_x2.engine";
+
+    QFile file(enginePath);
+
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        qDebug() << "engine open failed";
+        return;
+    }
+
+    QByteArray engineData =
+        file.readAll();
+
+    file.close();
+
+    m_superres_instances.runtime = nvinfer1::createInferRuntime(gLogger);;
+    if (!m_superres_instances.runtime)
+    {
+        qDebug() << "createInferRuntime failed";
+        return;
+    }
+    m_superres_instances.engine = m_superres_instances.runtime->deserializeCudaEngine(engineData.constData(), engineData.size());;
+    if (!m_superres_instances.engine)
+    {
+        qDebug() << "deserializeCudaEngine failed";
+        return;
+    }
+
+    m_superres_instances.context = m_superres_instances.engine->createExecutionContext();
+
+    if (!m_superres_instances.context)
+    {
+        qDebug() << "createExecutionContext failed";
+        return;
+    }
+
+    for(int i=0;i<m_superres_instances.engine->getNbIOTensors();i++)
+    {
+        auto name = m_superres_instances.engine->getIOTensorName(i);
+
+        qDebug()
+            << name
+            << (int)m_superres_instances.engine->getTensorDataType(name);
+    }
+
+
+    // 💡 4. テンソルの自動走査とバインド
+    int32_t numTensors = m_superres_instances.engine->getNbIOTensors();
+
+    for (int32_t i = 0; i < numTensors; ++i) {
+        const char* tensorName = m_superres_instances.engine->getIOTensorName(i);
+        nvinfer1::TensorIOMode mode = m_superres_instances.engine->getTensorIOMode(tensorName);
+        nvinfer1::Dims dims = m_superres_instances.engine->getTensorShape(tensorName);
+
+        int64_t elementCount = 1;
+        for (int32_t d = 0; d < dims.nbDims; ++d) {
+            elementCount *= dims.d[d];
+        }
+
+        nvinfer1::DataType dataType = m_superres_instances.engine->getTensorDataType(tensorName);
+        size_t typeSize = (dataType == nvinfer1::DataType::kHALF) ? 2 : 4;
+
+        size_t byteSize = elementCount * typeSize;
+        void* d_ptr = nullptr;
+        cudaError_t err = cudaMalloc(&d_ptr, byteSize);
+        if (err != cudaSuccess) {
+            qCritical() << "[RIFE] cudaMallocエラー:" << tensorName;
+            return;
+        }
+
+        qDebug()
+            << i
+            << tensorName
+            << dims.nbDims
+            << byteSize;
+
+        // このインスタンスのコンテキストにアドレスをバインド
+        m_superres_instances.context->setTensorAddress(tensorName, d_ptr);
+
+        if (mode == nvinfer1::TensorIOMode::kINPUT) {
+            if (strcmp(tensorName, "input") == 0) m_superres_instances.d_input = d_ptr;
+        }
+        else if (mode == nvinfer1::TensorIOMode::kOUTPUT) {
+            if (strcmp(tensorName, "output") == 0) m_superres_instances.d_output = d_ptr;
+        }
+    }
+
+    m_superres_instances.gpu_float_input.data     = static_cast<uint8_t*>(m_superres_instances.d_input);
+    m_superres_instances.gpu_float_input.width    = width;
+    m_superres_instances.gpu_float_input.height   = height;
+    m_superres_instances.gpu_float_input.pitch    = 0;
+    m_superres_instances.gpu_float_input.channels = 3;
+
+    m_superres_instances.gpu_float_output.data     = static_cast<uint8_t*>(m_superres_instances.d_output);
+    m_superres_instances.gpu_float_output.width    = width*2;
+    m_superres_instances.gpu_float_output.height   = height*2;
+    m_superres_instances.gpu_float_output.pitch    = 0;
+    m_superres_instances.gpu_float_output.channels = 3;
+
+    qDebug()
+        << (int)m_superres_instances.engine
+               ->getTensorDataType("input");
+
+    qDebug()
+        << (int)m_superres_instances.engine
+               ->getTensorDataType("output");
+
+    qDebug() << "TensorRT Ready";
+}
+
+
 //フレーム補完
 void AI_ImageProcess::rife_interpolate(const gpuFrame& frame0, const gpuFrame& frame1,
                                        std::vector<gpuFrame>& out_frames,
@@ -406,10 +574,119 @@ void AI_ImageProcess::rife_interpolate(const gpuFrame& frame0, const gpuFrame& f
 
     targetInstance->context->enqueueV3(stream);
 
-    for (size_t i = 0; i < out_frames.size(); ++i) {
-        CUDA_Img_Proc->CHW_Float_to_RGBA(targetInstance->gpu_float_outputs[i], out_frames[i], stream);
+    for (size_t i = 0; i < out_frames.size(); ++i)
+    {
+        CUDA_Img_Proc->CHW_Float_to_RGBA(
+            targetInstance->gpu_float_outputs[i],
+            out_frames[i],
+            stream);
     }
 
     cudaStreamSynchronize(stream);
 }
+
+void AI_ImageProcess::run_SuperRes(const gpuFrame& in_frame,gpuFrame& out_frames,
+                                       cudaStream_t stream, CUDA_ImageProcess *CUDA_Img_Proc)
+{
+    if (!in_frame.data || !out_frames.data) return;
+
+    CUDA_Img_Proc->RGBA_to_CHW_Float(in_frame, m_superres_instances.gpu_float_input, stream);
+    m_superres_instances.context->enqueueV3(stream);
+    CUDA_Img_Proc->CHW_Float_to_RGBA(m_superres_instances.gpu_float_output, out_frames, stream);
+
+    cudaStreamSynchronize(stream);
+}
+
+
+//TensorRTの初期化
+void AI_ImageProcess::initYoloTensorRT() {
+    // // ====================================================
+    // // 1. Engineファイルの読み込みと Context の生成
+    // // ====================================================
+    // const QString enginePath = "D:/cuda_interop/glwidget_1/engine/yolo26x_4080S.engine";
+    // QFile file(enginePath);
+    // if (!file.open(QIODevice::ReadOnly)) {
+    //     qCritical() << "Engineファイルが開けません:" << enginePath;
+    //     return;
+    // }
+    // QByteArray engineData = file.readAll();
+    // file.close();
+
+
+
+    // // ランタイム、エンジン、コンテキストの生成
+    // m_runtime = nvinfer1::createInferRuntime(gLogger);
+    // m_engine = m_runtime->deserializeCudaEngine(engineData.constData(), engineData.size());
+    // if (!m_engine) {
+    //     qCritical() << "Engineのデシリアライズに失敗しました。";
+    //     return;
+    // }
+
+    // // ★ここでついに m_context が初期化されます！
+    // m_context = m_engine->createExecutionContext();
+    // if (!m_context) {
+    //     qCritical() << "Contextの生成に失敗しました。";
+    //     return;
+    // }
+
+    // qDebug() << "TensorRT Engine loaded and Context created successfully!";
+
+    // // ====================================================
+    // // 2. GPUメモリとCPUメモリの確保
+    // // ====================================================
+    // cudaMalloc(&m_d_input, 1 * 3 * 640 * 640 * sizeof(float));
+    // cudaMalloc(&m_d_output, 1 * 300 * 6 * sizeof(float));
+
+    // m_h_output.resize(1 * 300 * 6);
+
+    // // ====================================================
+    // // 3. OpenCVのゼロコピー用 GpuMat の準備
+    // // ====================================================
+    // float* d_ptr = static_cast<float*>(m_d_input);
+    // m_input_channels.clear();
+    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr));
+    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr + 640 * 640));
+    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr + 2 * 640 * 640));
+}
+
+//画像認識
+void AI_ImageProcess::yolo_analysis(gpuFrame img) { // ★値渡しではなく参照渡し(&)推奨
+    // if (img.empty() || !m_context) return;
+
+    // // ====================================================
+    // // 1. 画像の前処理（すべてGPU上で完結）
+    // // ====================================================
+    // // ① 640x640にリサイズ
+    // cv::cuda::resize(img, m_gpu_resized, cv::Size(640, 640), 0, 0, cv::INTER_LINEAR, m_stream);
+
+    // // ② RGBA から RGB に変換 ← ★ここを修正！
+    // cv::cuda::cvtColor(m_gpu_resized, m_gpu_rgb, cv::COLOR_RGBA2RGB, 0, m_stream);
+
+    // // ③ 0〜255の整数を、0.0〜1.0の少数（float）に変換
+    // m_gpu_rgb.convertTo(m_gpu_float, CV_32FC3, 1.0 / 255.0, m_stream);
+
+    // // ④ HWC配列(RGBRGB...) を CHW配列(RRR...GGG...BBB...)に分割
+    // cv::cuda::split(m_gpu_float, m_input_channels, m_stream);
+
+    // // ====================================================
+    // // 2. 推論の実行
+    // // ====================================================
+    // m_context->setTensorAddress("images", m_d_input);
+    // m_context->setTensorAddress("output0", m_d_output);
+
+    // cudaStream_t raw_stream = cv::cuda::StreamAccessor::getStream(m_stream);
+    // m_context->enqueueV3(raw_stream);
+
+    // // ====================================================
+    // // 3. 結果の取得（GPU -> CPU）
+    // // ====================================================
+    // size_t outputSize = 1 * 300 * 6 * sizeof(float);
+    // cudaMemcpyAsync(m_h_output.data(), m_d_output, outputSize, cudaMemcpyDeviceToHost, raw_stream);
+
+    // //qDebug()<<m_h_output;
+
+    // // GPUの全ての作業が終わるまで待機
+    // m_stream.waitForCompletion();
+}
+
 
