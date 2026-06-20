@@ -6,6 +6,12 @@
 #include <QFileDialog>
 #include <string>
 #include <cuda_runtime.h>
+#include <NvInfer.h>
+#include <cuda_runtime_api.h> // CUDAのメモリ操作関数を使うために必須
+#include <QFile>
+#include <NvInfer.h>
+#include <NvOnnxParser.h>
+#include <cstdint>
 #define STATE_NOT_ENCODE 0
 #define STATE_ENCODE_READY 1
 #define STATE_ENCODING 2
@@ -19,6 +25,16 @@ extern "C" {
 #define MFG_x3 3
 #define MFG_x4 4
 #define MFG_x8 8
+
+// TensorRT用のロガー（エラーや警告をQtのコンソールに出力します）
+inline class MyTRTLogger : public nvinfer1::ILogger {
+    void log(Severity severity, const char* msg) noexcept override {
+        // INFOレベル以上を出力（ビルドの進捗が見えるようにします）
+        if (severity <= Severity::kINFO) {
+            qDebug() << "[TensorRT]" << msg;
+        }
+    }
+} gLogger;
 
 struct gpuFrame {
     uint8_t* data = nullptr;

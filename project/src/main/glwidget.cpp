@@ -210,7 +210,6 @@ void GLWidget::initializeGL()
     cudaStreamCreate(&hist_stream);
     cudaEventCreate(&hist_event);
 
-    AI_Img_Proc->init_RIFE_TensorRT(2048,1024);
     AI_Img_Proc->init_SuperRes_TensorRT(2048,1024);
 
     // === 初期化完了 ===

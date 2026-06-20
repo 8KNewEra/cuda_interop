@@ -38,6 +38,10 @@ obj_out/
 RIFE/
 engines/
 TensorRT/
+Real_ESRGAN/
+SuperRes/
+Models/
+
 
 # ---- Logs / Temp ----
 *.log

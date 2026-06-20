@@ -11,28 +11,26 @@
 #include <QFile>
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
-#include "qdir.h"
+#include "qcoreapplication.h"
 
 class AI_ImageProcess : public QThread {
     Q_OBJECT
 public:
 
     AI_ImageProcess(QObject* parent = nullptr);
-    void Build_RIFE_TensorRT_Engine();
-    void Build_SuperRes_TensorRT_Engine();
-    void init_RIFE_TensorRT(int width, int height);
-    void init_SuperRes_TensorRT(int width, int height);
-    void initYoloTensorRT();
-    void yolo_analysis(gpuFrame img);
-    void initRifeTensorRT(int width,int height);
     void rife_interpolate(const gpuFrame& frame0, const gpuFrame& frame1,
                           std::vector<gpuFrame>& out_frames,
                           cudaStream_t stream, CUDA_ImageProcess *CUDA_Img_Proc) ;
+    void init_SuperRes_TensorRT(int width, int height);
     void run_SuperRes(const gpuFrame& in_frame,gpuFrame& out_frames,
                       cudaStream_t stream, CUDA_ImageProcess *CUDA_Img_Proc);
 
 private:
     // Yolo関連
+    void initYoloTensorRT();
+    void yolo_analysis(gpuFrame img);
+    bool loadRifeTensorRT(int targetRatio);
+    void unloadRifeEngine();
     // // TensorRT関連
     // nvinfer1::IRuntime* m_runtime = nullptr;
     // nvinfer1::ICudaEngine* m_engine = nullptr;
@@ -55,7 +53,9 @@ private:
     // RIFE関連
     // 1つのRIFEエンジンインスタンスを管理する構造体
     struct RifeEngineInstance {
-        int interpolateRatio = 2;  // 補間倍率 (2, 3, 4...)
+        // 💡【追加】このモデル自身のネイティブ解像度を記憶する
+        int modelWidth = 0;
+        int modelHeight = 0;
 
         // TensorRTコアリソース
         nvinfer1::IRuntime* runtime = nullptr;
@@ -73,7 +73,9 @@ private:
         std::vector<gpuFrame> gpu_float_outputs;
     };
 
-    std::map<int, RifeEngineInstance> m_rife_instances;
+    RifeEngineInstance m_rife_instances;
+    std::mutex m_engine_mutex;
+
 
     struct SuperresEngineInstance {
         int superresRatio = 2;  // 超解像倍率 (2, 3, 4...)
@@ -93,6 +95,9 @@ private:
     };
 
     SuperresEngineInstance m_superres_instances;
+
+    void Build_RIFE_TensorRT_Engine();
+    void Build_SuperRes_TensorRT_Engine();
 };
 
 #endif // AI_IMAGEPROCESS_H

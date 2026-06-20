@@ -146,7 +146,7 @@ private:
     gpuFrame getPooledBuffer(int width ,int height);
 
     std::queue<gpuFrame> m_render_queue;
-    int MFG_MODE = MFG_x2;
+    int MFG_MODE = MFG_x8;
     std::mutex m_queue_mutex;
 };
 

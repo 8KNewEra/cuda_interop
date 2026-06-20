@@ -1,20 +1,9 @@
 #include "ai_imageprocess.h"
 #include "qdebug.h"
 
-// TensorRT用のロガー（エラーや警告をQtのコンソールに出力します）
-class MyTRTLogger : public nvinfer1::ILogger {
-    void log(Severity severity, const char* msg) noexcept override {
-        // INFOレベル以上を出力（ビルドの進捗が見えるようにします）
-        if (severity <= Severity::kINFO) {
-            qDebug() << "[TensorRT]" << msg;
-        }
-    }
-} gLogger;
-
 AI_ImageProcess::AI_ImageProcess(QObject* parent)
     : QThread(parent) {
     //Build_RIFE_TensorRT_Engine();
-    //Build_SuperRes_TensorRT_Engine();
 }
 
 //RIFE ONNXビルド用
@@ -49,7 +38,7 @@ void AI_ImageProcess::Build_RIFE_TensorRT_Engine() {
     for (const QFileInfo& fileInfo : onnxFiles) {
         QString onnxPath = fileInfo.absoluteFilePath();
         // 出力先は、同じフォルダの「ファイル名.engine」にする
-        QString enginePath = "E:/cuda_interop/project/engines/" + fileInfo.baseName() + ".engine";
+        QString enginePath = QCoreApplication::applicationDirPath() + "/engines/" + fileInfo.baseName() + ".engine";
 
         qDebug() << "\n---> [Processing]:" << fileInfo.fileName();
 
@@ -116,6 +105,250 @@ void AI_ImageProcess::Build_RIFE_TensorRT_Engine() {
     qDebug() << "  🎉 ALL ENGINES COMPLETED!";
     qDebug() << "  Total Batch Time:" << batchTimer.elapsed() / 1000.0 / 60.0 << "minutes.";
     qDebug() << "==================================================";
+}
+
+// RIFE初期化
+bool AI_ImageProcess::loadRifeTensorRT(int targetRatio) {
+    QString enginepath = QCoreApplication::applicationDirPath()+ "/engines/rife_" +QString::number(targetRatio)+ "x_1k.engine";
+
+    QFile file(enginepath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        qCritical() << "[RIFE] ファイルが開けません:" << enginepath;
+        return false;
+    }
+    QByteArray engineData = file.readAll();
+    file.close();
+
+    // 共通コンテキスト・ランタイムの生成
+    m_rife_instances.runtime = nvinfer1::createInferRuntime(gLogger);
+    if (!m_rife_instances.runtime) {
+        qCritical() << "[RIFE] InferRuntimeの生成に失敗しました。";
+        return false;
+    }
+
+    m_rife_instances.engine = m_rife_instances.runtime->deserializeCudaEngine(engineData.constData(), engineData.size());
+    if (!m_rife_instances.engine) {
+        qCritical() << "[RIFE] Engineのデシリアライズに失敗しました。";
+        delete m_rife_instances.runtime;
+        return false;
+    }
+
+    m_rife_instances.context = m_rife_instances.engine->createExecutionContext();
+    if (!m_rife_instances.context) {
+        qCritical() << "[RIFE] ExecutionContextの生成に失敗しました。";
+        delete m_rife_instances.engine; delete m_rife_instances.runtime;
+        return false;;
+    }
+
+    // テンソルの自動走査とバインド
+    std::map<int, void*> ordered_output_ptrs;
+    int32_t numTensors = m_rife_instances.engine->getNbIOTensors();
+    for (int32_t i = 0; i < numTensors; ++i) {
+        const char* tensorName = m_rife_instances.engine->getIOTensorName(i);
+        nvinfer1::TensorIOMode mode = m_rife_instances.engine->getTensorIOMode(tensorName);
+        nvinfer1::Dims dims = m_rife_instances.engine->getTensorShape(tensorName);
+
+        int64_t elementCount = 1;
+        for (int32_t d = 0; d < dims.nbDims; ++d) {
+            elementCount *= dims.d[d];
+        }
+
+        // RIFEの入力テンソルの形状は [1, 3, Height, Width] の4次元 (NCHW)
+        if (mode == nvinfer1::TensorIOMode::kINPUT && strcmp(tensorName, "img0") == 0) {
+            if (dims.nbDims == 4) {
+                m_rife_instances.modelHeight = dims.d[2];
+                m_rife_instances.modelWidth  = dims.d[3];
+                qDebug() << "[RIFE Auto Shape] Model Native Resolution detected:"
+                         << m_rife_instances.modelWidth << "x" << m_rife_instances.modelHeight;
+            }
+        }
+
+        nvinfer1::DataType dataType = m_rife_instances.engine->getTensorDataType(tensorName);
+        size_t typeSize = (dataType == nvinfer1::DataType::kHALF) ? 2 : 4;
+        size_t byteSize = elementCount * typeSize;
+        void* d_ptr = nullptr;
+        cudaError_t err = cudaMalloc(&d_ptr, byteSize);
+        if (err != cudaSuccess) {
+            qCritical() << "[RIFE] cudaMallocエラー:" << tensorName;
+            return false;
+        }
+
+        // このインスタンスのコンテキストにアドレスをバインド
+        m_rife_instances.context->setTensorAddress(tensorName, d_ptr);
+        if (mode == nvinfer1::TensorIOMode::kINPUT) {
+            if (strcmp(tensorName, "img0") == 0) m_rife_instances.d_img0 = d_ptr;
+            if (strcmp(tensorName, "img1") == 0) m_rife_instances.d_img1 = d_ptr;
+        }
+        else if (mode == nvinfer1::TensorIOMode::kOUTPUT) {
+            int outIdx = -1;
+            if (strcmp(tensorName, "output_frame") == 0) {
+                outIdx = 1;
+            } else if (sscanf(tensorName, "out_%d", &outIdx) == 1) {
+                // 通常のマルチ出力
+            }
+
+            if (outIdx != -1) {
+                ordered_output_ptrs[outIdx] = d_ptr;
+            }
+        }
+    }
+
+    // 整合性チェック
+    if (!m_rife_instances.d_img0 || !m_rife_instances.d_img1 || ordered_output_ptrs.empty()) {
+        qCritical() << "[RIFE] テンソルマッピングに失敗しました。";
+        delete m_rife_instances.context; delete m_rife_instances.engine; delete m_rife_instances.runtime;
+        return false;
+    }
+
+    // 時系列順に出力ポインタを配列へ展開
+    for (const auto& [idx, ptr] : ordered_output_ptrs) {
+        m_rife_instances.d_outputs.push_back(ptr);
+    }
+
+    // Frame構造体の初期化（インスタンス内部にカプセル化）
+    m_rife_instances.gpu_float_img0.data     = static_cast<uint8_t*>(m_rife_instances.d_img0);
+    m_rife_instances.gpu_float_img0.width    = m_rife_instances.modelWidth;
+    m_rife_instances.gpu_float_img0.height   = m_rife_instances.modelHeight;
+    m_rife_instances.gpu_float_img0.pitch    = 0;
+    m_rife_instances.gpu_float_img0.channels = 3;
+
+    m_rife_instances.gpu_float_img1.data     = static_cast<uint8_t*>(m_rife_instances.d_img1);
+    m_rife_instances.gpu_float_img1.width    = m_rife_instances.modelWidth;
+    m_rife_instances.gpu_float_img1.height   = m_rife_instances.modelHeight;
+    m_rife_instances.gpu_float_img1.pitch    = 0;
+    m_rife_instances.gpu_float_img1.channels = 3;
+
+    for (size_t i = 0; i < m_rife_instances.d_outputs.size(); ++i) {
+        gpuFrame outFrame;
+        outFrame.data     = static_cast<uint8_t*>(m_rife_instances.d_outputs[i]);
+        outFrame.width    = m_rife_instances.modelWidth;
+        outFrame.height   = m_rife_instances.modelHeight;
+        outFrame.pitch    = 0;
+        outFrame.channels = 3;
+        m_rife_instances.gpu_float_outputs.push_back(outFrame);
+    }
+
+    qDebug() << "\n==================================================";
+    qDebug() << "     ENGINE INSTANCES LOADED AND SORTED!";
+    qDebug() << "  Load instance target ratio " << targetRatio;
+    qDebug() << "==================================================";
+
+    return true;
+}
+
+// モデルアンロード
+void AI_ImageProcess::unloadRifeEngine() {
+    // CUDAメモリ解放
+    if (m_rife_instances.d_img0) cudaFree(m_rife_instances.d_img0);
+    if (m_rife_instances.d_img1) cudaFree(m_rife_instances.d_img1);
+    for (void* ptr : m_rife_instances.d_outputs) {
+        if (ptr) cudaFree(ptr);
+    }
+    m_rife_instances.d_outputs.clear();
+    m_rife_instances.gpu_float_outputs.clear();
+
+    // TensorRTオブジェクト破棄
+    if (m_rife_instances.context) {
+        delete m_rife_instances.context;
+        m_rife_instances.context = nullptr;
+    }
+    if (m_rife_instances.engine)  {
+        delete m_rife_instances.engine;
+        m_rife_instances.engine = nullptr;
+    }
+    if (m_rife_instances.runtime) {
+        delete m_rife_instances.runtime;
+        m_rife_instances.runtime = nullptr;
+    }
+}
+
+// フレーム補完
+void AI_ImageProcess::rife_interpolate(const gpuFrame& frame0, const gpuFrame& frame1,
+                                       std::vector<gpuFrame>& out_frames,
+                                       cudaStream_t stream, CUDA_ImageProcess *CUDA_Img_Proc)
+{
+    if (!frame0.data || !frame1.data || out_frames.empty()) return;
+
+    // 要求された倍率（例：7枚なら 8倍補間）
+    int targetRatio = out_frames.size() + 1;
+
+    // 対応する倍率のエンジンがロードされていない場合は再ロード
+    {
+        std::lock_guard<std::mutex> lock(m_engine_mutex);
+        if (m_rife_instances.engine == nullptr || targetRatio != m_rife_instances.d_outputs.size() + 1) {
+            // ロード中は推論が走らないように、必要に応じて lock_guard を使用
+            unloadRifeEngine();
+            if(!loadRifeTensorRT(targetRatio)) return;
+        }
+    }
+
+    // 前処理 RGBA→CHW float
+    {
+        std::lock_guard<std::mutex> lock(m_engine_mutex);
+        CUDA_Img_Proc->RGBA_to_CHW_Float(frame0, m_rife_instances.gpu_float_img0, stream);
+        CUDA_Img_Proc->RGBA_to_CHW_Float(frame1, m_rife_instances.gpu_float_img1, stream);
+
+        // 推論
+        m_rife_instances.context->enqueueV3(stream);
+
+        // 後処理 CHW float→RGBA
+        for (size_t i = 0; i < out_frames.size(); ++i) {
+            CUDA_Img_Proc->CHW_Float_to_RGBA(m_rife_instances.gpu_float_outputs[i], out_frames[i], stream);
+        }
+
+        cudaStreamSynchronize(stream);
+    }
+}
+
+//TensorRTの初期化
+void AI_ImageProcess::initYoloTensorRT() {
+    // // ====================================================
+    // // 1. Engineファイルの読み込みと Context の生成
+    // // ====================================================
+    // const QString enginePath = "D:/cuda_interop/glwidget_1/engine/yolo26x_4080S.engine";
+    // QFile file(enginePath);
+    // if (!file.open(QIODevice::ReadOnly)) {
+    //     qCritical() << "Engineファイルが開けません:" << enginePath;
+    //     return;
+    // }
+    // QByteArray engineData = file.readAll();
+    // file.close();
+
+
+
+    // // ランタイム、エンジン、コンテキストの生成
+    // m_runtime = nvinfer1::createInferRuntime(gLogger);
+    // m_engine = m_runtime->deserializeCudaEngine(engineData.constData(), engineData.size());
+    // if (!m_engine) {
+    //     qCritical() << "Engineのデシリアライズに失敗しました。";
+    //     return;
+    // }
+
+    // // ★ここでついに m_context が初期化されます！
+    // m_context = m_engine->createExecutionContext();
+    // if (!m_context) {
+    //     qCritical() << "Contextの生成に失敗しました。";
+    //     return;
+    // }
+
+    // qDebug() << "TensorRT Engine loaded and Context created successfully!";
+
+    // // ====================================================
+    // // 2. GPUメモリとCPUメモリの確保
+    // // ====================================================
+    // cudaMalloc(&m_d_input, 1 * 3 * 640 * 640 * sizeof(float));
+    // cudaMalloc(&m_d_output, 1 * 300 * 6 * sizeof(float));
+
+    // m_h_output.resize(1 * 300 * 6);
+
+    // // ====================================================
+    // // 3. OpenCVのゼロコピー用 GpuMat の準備
+    // // ====================================================
+    // float* d_ptr = static_cast<float*>(m_d_input);
+    // m_input_channels.clear();
+    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr));
+    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr + 640 * 640));
+    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr + 2 * 640 * 640));
 }
 
 //Real ESRGAN ONNXビルド用
@@ -262,174 +495,6 @@ void AI_ImageProcess::Build_SuperRes_TensorRT_Engine()
         << enginePath;
 }
 
-// RIFE初期化 (任意の n 倍補間対応版)
-void AI_ImageProcess::init_RIFE_TensorRT(int width, int height) {
-    QString engineFolder = "E:/cuda_interop/project/engines/";
-
-    QDir dir(engineFolder);
-    if (!dir.exists()) {
-        qCritical() << "[RIFE] エンジンフォルダが存在しません:" << engineFolder;
-        return;
-    }
-
-    // 💡 既存のインスタンス配列を完全にクリア（再初期化対応）
-    m_rife_instances.clear();
-
-    // 💡 1. 命名規則 「rife_*x_1k.engine」 に一致するファイルを全検索
-    QStringList filters;
-    filters << "rife_*x_1k.engine";
-    QFileInfoList engineFiles = dir.entryInfoList(filters, QDir::Files, QDir::Name);
-
-    if (engineFiles.isEmpty()) {
-        qWarning() << "[RIFE] フォルダ内に符合する .engine ファイルが見つかりませんでした。";
-        return;
-    }
-
-    // 💡 2. 【核心】ファイル名から倍率(n)を抽出し、mapを使って自動的に「低い順」にソート
-    std::map<int, QString> sortedEnginePaths;
-    for (const QFileInfo& fileInfo : engineFiles) {
-        int ratio = 2;
-        // ファイル名（例: rife_3x_1k.engine）から数値を抽出
-        if (sscanf(fileInfo.fileName().toStdString().c_str(), "rife_%dx_1k.engine", &ratio) == 1) {
-            sortedEnginePaths[ratio] = fileInfo.absoluteFilePath();
-        }
-    }
-
-    qDebug() << "==================================================";
-    qDebug() << "  [RIFE] Multi-Engine Serialization Started";
-    qDebug() << "  Detected models count:" << sortedEnginePaths.size();
-    qDebug() << "==================================================";
-
-    // 💡 3. 低い順（2x -> 3x -> 4x）にソートされたmapをループして一気に初期化
-    for (const auto& [ratio, path] : sortedEnginePaths) {
-        qDebug() << "\n---> [Loading Engine]:" << QFileInfo(path).fileName() << "(Ratio:" << ratio << "X)";
-
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly)) {
-            qCritical() << "[RIFE] ファイルが開けません:" << path;
-            continue;
-        }
-        QByteArray engineData = file.readAll();
-        file.close();
-
-        // 新しい構造体インスタンスを作成
-        RifeEngineInstance instance;
-        instance.interpolateRatio = ratio;
-
-        // 共通コンテキスト・ランタイムの生成
-        instance.runtime = nvinfer1::createInferRuntime(gLogger);
-        if (!instance.runtime) {
-            qCritical() << "[RIFE] InferRuntimeの生成に失敗しました。";
-            continue;
-        }
-
-        instance.engine = instance.runtime->deserializeCudaEngine(engineData.constData(), engineData.size());
-        if (!instance.engine) {
-            qCritical() << "[RIFE] Engineのデシリアライズに失敗しました。";
-            delete instance.runtime;
-            continue;
-        }
-
-        instance.context = instance.engine->createExecutionContext();
-        if (!instance.context) {
-            qCritical() << "[RIFE] ExecutionContextの生成に失敗しました。";
-            delete instance.engine; delete instance.runtime;
-            continue;
-        }
-
-        // 💡 4. テンソルの自動走査とバインド
-        std::map<int, void*> ordered_output_ptrs;
-        int32_t numTensors = instance.engine->getNbIOTensors();
-
-        for (int32_t i = 0; i < numTensors; ++i) {
-            const char* tensorName = instance.engine->getIOTensorName(i);
-            nvinfer1::TensorIOMode mode = instance.engine->getTensorIOMode(tensorName);
-            nvinfer1::Dims dims = instance.engine->getTensorShape(tensorName);
-
-            int64_t elementCount = 1;
-            for (int32_t d = 0; d < dims.nbDims; ++d) {
-                elementCount *= dims.d[d];
-            }
-
-            nvinfer1::DataType dataType = instance.engine->getTensorDataType(tensorName);
-            size_t typeSize = (dataType == nvinfer1::DataType::kHALF) ? 2 : 4;
-
-            size_t byteSize = elementCount * typeSize;
-            void* d_ptr = nullptr;
-            cudaError_t err = cudaMalloc(&d_ptr, byteSize);
-            if (err != cudaSuccess) {
-                qCritical() << "[RIFE] cudaMallocエラー:" << tensorName;
-                return;
-            }
-
-            // このインスタンスのコンテキストにアドレスをバインド
-            instance.context->setTensorAddress(tensorName, d_ptr);
-
-            if (mode == nvinfer1::TensorIOMode::kINPUT) {
-                if (strcmp(tensorName, "img0") == 0) instance.d_img0 = d_ptr;
-                if (strcmp(tensorName, "img1") == 0) instance.d_img1 = d_ptr;
-            }
-            else if (mode == nvinfer1::TensorIOMode::kOUTPUT) {
-                int outIdx = -1;
-                if (strcmp(tensorName, "output_frame") == 0) {
-                    outIdx = 1;
-                } else if (sscanf(tensorName, "out_%d", &outIdx) == 1) {
-                    // 通常のマルチ出力
-                }
-
-                if (outIdx != -1) {
-                    ordered_output_ptrs[outIdx] = d_ptr;
-                }
-            }
-        }
-
-        // 整合性チェック
-        if (!instance.d_img0 || !instance.d_img1 || ordered_output_ptrs.empty()) {
-            qCritical() << "[RIFE] テンソルマッピングに失敗しました。";
-            delete instance.context; delete instance.engine; delete instance.runtime;
-            continue;
-        }
-
-        // 時系列順に出力ポインタを配列へ展開
-        for (const auto& [idx, ptr] : ordered_output_ptrs) {
-            instance.d_outputs.push_back(ptr);
-        }
-
-        // 💡 5. Frame構造体の初期化（インスタンス内部にカプセル化）
-        instance.gpu_float_img0.data     = static_cast<uint8_t*>(instance.d_img0);
-        instance.gpu_float_img0.width    = width;
-        instance.gpu_float_img0.height   = height;
-        instance.gpu_float_img0.pitch    = 0;
-        instance.gpu_float_img0.channels = 3;
-
-        instance.gpu_float_img1.data     = static_cast<uint8_t*>(instance.d_img1);
-        instance.gpu_float_img1.width    = width;
-        instance.gpu_float_img1.height   = height;
-        instance.gpu_float_img1.pitch    = 0;
-        instance.gpu_float_img1.channels = 3;
-
-        for (size_t i = 0; i < instance.d_outputs.size(); ++i) {
-            gpuFrame outFrame;
-            outFrame.data     = static_cast<uint8_t*>(instance.d_outputs[i]);
-            outFrame.width    = width;
-            outFrame.height   = height;
-            outFrame.pitch    = 0;
-            outFrame.channels = 3;
-            instance.gpu_float_outputs.push_back(outFrame);
-        }
-
-        // 💡 完成した完璧なインスタンスを、メイン配列に格納！
-        m_rife_instances[ratio] = instance;
-
-        qDebug() << "   [Initialization Successful]:" << ratio << "X model loaded seamlessly.";
-    }
-
-    qDebug() << "\n==================================================";
-    qDebug() << "  🎉 ALL ENGINE INSTANCES LOADED AND SORTED!";
-    qDebug() << "  Total instances in vector:" << m_rife_instances.size();
-    qDebug() << "==================================================";
-}
-
 void AI_ImageProcess::init_SuperRes_TensorRT(int width, int height)
 {
     QString enginePath =
@@ -544,49 +609,8 @@ void AI_ImageProcess::init_SuperRes_TensorRT(int width, int height)
 }
 
 
-//フレーム補完
-void AI_ImageProcess::rife_interpolate(const gpuFrame& frame0, const gpuFrame& frame1,
-                                       std::vector<gpuFrame>& out_frames,
-                                       cudaStream_t stream, CUDA_ImageProcess *CUDA_Img_Proc)
-{
-    if (!frame0.data || !frame1.data || out_frames.empty()) return;
-
-    // 要求された倍率（例：7枚なら 8倍補間）
-    int targetRatio = out_frames.size() + 1;
-
-    // 💡【新・ループ撲滅チート技】
-    // マップから指定倍率（8など）のエンジンをダイレクトに検索！
-    auto it = m_rife_instances.find(targetRatio);
-
-    // 💡 安全チェック（フォルダの中に本当に 8x.engine が入っていなかった時だけ弾く）
-    if (it == m_rife_instances.end()) {
-        qCritical() << "[RIFE Inference] 要求された倍率" << targetRatio
-                    << "X に対応するエンジンがフォルダ内に存在しません（ロードされていません）！";
-        return;
-    }
-
-    // 💡 発見したエンジンインスタンスのポインタを確定（速度はvectorの時と変わりません）
-    RifeEngineInstance* targetInstance = &(it->second);
-
-    // 💡 以降の前処理・推論・後処理コードは、1文字も変更せず完全にそのままでOK！
-    CUDA_Img_Proc->RGBA_to_CHW_Float(frame0, targetInstance->gpu_float_img0, stream);
-    CUDA_Img_Proc->RGBA_to_CHW_Float(frame1, targetInstance->gpu_float_img1, stream);
-
-    targetInstance->context->enqueueV3(stream);
-
-    for (size_t i = 0; i < out_frames.size(); ++i)
-    {
-        CUDA_Img_Proc->CHW_Float_to_RGBA(
-            targetInstance->gpu_float_outputs[i],
-            out_frames[i],
-            stream);
-    }
-
-    cudaStreamSynchronize(stream);
-}
-
 void AI_ImageProcess::run_SuperRes(const gpuFrame& in_frame,gpuFrame& out_frames,
-                                       cudaStream_t stream, CUDA_ImageProcess *CUDA_Img_Proc)
+                                   cudaStream_t stream, CUDA_ImageProcess *CUDA_Img_Proc)
 {
     if (!in_frame.data || !out_frames.data) return;
 
@@ -595,58 +619,6 @@ void AI_ImageProcess::run_SuperRes(const gpuFrame& in_frame,gpuFrame& out_frames
     CUDA_Img_Proc->CHW_Float_to_RGBA(m_superres_instances.gpu_float_output, out_frames, stream);
 
     cudaStreamSynchronize(stream);
-}
-
-
-//TensorRTの初期化
-void AI_ImageProcess::initYoloTensorRT() {
-    // // ====================================================
-    // // 1. Engineファイルの読み込みと Context の生成
-    // // ====================================================
-    // const QString enginePath = "D:/cuda_interop/glwidget_1/engine/yolo26x_4080S.engine";
-    // QFile file(enginePath);
-    // if (!file.open(QIODevice::ReadOnly)) {
-    //     qCritical() << "Engineファイルが開けません:" << enginePath;
-    //     return;
-    // }
-    // QByteArray engineData = file.readAll();
-    // file.close();
-
-
-
-    // // ランタイム、エンジン、コンテキストの生成
-    // m_runtime = nvinfer1::createInferRuntime(gLogger);
-    // m_engine = m_runtime->deserializeCudaEngine(engineData.constData(), engineData.size());
-    // if (!m_engine) {
-    //     qCritical() << "Engineのデシリアライズに失敗しました。";
-    //     return;
-    // }
-
-    // // ★ここでついに m_context が初期化されます！
-    // m_context = m_engine->createExecutionContext();
-    // if (!m_context) {
-    //     qCritical() << "Contextの生成に失敗しました。";
-    //     return;
-    // }
-
-    // qDebug() << "TensorRT Engine loaded and Context created successfully!";
-
-    // // ====================================================
-    // // 2. GPUメモリとCPUメモリの確保
-    // // ====================================================
-    // cudaMalloc(&m_d_input, 1 * 3 * 640 * 640 * sizeof(float));
-    // cudaMalloc(&m_d_output, 1 * 300 * 6 * sizeof(float));
-
-    // m_h_output.resize(1 * 300 * 6);
-
-    // // ====================================================
-    // // 3. OpenCVのゼロコピー用 GpuMat の準備
-    // // ====================================================
-    // float* d_ptr = static_cast<float*>(m_d_input);
-    // m_input_channels.clear();
-    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr));
-    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr + 640 * 640));
-    // m_input_channels.push_back(cv::cuda::GpuMat(640, 640, CV_32FC1, d_ptr + 2 * 640 * 640));
 }
 
 //画像認識
