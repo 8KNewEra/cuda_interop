@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 #include <QDebug>
 #include <QFile>
+#include "qelapsedtimer.h"
 #include "src/main/__global__.h"
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "qaudiosink.h"
