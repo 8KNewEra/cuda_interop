@@ -11,6 +11,7 @@
 #include "src/main/__global__.h"
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "qaudiosink.h"
+#include "qelapsedtimer.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>

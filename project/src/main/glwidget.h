@@ -1,6 +1,7 @@
 #ifndef GLWIDGET_H
 #define GLWIDGET_H
 
+#include "qelapsedtimer.h"
 #include "src/videoprocess/save_encode.h"
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "src/main/__global__.h"

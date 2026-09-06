@@ -2,7 +2,7 @@
 #include "qdir.h"
 #include <QDebug>
 
-#define Rerease 0
+#define Rerease 1
 
 GLWidget::GLWidget(QWindow *parent)
     :  QOpenGLWindow(NoPartialUpdate, parent),

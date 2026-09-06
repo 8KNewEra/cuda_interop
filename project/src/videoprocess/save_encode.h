@@ -7,6 +7,13 @@
 #include <QDebug>
 #include <QFile>
 #include <queue>
+#include <vector>
+#include <memory>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include "qmutex.h"
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "src/main/__global__.h"
@@ -32,6 +39,13 @@ struct FrameSlot {
     size_t uv_pitch = 0;
 };
 
+// エンコーダスレッドへ渡す1フレーム分の仕事
+struct EncodeJob {
+    int     slot = -1;
+    int64_t pts  = 0;
+    bool    eos  = false;   // true なら flush して終了
+};
+
 struct VideoEncoder {
     AVBufferRef* hw_device_ctx = nullptr;        // CUDA デバイスのコンテキスト
     AVCodecContext* codec_ctx = nullptr;
@@ -41,12 +55,23 @@ struct VideoEncoder {
     AVBufferRef*    hw_frames_ctx = nullptr;
     std::vector<FrameSlot> hw_frames;
 
-    std::queue<int> inflight;
-    std::mutex inflight_mtx;
-    std::condition_variable inflight_cv;
-    int max_inflight = 32; // ★これが重要（調整ポイント）
-
     cudaStream_t st = nullptr;
+
+    // ================= パイプライン用 =================
+    std::thread             th;                 // このエンコーダ専用ワーカー
+    AVPacket*               pkt = nullptr;      // ワーカー専用パケット
+
+    std::mutex              mtx;
+    std::condition_variable job_cv;             // job投入通知   (ワーカーが待つ)
+    std::condition_variable slot_cv;            // slot解放通知  (メインが待つ)
+    std::queue<EncodeJob>   jobs;
+
+    // ★ slot の上書き防止カウンタ
+    //   occupied = submitted - completed
+    //   occupied < ring_capacity のときだけ slot(submitted % ring) は空いている
+    uint64_t submitted     = 0;                 // メインが投入したフレーム数
+    uint64_t completed     = 0;                 // ワーカーが完了しslotを返した数
+    int      ring_capacity = 1;                 // = g_EncodeRingSize
 };
 
 struct AudioJob
@@ -68,10 +93,9 @@ private:
     void initialized_ffmpeg_codec_context(int i,int max_split);
     int height_,width_;
 
-    void encode_video(VideoFrame Frame);;
+    void encode_video(VideoFrame Frame);
 
     // --- FFmpeg 関連 ---
-    AVPacket* packet = nullptr;
     std::vector<std::unique_ptr<VideoEncoder>> ve;   // デフォルトコンストラクタで N 個作成
     AVFormatContext* fmt_ctx = nullptr;          // 出力ファイルのフォーマットコンテキスト
     int64_t frame_index = 0;                         // PTS 管理用
@@ -106,9 +130,17 @@ private:
     void stop_audio_thread();
     void audio_flush();
 
-    //リング設定(映像エンコード)
-    void wait_inflight(VideoEncoder& enc);
-    void drain_video_encoder(VideoEncoder& enc, AVFormatContext* fmt_ctx, AVPacket* packet);
+    // ================= 映像パイプライン =================
+    int  async_depth_ = 1;                      // NVENC内部の遅延段数(ringとの整合をとる)
+
+    void encoder_loop(int idx);                 // エンコーダ毎ワーカー本体
+    void start_encoder_threads();
+    void stop_encoder_threads();
+
+    void wait_slot_free(VideoEncoder& enc);      // ★上書き防止（メインがここで待つ）
+    void submit_job(VideoEncoder& enc, int slot, int64_t pts);
+    void release_slot(VideoEncoder& enc);        // completed++ して通知
+    void drain_video_encoder(VideoEncoder& enc); // ワーカー内でのみ呼ぶ
 };
 
 #endif // SAVE_ENCODE_H
