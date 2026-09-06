@@ -211,42 +211,44 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
         filter_change_flag=false;
     }
 
+    const shader* passes[3];
+    int nPass = 0;
+
+    //適用順は従来どおり Gaussian → Sobel → Averaging
+    if (g_AppSettings.gaussianfilterEnabled)  passes[nPass++] = &Gaussian_shader;
+    if (g_AppSettings.sobelfilterEnabled)     passes[nPass++] = &Sobel_shader;
+    if (g_AppSettings.averagingfilterEnabled) passes[nPass++] = &Averaging_shader;
+
+    //全部OFFのときは素通し1パスだけ（inputTextureID → fbo の転送が必要なため）
+    if (nPass == 0) {
+        passes[nPass++] = &Averaging_shader;   // u_filterEnabled=0 なので素通し
+    }
+
     //FBO描画開始
     glBindVertexArray(vao);
 
-    // Gaussian
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, width_, height_);
-    glClear(GL_COLOR_BUFFER_BIT);
+    GLuint srcTex = inputTextureID;
+    bool   toFbo  = ((nPass % 2) == 1);   // 最終パスが fbo に着地するように開始側を決める
 
-    glUseProgram(Gaussian_shader.progId);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, inputTextureID);
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+    for (int i = 0; i < nPass; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, toFbo ? fbo : tempfbo);
+        glViewport(0, 0, width_, height_);
+        glClear(GL_COLOR_BUFFER_BIT);
 
-    // Sobel
-    glBindFramebuffer(GL_FRAMEBUFFER, tempfbo);
-    glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(passes[i]->progId);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, srcTex);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
 
-    glUseProgram(Sobel_shader.progId);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, fboTextureID);
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+        srcTex = toFbo ? fboTextureID : tempTextureID;
+        toFbo  = !toFbo;
+    }
 
-    // Averaging
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glUseProgram(Averaging_shader.progId);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tempTextureID);
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
-
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindVertexArray(0);
     glUseProgram(0);
 
     if (encode_state==STATE_ENCODING) {
-        // GPUエンコード用処理
         downloadToGLTexture_and_Encode(Frame);
     } else if(encode_state==STATE_NOT_ENCODE){
         //画面に描画
@@ -411,15 +413,6 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
                 painter.drawText(rect.adjusted(0, 40, 0, 0), Qt::AlignLeft,"B: min:" + QString::number(h_hist_stats.min_b) +" max:" + QString::number(h_hist_stats.max_b) +" avg:" + QString::number(h_hist_stats.avg_b));
                 //painter.drawText(rect.adjusted(0, 60, 0, 0), Qt::AlignLeft,"Axis Y: max:" + QString::number(h_stats.max_y_axis));
             }
-        }
-    }
-
-    //FPSを算出
-    {
-        if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
-            fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
-            fpsCount = 0;
-            fpsTimer.restart();
         }
     }
 
@@ -621,6 +614,10 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
         return;
     };
 
+    // エンコード中は Monitor_Rendering(painter.begin) を通らないため、
+    // GLコンテキストをここで明示的にカレントにしておく
+    makeCurrent();
+
     //解像度の変更に対応
     if (VideoInfo.width*VideoInfo.width_scale != width_ || VideoInfo.height*VideoInfo.height_scale != height_) {
         initCudaMalloc(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
@@ -678,6 +675,16 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
 
     FBO_Rendering(Frame);
     fpsCount++;
+
+    // FPS算出（Monitor_Rendering から移動）
+    // エンコード中も毎フレームここを通るので、fps 表示が止まらない
+    {
+        if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
+            fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
+            fpsCount = 0;
+            fpsTimer.restart();
+        }
+    }
 }
 
 //OpenGLからCUDAへ転送+エンコード
