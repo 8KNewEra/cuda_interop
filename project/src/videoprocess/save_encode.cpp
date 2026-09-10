@@ -16,12 +16,12 @@ save_encode::save_encode(int h,int w) {
     //   ring_capacity <= async_depth だとメインが永久に待つ（デッドロック）。
     //   必ず ring > async_depth になるようにクランプする。
     // ------------------------------------------------------------------
-    if (g_EncodeRingSize < 3) {
-        qWarning() << "[save_encode] g_EncodeRingSize is too small:" << g_EncodeRingSize
+    if (encodeRingSize < 3) {
+        qWarning() << "[save_encode] encodeRingSize is too small:" << encodeRingSize
                    << "-> pipeline depth will be limited (8以上推奨)";
     }
-    async_depth_ = std::max(1, std::min(4, g_EncodeRingSize - 2));
-    qDebug() << "[save_encode] ring =" << g_EncodeRingSize
+    async_depth_ = std::max(1, std::min(4, encodeRingSize - 2));
+    qDebug() << "[save_encode] ring =" << encodeRingSize
              << " async_depth =" << async_depth_;
 
     // ① FormatContext は1回だけ
@@ -53,7 +53,7 @@ save_encode::save_encode(int h,int w) {
         if (ret < 0) throw std::runtime_error("Failed to copy codec parameters");
 
         //GPU転送用のメモリを確保
-        for(int j=0;j<g_EncodeRingSize;j++){
+        for(int j=0;j<encodeRingSize;j++){
             if(encodeSettings.tile_gpu_map[i] != g_openglDeviceID){
                 cudaMallocPitch(
                     &ve[i]->hw_frames[j].d_y,
@@ -77,7 +77,7 @@ save_encode::save_encode(int h,int w) {
             );
 
         //event作成
-        for(int j=0;j<g_EncodeRingSize;j++){
+        for(int j=0;j<encodeRingSize;j++){
             cudaEventCreateWithFlags(
                 &ve[i]->hw_frames[j].ready,
                 cudaEventDisableTiming
@@ -87,7 +87,7 @@ save_encode::save_encode(int h,int w) {
         // ★ パイプライン用の初期化
         ve[i]->pkt = av_packet_alloc();
         if (!ve[i]->pkt) throw std::runtime_error("Failed to allocate packet");
-        ve[i]->ring_capacity = g_EncodeRingSize;
+        ve[i]->ring_capacity = encodeRingSize;
         ve[i]->submitted = 0;
         ve[i]->completed = 0;
     }
@@ -376,17 +376,17 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
     frames_ctx->sw_format = AV_PIX_FMT_NV12;
     frames_ctx->width     = width_  / encodeSettings.width_tile;
     frames_ctx->height    = height_ / encodeSettings.height_tile;
-    frames_ctx->initial_pool_size = g_EncodeRingSize + 4;
+    frames_ctx->initial_pool_size = encodeRingSize + 4;
     ret = av_hwframe_ctx_init(ve[i]->hw_frames_ctx);
     if (ret < 0) {
         throw std::runtime_error("Failed to init frames_ctx");
     }
 
     // hw_frameリング確保
-    ve[i]->hw_frames.resize(g_EncodeRingSize);
+    ve[i]->hw_frames.resize(encodeRingSize);
 
     // リングバッファ構築 AVFrame/cudamalloc
-    for (int j = 0; j < g_EncodeRingSize; j++) {
+    for (int j = 0; j < encodeRingSize; j++) {
         AVFrame* f = av_frame_alloc();
         if (!f) throw std::runtime_error("av_frame_alloc failed");
 
@@ -503,7 +503,7 @@ void save_encode::encode(VideoFrame Frame)
 //映像エンコード（メインスレッド側 = 変換と発行のみ）
 void save_encode::encode_video(VideoFrame Frame)
 {
-    const int slot = g_EncodeRingNo;
+    const int slot = encodeRingNo;
 
     // ==========================================================
     // 0) ★ 上書き防止バリア
@@ -644,9 +644,9 @@ void save_encode::encode_video(VideoFrame Frame)
         submit_job(*ve[i], slot, frame_index);
     }
 
-    g_EncodeRingNo++;
-    if (g_EncodeRingNo >= g_EncodeRingSize)
-        g_EncodeRingNo = 0;
+    encodeRingNo++;
+    if (encodeRingNo >= encodeRingSize)
+        encodeRingNo = 0;
 
     frame_index++;
 }

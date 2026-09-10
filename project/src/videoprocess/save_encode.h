@@ -71,7 +71,7 @@ struct VideoEncoder {
     //   occupied < ring_capacity のときだけ slot(submitted % ring) は空いている
     uint64_t submitted     = 0;                 // メインが投入したフレーム数
     uint64_t completed     = 0;                 // ワーカーが完了しslotを返した数
-    int      ring_capacity = 1;                 // = g_EncodeRingSize
+    int      ring_capacity = 1;                 // = encodeRingSize
 };
 
 struct AudioJob
@@ -132,6 +132,8 @@ private:
 
     // ================= 映像パイプライン =================
     int  async_depth_ = 1;                      // NVENC内部の遅延段数(ringとの整合をとる)
+    int encodeRingNo = 0;
+    int encodeRingSize = 8;
 
     void encoder_loop(int idx);                 // エンコーダ毎ワーカー本体
     void start_encoder_threads();
