@@ -112,6 +112,7 @@ private:
 struct DecodeInfo {
     std::string Path = "D:/test2.mp4";
     std::string Name = "";
+    bool video_open_flag = false;
 
     //映像メタデータ
     std::string Codec = "av1";
