@@ -192,18 +192,18 @@ bool nvgpudecode::initialized_ffmpeg()
     // ------------------------
     // CUDA メモリ確保
     // ------------------------
-    cudaError_t err = cudaMallocPitch(
-        &Frame.d_decode_rgba,
-        &Frame.decode_pitch,
-        VideoInfo.width * VideoInfo.width_scale * 4,
-        VideoInfo.height * VideoInfo.height_scale
-        );
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
+    // ★ d_decode_rgba はリング化する。
+    //   GUIスレッドが前フレームを処理している間にデコードスレッドが
+    //   次フレームを書いても、別の面に書くので上書き事故が起きない。
+    if (!alloc_decode_rgba_ring(
+            VideoInfo.width  * VideoInfo.width_scale,
+            VideoInfo.height * VideoInfo.height_scale)) {
+        // Error_String は alloc_decode_rgba_ring 側で設定済み
         return false;
     }
-    err = cudaMallocPitch(
+
+    // d_encode_rgba は GUIスレッド内で書いて同一スレッド内で読み切るので1面のまま
+    cudaError_t err = cudaMallocPitch(
         &Frame.d_encode_rgba,
         &Frame.encode_pitch,
         VideoInfo.width * VideoInfo.width_scale * 4,
@@ -216,7 +216,7 @@ bool nvgpudecode::initialized_ffmpeg()
     }
 
     // CUDA Stream
-    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+    err = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
     if (err != cudaSuccess) {
         Error_String = QString("cudaStream failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -224,7 +224,7 @@ bool nvgpudecode::initialized_ffmpeg()
     }
 
     // CUDA Event
-    cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
+    err = cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
     if (err != cudaSuccess) {
         Error_String = QString("cudaEvent failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -499,6 +499,10 @@ void nvgpudecode::get_singledecode_image() {
             } else {
                 emit decode_end();
                 high_res_seek_frame(VideoInfo.start_range_framesNo,false);
+                // ★ high_res_seek_frame の中で既に1フレーム emit しているので、
+                //   ここでループを抜けて二重 emit を避ける
+                av_packet_unref(packet);
+                return;
             }
 
             av_packet_unref(packet);
@@ -580,7 +584,9 @@ void nvgpudecode::get_multidecode_image() {
             if (Frame.FrameNo >= VideoInfo.end_range_framesNo) {
                 emit decode_end();
                 high_res_seek_frame(VideoInfo.start_range_framesNo,false);
-                continue;
+                // ★ high_res_seek_frame の中で既に1フレーム emit しているので抜ける
+                av_packet_unref(packet);
+                return;
             }
 
             av_packet_unref(packet);
@@ -697,6 +703,15 @@ void nvgpudecode::get_decode_audio()
 
 //CUDAで映像フレームを処理
 void nvgpudecode::CUDA_RGBA_to_merge(){
+    // ==========================================================
+    // ★ 書き込み先スロットを選択する
+    //   必ずカーネル起動より前に行う。ここで Frame.d_decode_rgba /
+    //   Frame.decode_pitch がリングの現在面に差し替わる。
+    //   emit 済みの VideoFrame は値渡しなので、旧面のポインタを
+    //   保持し続ける（= GUI側が処理中の面を壊さない）。
+    // ==========================================================
+    select_decode_rgba_slot();
+
     //ダミーカーネルで完全な同期
     CUDA_IMG_Proc->Dummy(stream);
     cudaEventRecord(events, stream);
@@ -793,6 +808,14 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     if(ringNo>=ringSize) ringNo = 0;
 
     emit send_decode_image(Frame,false,video_reverse_flag);
+
+    // ==========================================================
+    // ★ 次フレームは別の面へ
+    //   emit 済みの VideoFrame は値渡しなので旧面のポインタを保持している。
+    //   ここで進めることで、GUIスレッドが処理し終わる前に
+    //   デコードスレッドが同じ面を上書きすることを防ぐ。
+    // ==========================================================
+    advance_decode_rgba_slot();
 }
 
 //高精度シーク

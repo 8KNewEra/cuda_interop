@@ -142,6 +142,27 @@ protected:
     //リング設定
     int ringNo = 0;
     int ringSize = 12;
+
+    // ==========================================================
+    // ★ デコードRGBAリング
+    //   d_decode_rgba を多面化する。
+    //   VideoFrame は値渡しでシグナルに乗るので、emit 済みのフレームは
+    //   古い面のポインタを保持し続ける。よってGUIスレッドが前フレームを
+    //   処理している間にデコードスレッドが次フレームを書いても、
+    //   別の面に書くことになり上書き事故が起きない。
+    //
+    //   面数は「同時に走りうるフレーム数 + 1」あれば足りる。
+    //   16K RGBA は 1面あたり約531MBなので、増やしすぎないこと。
+    // ==========================================================
+    static const int rgbaRingSize = 4;
+    uint8_t* d_decode_rgba_ring[rgbaRingSize] = {};
+    size_t   decode_pitch_ring[rgbaRingSize]  = {};
+    int      rgbaRingNo = 0;
+
+    bool alloc_decode_rgba_ring(int width, int height);
+    void free_decode_rgba_ring();
+    void select_decode_rgba_slot();    // ★ 書き込み(カーネル起動)より前に呼ぶ
+    void advance_decode_rgba_slot();   // ★ emit の後に呼ぶ
 };
 
 #endif // DECODE_THREAD_H

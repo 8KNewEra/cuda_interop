@@ -416,6 +416,15 @@ void GLWidget::Monitor_Rendering(VideoFrame Frame){
         }
     }
 
+    // エンコード中も毎フレームここを通るので、fps 表示が止まらない
+    {
+        if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
+            fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
+            fpsCount = 0;
+            fpsTimer.restart();
+        }
+    }
+
     //動画情報描画
     {
         if(g_AppSettings.videoInfo_flag){
@@ -675,16 +684,6 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
 
     FBO_Rendering(Frame);
     fpsCount++;
-
-    // FPS算出（Monitor_Rendering から移動）
-    // エンコード中も毎フレームここを通るので、fps 表示が止まらない
-    {
-        if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
-            fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
-            fpsCount = 0;
-            fpsTimer.restart();
-        }
-    }
 }
 
 //OpenGLからCUDAへ転送+エンコード

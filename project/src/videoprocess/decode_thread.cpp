@@ -122,11 +122,12 @@ decode_thread::~decode_thread() {
         events = nullptr;
     }
 
-    if(Frame.d_decode_rgba){
-        safe_cuda_free((void*&)Frame.d_decode_rgba, "d_rgba");
-    }
+    // ★ d_decode_rgba はリングで持っているのでまとめて解放する
+    //   （Frame.d_decode_rgba はリング内の1面を指しているだけなので個別解放しない）
+    free_decode_rgba_ring();
+
     if(Frame.d_encode_rgba){
-        safe_cuda_free((void*&)Frame.d_encode_rgba, "d_rgba");
+        safe_cuda_free((void*&)Frame.d_encode_rgba, "d_encode_rgba");
     }
 
     if(d_y){
@@ -165,6 +166,74 @@ decode_thread::~decode_thread() {
     CUDA_IMG_Proc=nullptr;
 
     qDebug() << "decode_thread: resources released cleanly";
+}
+
+// ==============================================================
+// ★ デコードRGBAリング
+// ==============================================================
+
+//リング確保
+bool decode_thread::alloc_decode_rgba_ring(int width, int height)
+{
+    free_decode_rgba_ring();
+
+    for (int i = 0; i < rgbaRingSize; i++) {
+        cudaError_t err = cudaMallocPitch(
+            &d_decode_rgba_ring[i],
+            &decode_pitch_ring[i],
+            (size_t)width * 4,
+            (size_t)height
+            );
+
+        if (err != cudaSuccess) {
+            Error_String = QString("cudaMallocPitch(d_decode_rgba_ring[%1]) failed: %2")
+                               .arg(i)
+                               .arg(QString::fromUtf8(cudaGetErrorString(err)));
+            free_decode_rgba_ring();
+            return false;
+        }
+    }
+
+    rgbaRingNo = 0;
+    select_decode_rgba_slot();
+
+    qDebug() << "[decode_thread] d_decode_rgba ring:" << rgbaRingSize << "faces,"
+             << (double)decode_pitch_ring[0] * height / (1024.0*1024.0) << "MB/face";
+
+    return true;
+}
+
+//リング解放
+void decode_thread::free_decode_rgba_ring()
+{
+    for (int i = 0; i < rgbaRingSize; i++) {
+        if (d_decode_rgba_ring[i]) {
+            cudaError_t err = cudaFree(d_decode_rgba_ring[i]);
+            if (err != cudaSuccess)
+                qWarning() << "d_decode_rgba_ring cudaFree failed:"
+                           << cudaGetErrorString(err);
+            d_decode_rgba_ring[i] = nullptr;
+        }
+        decode_pitch_ring[i] = 0;
+    }
+
+    Frame.d_decode_rgba = nullptr;
+    Frame.decode_pitch  = 0;
+    rgbaRingNo = 0;
+}
+
+//現在のslotを Frame に割り当て（★カーネル起動より前に呼ぶ）
+void decode_thread::select_decode_rgba_slot()
+{
+    Frame.d_decode_rgba = d_decode_rgba_ring[rgbaRingNo];
+    Frame.decode_pitch  = decode_pitch_ring[rgbaRingNo];
+}
+
+//次のslotへ（★emit の後に呼ぶ）
+void decode_thread::advance_decode_rgba_slot()
+{
+    rgbaRingNo++;
+    if (rgbaRingNo >= rgbaRingSize) rgbaRingNo = 0;
 }
 
 QString decode_thread::ffmpegErrStr(int errnum) {
@@ -303,6 +372,12 @@ void decode_thread::processFrame() {
     if (!video_play_flag && slider_No == Frame.FrameNo){
         if(decode_state==STATE_DECODE_READY){
             decode_state=STATE_DECODING;
+
+            // ★ この経路は画像を書き換えないので slot は進めない
+            //    （エンコード中にここを通っていないかの確認用ログ）
+            if (encode_state == STATE_ENCODING)
+                qWarning() << "[PAUSE EMIT during encode] FrameNo:" << Frame.FrameNo;
+
             emit send_decode_image(Frame,true,video_reverse_flag);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
