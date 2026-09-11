@@ -200,21 +200,14 @@ bool nvgpudecode::initialized_ffmpeg()
     //   16K RGBA 1面 = 約531MB × 4面 = 約2.1GB の削減。
     //   （CPUデコード系 cpudecode/avidecode は従来どおり d_decode_rgba を使う）
 
-    // d_encode_rgba は GUIスレッド内で書いて同一スレッド内で読み切るので1面のまま
-    cudaError_t err = cudaMallocPitch(
-        &Frame.d_encode_rgba,
-        &Frame.encode_pitch,
-        VideoInfo.width * VideoInfo.width_scale * 4,
-        VideoInfo.height * VideoInfo.height_scale
-        );
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
+    // ★ 出口側もゼロコピー化したので d_encode_rgba も不要になった。
+    //   NV12変換カーネルが FBO(cudaArray) を texture object 経由で直読みする。
+    //   16K RGBA 1面 = 約531MB の削減。
+    Frame.d_encode_rgba = nullptr;
+    Frame.encode_pitch  = 0;
 
     // CUDA Stream
-    err = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+    cudaError_t err = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
     if (err != cudaSuccess) {
         Error_String = QString("cudaStream failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));

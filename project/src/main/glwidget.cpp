@@ -815,7 +815,11 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
     }
 }
 
-//OpenGLからCUDAへ転送+エンコード
+//OpenGL(FBO) → NVENC （★ゼロコピー）
+//   従来: FBO(cudaArray) → cudaMemcpy2DFromArrayAsync → d_encode_rgba(linear) → NV12変換
+//   今回: NV12変換カーネルが FBO を texture object 経由で直読み。
+//         cudaArray は block-linear なので linear へ落とすコピーは
+//         バイト数から想像するよりずっと重い。そこを丸ごと消す。
 void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     if (!cudaResource2) {
         qDebug() << "cudaResource2 is nullptr, can't map";
@@ -825,7 +829,7 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     //マッピング
     cudaArray_t array;
     cudaError_t err;
-    err = cudaGraphicsMapResources(1, &cudaResource2, 0);
+    err = cudaGraphicsMapResources(1, &cudaResource2, interop_stream);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
         return;
@@ -834,36 +838,83 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     err = cudaGraphicsSubResourceGetMappedArray(&array, cudaResource2, 0, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(1, &cudaResource2, 0);
+        cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
         return;
     }
 
-    //OpenGL用テクスチャに変換してOpenGL転送
-    size_t widthBytes = width_ * 4;
-    if (widthBytes <= Frame.encode_pitch) {
-        cudaMemcpy2DFromArrayAsync(Frame.d_encode_rgba, Frame.encode_pitch, array, 0, 0, widthBytes, height_, cudaMemcpyDeviceToDevice, interop_stream);
-        cudaEventRecord(interop_event, interop_stream);
-        cudaEventSynchronize(interop_event);
-    } else {
-        qDebug() << "Invalid pitch: widthBytes > pitch!";
-        cudaGraphicsUnmapResources(1, &cudaResource2, 0);   // ★ unmap 漏れを修正
+    // ==========================================================
+    // ★ GL → CUDA の順序保証（これが無いと描画途中のFBOを読む）
+    //
+    //   cudaGraphicsMapResources() が与える保証は
+    //   「map より前に発行された GL の描画は、
+    //     map 後に "そのストリームへ" 発行された CUDA 処理より先に完了する」
+    //   というストリーム限定のもの。
+    //
+    //   従来は cudaMemcpy2DFromArrayAsync を interop_stream（blocking stream）で
+    //   走らせていたため NULL stream 経由で暗黙に順序が付いていた。
+    //   ゼロコピー化後は NV12変換が save_encode 側の
+    //   cudaStreamNonBlocking なストリームで走るので、この暗黙の順序が消える。
+    //   → シェーダがFBOにラスタライズしている最中にカーネルが読み、
+    //     斜めに割れた（ティアリングした）フレームが出る。
+    //
+    //   ここでCPU側バリアを張り、GL描画の完了を確定させてから変換を起動する。
+    // ==========================================================
+    err = cudaStreamSynchronize(interop_stream);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaStreamSynchronize(interop) error:" << cudaGetErrorString(err);
+        cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
         return;
     }
+
+    // ---- FBO(cudaArray) を texture object としてラップ ----
+    //   unnormalized / point sampling。値は 0..255 の生バイトとして読む。
+    cudaResourceDesc resDesc{};
+    resDesc.resType         = cudaResourceTypeArray;
+    resDesc.res.array.array = array;
+
+    cudaTextureDesc texDesc{};
+    texDesc.addressMode[0]   = cudaAddressModeClamp;
+    texDesc.addressMode[1]   = cudaAddressModeClamp;
+    texDesc.filterMode       = cudaFilterModePoint;
+    texDesc.readMode         = cudaReadModeElementType;   // uchar4 をそのまま
+    texDesc.normalizedCoords = 0;
+
+    cudaTextureObject_t texObj = 0;
+    err = cudaCreateTextureObject(&texObj, &resDesc, &texDesc, nullptr);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaCreateTextureObject error:" << cudaGetErrorString(err);
+        cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
+        return;
+    }
+
+    // ---- マップ中にエンコード投入 ----
+    //   encode() は内部で変換完了まで同期してから戻るので、
+    //   戻った時点で texObj / array を手放して構わない。
+    bool finished = false;
+
+    if (save_encoder != nullptr && encode_FrameCount <= (MaxFrame - MinFrame)) {
+        save_encoder->encode(Frame, texObj);
+        encode_FrameCount++;
+    } else {
+        finished = true;
+    }
+
+    cudaDestroyTextureObject(texObj);
 
     //リソースのマップを解除し、制御をOpenGLに戻す
-    err = cudaGraphicsUnmapResources(1, &cudaResource2, 0);
+    //  encode() は内部で変換完了までCPU同期してから戻るので、
+    //  ここに来た時点でFBOを読んでいるCUDA処理は残っていない。
+    err = cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
         return;
     }
 
-    if(save_encoder!=nullptr&&encode_FrameCount<=(MaxFrame-MinFrame)){
-        save_encoder->encode(Frame);
-        encode_FrameCount++;
-    }else{
+    // ---- 後始末は unmap の外で（encode_finished の先で何が起きても安全に） ----
+    if (finished) {
         delete save_encoder;
-        save_encoder=nullptr;
-        encode_FrameCount=0;
+        save_encoder = nullptr;
+        encode_FrameCount = 0;
         emit encode_finished();
     }
 }

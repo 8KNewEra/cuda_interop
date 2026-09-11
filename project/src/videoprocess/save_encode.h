@@ -86,14 +86,20 @@ class save_encode
 public:
     save_encode(int h,int w);
     ~save_encode();
-    void encode(VideoFrame Frame);
+
+    // ★ ゼロコピー化
+    //   RGBA は linear バッファ(d_encode_rgba)ではなく、
+    //   OpenGL FBO をラップした texture object から直接読む。
+    //   srcTex は呼び出し側がマップ中に作ったもので、
+    //   この関数から戻るまでの間だけ有効（内部で変換完了まで同期する）。
+    void encode(VideoFrame Frame, cudaTextureObject_t srcTex);
 
 private:
     void initialized_ffmpeg_hardware_context(int i);
     void initialized_ffmpeg_codec_context(int i,int max_split);
     int height_,width_;
 
-    void encode_video(VideoFrame Frame);
+    void encode_video(VideoFrame Frame, cudaTextureObject_t srcTex);
 
     // --- FFmpeg 関連 ---
     std::vector<std::unique_ptr<VideoEncoder>> ve;   // デフォルトコンストラクタで N 個作成
@@ -134,6 +140,10 @@ private:
     int  async_depth_ = 1;                      // NVENC内部の遅延段数(ringとの整合をとる)
     int encodeRingNo = 0;
     int encodeRingSize = 8;
+
+    // FBO は GL のテクスチャ座標の都合で上下反転しているため 1。
+    // GL をバイパスして d_decode_rgba を直接渡す経路を作る場合は 0 にする。
+    int srcFlip = 1;
 
     void encoder_loop(int idx);                 // エンコーダ毎ワーカー本体
     void start_encoder_threads();

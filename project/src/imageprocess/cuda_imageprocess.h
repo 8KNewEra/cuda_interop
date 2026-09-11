@@ -55,6 +55,36 @@ public:
                                    uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
                                    int outW, int outH, int srcW, int srcH, cudaStream_t stream);
 
+    // ==========================================================
+    // ★ ゼロコピー版（出口）：入力を linear バッファではなく
+    //   OpenGL FBO(cudaArray) の texture object から直読みする。
+    //   d_encode_rgba と cudaMemcpy2DFromArray が不要になる。
+    //   flip: FBOは上下反転しているので通常 1。GLをバイパスする経路では 0。
+    // ==========================================================
+    bool rgba_to_nv12x1_split_tex(cudaTextureObject_t in,
+                                  uint8_t* d_y, size_t pitch_y, uint8_t* d_uv, size_t pitch_uv,
+                                  int width, int height, int flip, cudaStream_t stream);
+    bool rgba_to_nv12x2_split_tex(cudaTextureObject_t in,
+                                  uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                  uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                  int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream);
+    bool rgba_to_nv12x4_split_tex(cudaTextureObject_t in,
+                                  uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                  uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                  uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+                                  uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+                                  int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream);
+    bool rgba_to_nv12x8_split_tex(cudaTextureObject_t in,
+                                  uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                  uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                  uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+                                  uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+                                  uint8_t* y4, size_t pitchY4, uint8_t* uv4, size_t pitchUV4,
+                                  uint8_t* y5, size_t pitchY5, uint8_t* uv5, size_t pitchUV5,
+                                  uint8_t* y6, size_t pitchY6, uint8_t* uv6, size_t pitchUV6,
+                                  uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
+                                  int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream);
+
     //YUV420p→RGBA
     bool yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
     bool yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,int is_be,cudaStream_t stream);

@@ -1,6 +1,66 @@
 #include "src/videoprocess/save_encode.h"
 #include "qdebug.h"
 
+// ======================================================================
+// Windows: スレッド優先度をフォアグラウンド状態に依存させないための設定
+//
+//  Windows は既定で「フォアグラウンドプロセスのスレッド」に優先度ブーストと
+//  3倍のタイムクォンタムを与える (Win32PrioritySeparation)。
+//  そのため別ウィンドウを前面に出すとエンコードスレッドが相対的に痩せ、
+//  fps が落ちる。ここで明示的に優先度を固定して依存を切る。
+// ======================================================================
+#ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
+  #include <windows.h>
+  #include <avrt.h>
+  #ifdef _MSC_VER
+    #pragma comment(lib, "avrt.lib")   // MinGW の場合は .pro に LIBS += -lavrt
+  #endif
+
+namespace {
+
+// 映像エンコードワーカーの優先度。
+// UI や音声が引っ張られるようなら THREAD_PRIORITY_HIGHEST に落として比較する。
+const int kEncoderThreadPriority = THREAD_PRIORITY_TIME_CRITICAL;
+const int kAudioThreadPriority   = THREAD_PRIORITY_ABOVE_NORMAL;
+
+// MMCSS(Multimedia Class Scheduler Service) 登録の RAII ヘルパ。
+// 登録されたスレッドはフォアグラウンド/バックグラウンドに関係なく
+// マルチメディア用のスケジューリング保証を受ける。
+struct MmcssScope
+{
+    HANDLE h = nullptr;
+
+    MmcssScope(const wchar_t* task, AVRT_PRIORITY prio)
+    {
+        DWORD taskIndex = 0;
+        h = AvSetMmThreadCharacteristicsW(task, &taskIndex);
+        if (h) {
+            AvSetMmThreadPriority(h, prio);
+        } else {
+            qDebug() << "[save_encode] AvSetMmThreadCharacteristics failed:"
+                     << (int)GetLastError();
+        }
+    }
+
+    ~MmcssScope()
+    {
+        if (h) AvRevertMmThreadCharacteristics(h);
+    }
+
+    MmcssScope(const MmcssScope&)            = delete;
+    MmcssScope& operator=(const MmcssScope&) = delete;
+};
+
+} // namespace
+#endif // _WIN32
+
+
 save_encode::save_encode(int h,int w) {
     //最初にGPU設定
     cudaSetDevice(g_openglDeviceID);
@@ -77,6 +137,7 @@ save_encode::save_encode(int h,int w) {
             );
 
         //event作成
+        //  cudaEventBlockingSync は効果が無かったので付けない（スピン待ちのまま）
         for(int j=0;j<encodeRingSize;j++){
             cudaEventCreateWithFlags(
                 &ve[i]->hw_frames[j].ready,
@@ -331,9 +392,8 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     av_dict_set(&opts, "rc-lookahead", "0", 0);
     av_dict_set(&opts, "zerolatency", "1", 0);
 
-    // ★ 変更点: async_depth を上げて NVENC 内部でもパイプラインさせる
+    // ★ async_depth を上げて NVENC 内部でもパイプラインさせる
     //    （元は "1"。ring との整合はコンストラクタでクランプ済み）
-    //    もし挙動を元に戻したい場合はここを 1 にするだけ。
     av_dict_set_int(&opts, "async_depth", async_depth_, 0);
 
     if(encodeSettings.split_encode_mode=="0"){
@@ -474,7 +534,7 @@ void save_encode::init_audio_encoder()
 }
 
 //エンコード
-void save_encode::encode(VideoFrame Frame)
+void save_encode::encode(VideoFrame Frame, cudaTextureObject_t srcTex)
 {
     if (!Frame.audio_pcm.isEmpty()&&VideoInfo.audio)
     {
@@ -497,12 +557,17 @@ void save_encode::encode(VideoFrame Frame)
         audioCV.notify_one();
     }
 
-    encode_video(Frame);
+    encode_video(Frame, srcTex);
 }
 
 //映像エンコード（メインスレッド側 = 変換と発行のみ）
-void save_encode::encode_video(VideoFrame Frame)
+void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex)
 {
+    if (srcTex == 0) {
+        qWarning() << "[save_encode] encode_video: srcTex is null";
+        return;
+    }
+
     const int slot = encodeRingNo;
 
     // ==========================================================
@@ -534,28 +599,30 @@ void save_encode::encode_video(VideoFrame Frame)
     // 2) CUDA NV12変換
     // ==========================================================
     if (ve.size() == 1) {
-        CUDA_IMG_Proc->Flip_RGBA_to_NV12(
+        CUDA_IMG_Proc->rgba_to_nv12x1_split_tex(
+            srcTex,
             ve[0]->hw_frames[slot].d_y, ve[0]->hw_frames[slot].y_pitch,
             ve[0]->hw_frames[slot].d_uv, ve[0]->hw_frames[slot].uv_pitch,
-            Frame.d_encode_rgba, Frame.encode_pitch,
             width_, height_,
+            srcFlip,
             st
             );
     }
     else if (ve.size() == 2) {
-        CUDA_IMG_Proc->rgba_to_nv12x2_flip_split(
-            Frame.d_encode_rgba, Frame.encode_pitch,
+        CUDA_IMG_Proc->rgba_to_nv12x2_split_tex(
+            srcTex,
             ve[0]->hw_frames[slot].d_y, ve[0]->hw_frames[slot].y_pitch, ve[0]->hw_frames[slot].d_uv, ve[0]->hw_frames[slot].uv_pitch,
             ve[1]->hw_frames[slot].d_y, ve[1]->hw_frames[slot].y_pitch, ve[1]->hw_frames[slot].d_uv, ve[1]->hw_frames[slot].uv_pitch,
             width_, height_,
             width_ / encodeSettings.width_tile,
             height_ / encodeSettings.height_tile,
+            srcFlip,
             st
             );
     }
     else if (ve.size() == 4) {
-        CUDA_IMG_Proc->rgba_to_nv12x4_flip_split(
-            Frame.d_encode_rgba, Frame.encode_pitch,
+        CUDA_IMG_Proc->rgba_to_nv12x4_split_tex(
+            srcTex,
             ve[0]->hw_frames[slot].d_y, ve[0]->hw_frames[slot].y_pitch, ve[0]->hw_frames[slot].d_uv, ve[0]->hw_frames[slot].uv_pitch,
             ve[1]->hw_frames[slot].d_y, ve[1]->hw_frames[slot].y_pitch, ve[1]->hw_frames[slot].d_uv, ve[1]->hw_frames[slot].uv_pitch,
             ve[2]->hw_frames[slot].d_y, ve[2]->hw_frames[slot].y_pitch, ve[2]->hw_frames[slot].d_uv, ve[2]->hw_frames[slot].uv_pitch,
@@ -563,12 +630,13 @@ void save_encode::encode_video(VideoFrame Frame)
             width_, height_,
             width_ / encodeSettings.width_tile,
             height_ / encodeSettings.height_tile,
+            srcFlip,
             st
             );
     }
     else if (ve.size() == 8) {
-        CUDA_IMG_Proc->rgba_to_nv12x8_flip_split(
-            Frame.d_encode_rgba, Frame.encode_pitch,
+        CUDA_IMG_Proc->rgba_to_nv12x8_split_tex(
+            srcTex,
             ve[0]->hw_frames[slot].d_y, ve[0]->hw_frames[slot].y_pitch, ve[0]->hw_frames[slot].d_uv, ve[0]->hw_frames[slot].uv_pitch,
             ve[1]->hw_frames[slot].d_y, ve[1]->hw_frames[slot].y_pitch, ve[1]->hw_frames[slot].d_uv, ve[1]->hw_frames[slot].uv_pitch,
             ve[2]->hw_frames[slot].d_y, ve[2]->hw_frames[slot].y_pitch, ve[2]->hw_frames[slot].d_uv, ve[2]->hw_frames[slot].uv_pitch,
@@ -580,6 +648,7 @@ void save_encode::encode_video(VideoFrame Frame)
             width_, height_,
             width_ / encodeSettings.width_tile,
             height_ / encodeSettings.height_tile,
+            srcFlip,
             st
             );
     }
@@ -589,9 +658,10 @@ void save_encode::encode_video(VideoFrame Frame)
 
     // ==========================================================
     // 3) 変換完了待ち
-    //    ★ ここで待つ理由は「呼び出し元の Frame.d_encode_rgba を
-    //      encode() から戻った時点で再利用してよい」という従来の契約を
-    //      壊さないため。転送とエンコードは以降すべて非同期。
+    //    ★ ゼロコピー化後は「呼び出し元が encode() から戻った時点で
+    //      srcTex を破棄し、FBO を cudaGraphicsUnmapResources してよい」
+    //      という契約を守るため。ここを抜ける前に読み出しは完了している。
+    //      転送とエンコードは以降すべて非同期。
     //      → convert(N+1) が copy(N) / encode(N) と重なる。
     // ==========================================================
     cudaEventRecord(ev, st);
@@ -685,6 +755,17 @@ void save_encode::stop_encoder_threads()
 void save_encode::encoder_loop(int idx)
 {
     cudaSetDevice(g_openglDeviceID);   // event / stream は全て primary 側に作ってある
+
+    // ==========================================================
+    // ★ フォアグラウンド依存を切る
+    //    Windows のフォアグラウンドブーストに左右されないよう、
+    //    スレッド優先度を明示的に固定し MMCSS に登録する。
+    //    （これが無いと別ウィンドウを前面に出したとき fps が落ちる）
+    // ==========================================================
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), kEncoderThreadPriority);
+    MmcssScope mmcss(L"Pro Audio", AVRT_PRIORITY_HIGH);
+#endif
 
     VideoEncoder& enc = *ve[idx];
 
@@ -943,6 +1024,12 @@ void save_encode::stop_audio_thread()
 //音声エンコードスレッドループ
 void save_encode::audio_loop()
 {
+    // ★ 映像ワーカーの優先度を上げたぶん、音声が相対的に押されないようにする
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), kAudioThreadPriority);
+    MmcssScope mmcss(L"Audio", AVRT_PRIORITY_NORMAL);
+#endif
+
     while (audioRunning)
     {
         AudioJob job;

@@ -45,6 +45,35 @@ extern "C"{
         const uint8_t* y7, size_t pitchY7, const uint8_t* uv7, size_t pitchUV7,
         int outW, int outH, int srcW, int srcH);
 
+    // ★ ゼロコピー版（出口：FBO の texture object から直読み）
+    __global__ void rgba_to_nv12x1_split_tex_kernel(
+        cudaTextureObject_t In,
+        uint8_t* y_plane, size_t y_step, uint8_t* uv_plane, size_t uv_step,
+        int width, int height, int flip);
+    __global__ void rgba_to_nv12x2_split_tex_kernel(
+        cudaTextureObject_t In,
+        uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+        uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+        int srcW, int srcH, int outW, int outH, int flip);
+    __global__ void rgba_to_nv12x4_split_tex_kernel(
+        cudaTextureObject_t In,
+        uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+        uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+        uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+        uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+        int srcW, int srcH, int outW, int outH, int flip);
+    __global__ void rgba_to_nv12x8_split_tex_kernel(
+        cudaTextureObject_t In,
+        uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+        uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+        uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+        uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+        uint8_t* y4, size_t pitchY4, uint8_t* uv4, size_t pitchUV4,
+        uint8_t* y5, size_t pitchY5, uint8_t* uv5, size_t pitchUV5,
+        uint8_t* y6, size_t pitchY6, uint8_t* uv6, size_t pitchUV6,
+        uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
+        int srcW, int srcH, int outW, int outH, int flip);
+
     //YUV420P→RGBA
     __global__ void yuv420p_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
     __global__ void yuv420p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height,int is_be);
@@ -309,6 +338,106 @@ bool CUDA_ImageProcess::nv12x8_to_rgba_merge_surf(cudaSurfaceObject_t out,
                                        grid, block, args, 0, stream);
 
     return launch_check(err, "nv12x8_to_rgba_merge_surf_kernel");
+}
+
+// ==============================================================
+// ★ ゼロコピー版（出口）：FBO の texture object から直読み
+// ==============================================================
+
+//RGBA(tex)→NV12 分割なし
+bool CUDA_ImageProcess::rgba_to_nv12x1_split_tex(cudaTextureObject_t in,
+                                                 uint8_t* d_y, size_t pitch_y,
+                                                 uint8_t* d_uv, size_t pitch_uv,
+                                                 int width, int height, int flip, cudaStream_t stream)
+{
+    void* args[] = {&in,
+                    &d_y, &pitch_y,
+                    &d_uv, &pitch_uv,
+                    &width, &height, &flip };
+
+    dim3 block(16,16);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)rgba_to_nv12x1_split_tex_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "rgba_to_nv12x1_split_tex_kernel");
+}
+
+//RGBA(tex)→NV12 2分割
+bool CUDA_ImageProcess::rgba_to_nv12x2_split_tex(cudaTextureObject_t in,
+                                                 uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                                 uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                                 int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream)
+{
+    void* args[] = {&in,
+                    &y0, &pitchY0, &uv0, &pitchUV0,
+                    &y1, &pitchY1, &uv1, &pitchUV1,
+                    &srcW, &srcH, &outW, &outH, &flip };
+
+    dim3 block(16,16);
+    dim3 grid((srcW+block.x-1)/block.x, (srcH+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)rgba_to_nv12x2_split_tex_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "rgba_to_nv12x2_split_tex_kernel");
+}
+
+//RGBA(tex)→NV12 4分割
+bool CUDA_ImageProcess::rgba_to_nv12x4_split_tex(cudaTextureObject_t in,
+                                                 uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                                 uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                                 uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+                                                 uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+                                                 int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream)
+{
+    void* args[] = {&in,
+                    &y0, &pitchY0, &uv0, &pitchUV0,
+                    &y1, &pitchY1, &uv1, &pitchUV1,
+                    &y2, &pitchY2, &uv2, &pitchUV2,
+                    &y3, &pitchY3, &uv3, &pitchUV3,
+                    &srcW, &srcH, &outW, &outH, &flip };
+
+    dim3 block(16,16);
+    dim3 grid((srcW+block.x-1)/block.x, (srcH+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)rgba_to_nv12x4_split_tex_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "rgba_to_nv12x4_split_tex_kernel");
+}
+
+//RGBA(tex)→NV12 8分割
+bool CUDA_ImageProcess::rgba_to_nv12x8_split_tex(cudaTextureObject_t in,
+                                                 uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                                 uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                                 uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+                                                 uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+                                                 uint8_t* y4, size_t pitchY4, uint8_t* uv4, size_t pitchUV4,
+                                                 uint8_t* y5, size_t pitchY5, uint8_t* uv5, size_t pitchUV5,
+                                                 uint8_t* y6, size_t pitchY6, uint8_t* uv6, size_t pitchUV6,
+                                                 uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
+                                                 int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream)
+{
+    void* args[] = {&in,
+                    &y0, &pitchY0, &uv0, &pitchUV0,
+                    &y1, &pitchY1, &uv1, &pitchUV1,
+                    &y2, &pitchY2, &uv2, &pitchUV2,
+                    &y3, &pitchY3, &uv3, &pitchUV3,
+                    &y4, &pitchY4, &uv4, &pitchUV4,
+                    &y5, &pitchY5, &uv5, &pitchUV5,
+                    &y6, &pitchY6, &uv6, &pitchUV6,
+                    &y7, &pitchY7, &uv7, &pitchUV7,
+                    &srcW, &srcH, &outW, &outH, &flip };
+
+    dim3 block(16,16);
+    dim3 grid((srcW+block.x-1)/block.x, (srcH+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)rgba_to_nv12x8_split_tex_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "rgba_to_nv12x8_split_tex_kernel");
 }
 
 //反転→RGBA→NV12 シングルストリームエンコード
