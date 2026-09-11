@@ -41,7 +41,7 @@ public:
     //画像処理
     bool filter_change_flag = true;
 
-        double fps = 0.0;
+    double fps = 0.0;
 
 protected:
     void initializeGL() override;
@@ -55,6 +55,10 @@ private:
     void initCudaHist();
     void histgram_Analysys();
     void downloadToGLTexture_and_Encode(VideoFrame Frame);
+
+    // ★ NV12タイル → OpenGLテクスチャ へ surface object 経由で直接 merge
+    //   （d_decode_rgba と cudaMemcpy2DToArray を経由しないゼロコピー経路）
+    bool mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf);
     std::vector<int> make_nice_y_labels(int max_value);
     void queryCudaGPUs();
     void getCudaDeviceIDFromOpenGL();
@@ -71,8 +75,8 @@ private:
     //OpenGL周り
     bool initialize_completed_flag=false;
     GLuint inputTextureID;  // ← 入力用
-    GLuint fboTextureID;    // ← 出力先（FBOバインド用）
-    GLuint tempTextureID;
+    GLuint fboTextureID = 0;    // ← 出力先（FBOバインド用）
+    GLuint tempTextureID = 0;
     GLuint vbo_hist = 0;
     GLuint fbo = 0;
     GLuint vao = 0;
@@ -95,10 +99,11 @@ private:
     shader Averaging_shader;
 
     // 描画領域を計算
+    // ★ paintGL は uploadToGLTexture より先に走りうるので必ず0初期化する
     float monitor_scaling=1;
-    GLint viewportWidth;
-    GLint viewportHeight;
-    GLint x0, y0, x1, y1;
+    GLint viewportWidth  = 0;
+    GLint viewportHeight = 0;
+    GLint x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 
     //エンコード関連
     int encode_state=STATE_NOT_ENCODE;
@@ -106,7 +111,8 @@ private:
     save_encode* save_encoder=nullptr;
 
     //動画情報
-    int width_, height_;
+    // ★ 未初期化のまま paintGL / GLresize から参照されるのを防ぐ
+    int width_ = 0, height_ = 0;
     int FrameNo=0;
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 

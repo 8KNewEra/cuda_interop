@@ -10,6 +10,41 @@ extern "C"{
     __global__ void nv12_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* uv_plane, size_t uv_pitch,int width, int height);
     __global__ void flip_rgba_to_nv12_kernel(uint8_t* y_plane, size_t y_step,uint8_t* uv_plane,size_t uv_step,const uint8_t* rgba, size_t rgba_step,int width, int height);
 
+    // ★ ゼロコピー版（出力先が OpenGLテクスチャの surface object）
+    __global__ void nv12_to_rgba_8bit_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* y_plane, size_t y_pitch,
+        const uint8_t* uv_plane, size_t uv_pitch,
+        int width, int height);
+    __global__ void nv12_to_rgba_10bit_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* y_plane, size_t y_pitch,
+        const uint8_t* uv_plane, size_t uv_pitch,
+        int width, int height);
+    __global__ void nv12x2_to_rgba_merge_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* y0, size_t pitchY0, const uint8_t* uv0, size_t pitchUV0,
+        const uint8_t* y1, size_t pitchY1, const uint8_t* uv1, size_t pitchUV1,
+        int outW, int outH, int srcW, int srcH);
+    __global__ void nv12x4_to_rgba_merge_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* y0, size_t pitchY0, const uint8_t* uv0, size_t pitchUV0,
+        const uint8_t* y1, size_t pitchY1, const uint8_t* uv1, size_t pitchUV1,
+        const uint8_t* y2, size_t pitchY2, const uint8_t* uv2, size_t pitchUV2,
+        const uint8_t* y3, size_t pitchY3, const uint8_t* uv3, size_t pitchUV3,
+        int outW, int outH, int srcW, int srcH);
+    __global__ void nv12x8_to_rgba_merge_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* y0, size_t pitchY0, const uint8_t* uv0, size_t pitchUV0,
+        const uint8_t* y1, size_t pitchY1, const uint8_t* uv1, size_t pitchUV1,
+        const uint8_t* y2, size_t pitchY2, const uint8_t* uv2, size_t pitchUV2,
+        const uint8_t* y3, size_t pitchY3, const uint8_t* uv3, size_t pitchUV3,
+        const uint8_t* y4, size_t pitchY4, const uint8_t* uv4, size_t pitchUV4,
+        const uint8_t* y5, size_t pitchY5, const uint8_t* uv5, size_t pitchUV5,
+        const uint8_t* y6, size_t pitchY6, const uint8_t* uv6, size_t pitchUV6,
+        const uint8_t* y7, size_t pitchY7, const uint8_t* uv7, size_t pitchUV7,
+        int outW, int outH, int srcW, int srcH);
+
     //YUV420P→RGBA
     __global__ void yuv420p_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
     __global__ void yuv420p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height,int is_be);
@@ -86,6 +121,23 @@ extern "C"{
     __global__ void image_split_x4_kernel(uint8_t* Out0, size_t pitch0,uint8_t* Out1, size_t pitch1,uint8_t* Out2, size_t pitch2,uint8_t* Out3, size_t pitch3,const uint8_t* In, size_t pitchIn,int width, int height);
 }
 
+// --------------------------------------------------------------
+// カーネル起動の共通チェック
+// --------------------------------------------------------------
+static bool launch_check(cudaError_t err, const char* name)
+{
+    if (err != cudaSuccess) {
+        qDebug() << "cudaLaunchKernel failed(" << name << "): " << cudaGetErrorString(err);
+        return false;
+    }
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        qDebug() << "Kernel launch error(" << name << "): " << cudaGetErrorString(err);
+        return false;
+    }
+    return true;
+}
+
 CUDA_ImageProcess::CUDA_ImageProcess(){
     qDebug() << "CUDA_ImageProces: Constructor called";
 }
@@ -102,18 +154,7 @@ bool CUDA_ImageProcess::Dummy(cudaStream_t stream){
     cudaError_t err = cudaLaunchKernel((const void*)dummy_kernel,
                                        grid, block, 0, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "dummy_kernel");
 }
 
 //NV12→RGBA 8bit
@@ -130,18 +171,7 @@ bool CUDA_ImageProcess::NV12_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uin
     cudaError_t err = cudaLaunchKernel((const void*)nv12_to_rgba_8bit_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "nv12_to_rgba_8bit_kernel");
 }
 
 //NV12→RGBA 10bit
@@ -158,18 +188,127 @@ bool CUDA_ImageProcess::NV12_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,ui
     cudaError_t err = cudaLaunchKernel((const void*)nv12_to_rgba_10bit_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
+    return launch_check(err, "nv12_to_rgba_10bit_kernel");
+}
 
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
+// ==============================================================
+// ★ ゼロコピー版（OpenGLテクスチャへ直接書き込む）
+// ==============================================================
 
-    return true;
+//NV12→RGBA 8bit (surface)
+bool CUDA_ImageProcess::NV12_to_RGBA_8bit_surf(cudaSurfaceObject_t out,
+                                               uint8_t* d_y, size_t pitch_y,
+                                               uint8_t* d_uv, size_t pitch_uv,
+                                               int width, int height, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &d_y, &pitch_y,
+                    &d_uv, &pitch_uv,
+                    &width, &height };
+
+    dim3 block(32,32);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)nv12_to_rgba_8bit_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "nv12_to_rgba_8bit_surf_kernel");
+}
+
+//NV12→RGBA 10bit (surface)
+bool CUDA_ImageProcess::NV12_to_RGBA_10bit_surf(cudaSurfaceObject_t out,
+                                                uint8_t* d_y, size_t pitch_y,
+                                                uint8_t* d_uv, size_t pitch_uv,
+                                                int width, int height, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &d_y, &pitch_y,
+                    &d_uv, &pitch_uv,
+                    &width, &height };
+
+    dim3 block(32,32);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)nv12_to_rgba_10bit_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "nv12_to_rgba_10bit_surf_kernel");
+}
+
+//NV12×2 → RGBA結合 (surface)
+bool CUDA_ImageProcess::nv12x2_to_rgba_merge_surf(cudaSurfaceObject_t out,
+                                                  uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                                  uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                                  int outW, int outH, int srcW, int srcH, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &y0, &pitchY0, &uv0, &pitchUV0,
+                    &y1, &pitchY1, &uv1, &pitchUV1,
+                    &outW, &outH, &srcW, &srcH };
+
+    dim3 block(16,16);
+    dim3 grid((outW+block.x-1)/block.x, (outH+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)nv12x2_to_rgba_merge_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "nv12x2_to_rgba_merge_surf_kernel");
+}
+
+//NV12×4 → RGBA結合 (surface)
+bool CUDA_ImageProcess::nv12x4_to_rgba_merge_surf(cudaSurfaceObject_t out,
+                                                  uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                                  uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                                  uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+                                                  uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+                                                  int outW, int outH, int srcW, int srcH, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &y0, &pitchY0, &uv0, &pitchUV0,
+                    &y1, &pitchY1, &uv1, &pitchUV1,
+                    &y2, &pitchY2, &uv2, &pitchUV2,
+                    &y3, &pitchY3, &uv3, &pitchUV3,
+                    &outW, &outH, &srcW, &srcH };
+
+    dim3 block(16,16);
+    dim3 grid((outW+block.x-1)/block.x, (outH+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)nv12x4_to_rgba_merge_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "nv12x4_to_rgba_merge_surf_kernel");
+}
+
+//NV12×8 → RGBA結合 (surface)
+bool CUDA_ImageProcess::nv12x8_to_rgba_merge_surf(cudaSurfaceObject_t out,
+                                                  uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                                  uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                                  uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+                                                  uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+                                                  uint8_t* y4, size_t pitchY4, uint8_t* uv4, size_t pitchUV4,
+                                                  uint8_t* y5, size_t pitchY5, uint8_t* uv5, size_t pitchUV5,
+                                                  uint8_t* y6, size_t pitchY6, uint8_t* uv6, size_t pitchUV6,
+                                                  uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
+                                                  int outW, int outH, int srcW, int srcH, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &y0, &pitchY0, &uv0, &pitchUV0,
+                    &y1, &pitchY1, &uv1, &pitchUV1,
+                    &y2, &pitchY2, &uv2, &pitchUV2,
+                    &y3, &pitchY3, &uv3, &pitchUV3,
+                    &y4, &pitchY4, &uv4, &pitchUV4,
+                    &y5, &pitchY5, &uv5, &pitchUV5,
+                    &y6, &pitchY6, &uv6, &pitchUV6,
+                    &y7, &pitchY7, &uv7, &pitchUV7,
+                    &outW, &outH, &srcW, &srcH };
+
+    dim3 block(16,16);
+    dim3 grid((outW+block.x-1)/block.x, (outH+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)nv12x8_to_rgba_merge_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "nv12x8_to_rgba_merge_surf_kernel");
 }
 
 //反転→RGBA→NV12 シングルストリームエンコード
@@ -186,18 +325,7 @@ bool CUDA_ImageProcess::Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* 
     cudaError_t err = cudaLaunchKernel((const void*)flip_rgba_to_nv12_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "flip_rgba_to_nv12_kernel");
 }
 
 //YUV420p→RGBA 8bit
@@ -214,20 +342,7 @@ bool CUDA_ImageProcess::yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,
     cudaError_t err = cudaLaunchKernel((const void*)yuv420p_to_rgba_8bit_kernel,
                                        grid, block, args, 0, stream);
 
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "yuv420p_to_rgba_8bit_kernel");
 }
 
 //YUV420p→RGBA 10bit
@@ -244,20 +359,7 @@ bool CUDA_ImageProcess::yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba
     cudaError_t err = cudaLaunchKernel((const void*)yuv420p_to_rgba_10bit_kernel,
                                        grid, block, args, 0, stream);
 
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "yuv420p_to_rgba_10bit_kernel");
 }
 
 //YUV422p→RGBA 8bit
@@ -274,20 +376,7 @@ bool CUDA_ImageProcess::yuv422p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,
     cudaError_t err = cudaLaunchKernel((const void*)yuv422p_to_rgba_8bit_kernel,
                                        grid, block, args, 0, stream);
 
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "yuv422p_to_rgba_8bit_kernel");
 }
 
 //YUV422p→RGBA 10bit
@@ -304,20 +393,7 @@ bool CUDA_ImageProcess::yuv422p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba
     cudaError_t err = cudaLaunchKernel((const void*)yuv422p_to_rgba_10bit_kernel,
                                        grid, block, args, 0, stream);
 
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "yuv422p_to_rgba_10bit_kernel");
 }
 
 //RGB→RGBA 8bit planner
@@ -334,20 +410,7 @@ bool CUDA_ImageProcess::rgb_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint
     cudaError_t err = cudaLaunchKernel((const void*)rgb_to_rgba_8bit_kernel,
                                        grid, block, args, 0, stream);
 
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "rgb_to_rgba_8bit_kernel");
 }
 
 //RGB→RGBA 8bit packed
@@ -362,20 +425,7 @@ bool CUDA_ImageProcess::rgb_to_RGBA_8bit_packed(uint8_t* d_rgba, size_t pitch_rg
     cudaError_t err = cudaLaunchKernel((const void*)rgb_to_rgba_8bit_packed_kernel,
                                        grid, block, args, 0, stream);
 
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "rgb_to_rgba_8bit_packed_kernel");
 }
 
 //RGB→RGBA 10bit planner
@@ -392,20 +442,7 @@ bool CUDA_ImageProcess::rgb_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uin
     cudaError_t err = cudaLaunchKernel((const void*)rgb_to_rgba_10bit_kernel,
                                        grid, block, args, 0, stream);
 
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "rgb_to_rgba_10bit_kernel");
 }
 
 //RGB→RGBA 10bit Packed
@@ -420,20 +457,7 @@ bool CUDA_ImageProcess::rgb_to_RGBA_10bit_packed(uint8_t* d_rgba, size_t pitch_r
     cudaError_t err = cudaLaunchKernel((const void*)rgb_to_rgba_10bit_packed_kernel,
                                        grid, block, args, 0, stream);
 
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "rgb_to_rgba_10bit_packed_kernel");
 }
 
 //特殊(Davinci Resolve YUV422P 8bit→RGBA)
@@ -448,20 +472,7 @@ bool CUDA_ImageProcess::uyvy422_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,
     cudaError_t err = cudaLaunchKernel((const void*)uyvy422_to_rgba_8bit_kernel,
                                        grid, block, args, 0, stream);
 
-    cudaGetLastError();   // ← 必ずチェック
-
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "uyvy422_to_rgba_8bit_kernel");
 }
 
 //NV12→RGBA→結合 2ストリームデコード
@@ -483,18 +494,7 @@ bool CUDA_ImageProcess::nv12x2_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_
     cudaError_t err =cudaLaunchKernel((const void*)nv12x2_to_rgba_merge_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "nv12x2_to_rgba_merge_kernel");
 }
 
 //反転→RGBA→NV12→2分割 2ストリームエンコード
@@ -518,18 +518,7 @@ bool CUDA_ImageProcess::rgba_to_nv12x2_flip_split(uint8_t* In, size_t pitchIn,
     cudaError_t err =cudaLaunchKernel((const void*)rgba_to_nv12x2_flip_split_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "rgba_to_nv12x2_flip_split_kernel");
 }
 
 //NV12→RGBA→4結合 4ストリームデコード
@@ -555,18 +544,7 @@ bool CUDA_ImageProcess::nv12x4_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_
     cudaError_t err =cudaLaunchKernel((const void*)nv12x4_to_rgba_merge_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "nv12x4_to_rgba_merge_kernel");
 }
 
 //反転→RGBA→NV12→4分割 4ストリームエンコード
@@ -594,18 +572,7 @@ bool CUDA_ImageProcess::rgba_to_nv12x4_flip_split(uint8_t* In, size_t pitchIn,
     cudaError_t err =cudaLaunchKernel((const void*)rgba_to_nv12x4_flip_split_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "rgba_to_nv12x4_flip_split_kernel");
 }
 
 //NV12→RGBA→8結合 8ストリームデコード
@@ -639,18 +606,7 @@ bool CUDA_ImageProcess::nv12x8_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_
     cudaError_t err =cudaLaunchKernel((const void*)nv12x8_to_rgba_merge_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "nv12x8_to_rgba_merge_kernel");
 }
 
 //反転→RGBA→NV12→8分割 8ストリームエンコード
@@ -686,18 +642,7 @@ bool CUDA_ImageProcess::rgba_to_nv12x8_flip_split(uint8_t* In, size_t pitchIn,
     cudaError_t err =cudaLaunchKernel((const void*)rgba_to_nv12x8_flip_split_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "rgba_to_nv12x8_flip_split_kernel");
 }
 
 //ヒストグラム計算
@@ -720,18 +665,7 @@ bool CUDA_ImageProcess::calc_histgram(HistData* Histdata,cudaTextureObject_t tex
         args,
         0, nullptr);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed:" << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error:" << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "calc_histogram_shared_kernel");
 }
 
 //ヒストグラム詳細を計算
@@ -750,18 +684,7 @@ bool CUDA_ImageProcess::histogram_status(HistData* Histdata,HistStats* out_stats
         args,
         0, nullptr);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed:" << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error:" << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "histgram_status_kernel");
 }
 
 //ヒストグラム正規化→VBO
@@ -782,18 +705,7 @@ bool CUDA_ImageProcess::histgram_normalize(float* vbo,int num_bins,HistData* His
         args,
         0, nullptr);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed:" << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error:" << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "histgram_normalize_kernel");
 }
 
 // -----------------------------
@@ -813,18 +725,7 @@ bool CUDA_ImageProcess::image_combine_x2(uint8_t* out, size_t pitchOut,uint8_t* 
     cudaError_t err =cudaLaunchKernel((const void*)image_combine_x2_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "image_combine_x2_kernel");
 }
 
 //4結合
@@ -844,18 +745,7 @@ bool CUDA_ImageProcess::image_combine_x4(uint8_t* out, size_t pitchOut,uint8_t* 
     cudaError_t err =cudaLaunchKernel((const void*)image_combine_x4_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "image_combine_x4_kernel");
 }
 
 //4分割
@@ -880,18 +770,7 @@ bool CUDA_ImageProcess::image_split_x4(uint8_t* Out[4], size_t pitch[4],uint8_t*
     cudaError_t err =cudaLaunchKernel((const void*)image_split_x4_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "image_split_x4_kernel");
 }
 
 //コントラストグラデーション
@@ -906,16 +785,5 @@ bool CUDA_ImageProcess::Gradation(uint8_t *output,size_t pitch_output,uint8_t *i
     cudaError_t err =cudaLaunchKernel((const void*)gradetion_kernel,
                                        grid, block, args, 0, stream);
 
-    if (err != cudaSuccess) {
-        qDebug() << "cudaLaunchKernel failed: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        qDebug() << "Kernel launch error: " << cudaGetErrorString(err);
-        return false;
-    }
-
-    return true;
+    return launch_check(err, "gradetion_kernel");
 }

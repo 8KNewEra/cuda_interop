@@ -19,7 +19,14 @@ protected:
     void get_multidecode_image();
     void high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)override;
     void get_decode_audio();
-    void CUDA_RGBA_to_merge();
+
+    // ★ 旧 CUDA_RGBA_to_merge()
+    //   ゼロコピー化により、ここでは RGBA を作らない。
+    //   NVDEC が出力した NV12 タイルのポインタを VideoFrame に載せて
+    //   GUI スレッドへ渡すだけ。実際の NV12→RGBA 結合は GUI スレッドが
+    //   OpenGL テクスチャへ直接書き込む形で行う。
+    void publish_decode_frame();
+
     void high_res_seek_frame_single(int FrameNo);
     void high_res_seek_frame_multi(int FrameNo);
 

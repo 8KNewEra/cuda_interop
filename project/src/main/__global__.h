@@ -184,13 +184,44 @@ private:
     DecodeInfo m_settings;
 };
 
+// ==============================================================
+// デコード結果の受け渡し形式
+//   SRC_RGBA      : d_decode_rgba に RGBA が入っている（CPUデコード系）
+//                   GUI側は cudaMemcpy2DToArray でGLテクスチャへ転送する
+//   SRC_NV12_TILE : NV12タイルのポインタが入っている（NVDEC系・ゼロコピー）
+//                   GUI側は surface object でGLテクスチャへ直接 merge する
+// ==============================================================
+enum VideoFrameSrc {
+    SRC_RGBA      = 0,
+    SRC_NV12_TILE = 1
+};
+
 //デコードフレーム
 struct VideoFrame {
-    //映像
+    static const int MAX_TILES = 8;
+
+    //映像の受け渡し形式
+    int src_mode = SRC_RGBA;
+
+    // --- SRC_RGBA のとき使用 ---
     uint8_t* d_decode_rgba=nullptr;
     size_t decode_pitch=0;
+
+    // --- SRC_NV12_TILE のとき使用 ---
+    //   NVDEC が出力した NV12 タイルを直接指す（コピーしない）
+    //   有効期間はデコード側のリング（vd[i].hw_frames）が一周するまで
+    int      tile_count = 0;                  // 1 / 2 / 4 / 8
+    int      tile_w     = 0;                  // 1タイルの幅  (= VideoInfo.width)
+    int      tile_h     = 0;                  // 1タイルの高さ(= VideoInfo.height)
+    uint8_t* d_y     [MAX_TILES] = {};
+    size_t   y_pitch [MAX_TILES] = {};
+    uint8_t* d_uv    [MAX_TILES] = {};
+    size_t   uv_pitch[MAX_TILES] = {};
+
+    // --- エンコード用（GUIスレッド内で完結するので1面のまま）---
     uint8_t* d_encode_rgba=nullptr;
     size_t encode_pitch=0;
+
     int FrameNo=0;
 
     //時間

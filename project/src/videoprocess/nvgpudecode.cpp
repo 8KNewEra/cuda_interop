@@ -97,6 +97,9 @@ bool nvgpudecode::initialized_ffmpeg()
         auto& dec = vd.back();
 
         //リングバッファフレーム作成
+        // ★ ゼロコピー化後は、このリングが「デコード結果の保護」そのものになる。
+        //   GUIスレッドが hw_frames[j] を直接読むので、一周する前に
+        //   上書きされないだけの面数が必要（in-flight は 3〜4 程度）。
         dec.hw_frames.resize(ringSize);
         for (int j = 0; j < ringSize; j++) {
             dec.hw_frames[j] = av_frame_alloc();
@@ -192,15 +195,10 @@ bool nvgpudecode::initialized_ffmpeg()
     // ------------------------
     // CUDA メモリ確保
     // ------------------------
-    // ★ d_decode_rgba はリング化する。
-    //   GUIスレッドが前フレームを処理している間にデコードスレッドが
-    //   次フレームを書いても、別の面に書くので上書き事故が起きない。
-    if (!alloc_decode_rgba_ring(
-            VideoInfo.width  * VideoInfo.width_scale,
-            VideoInfo.height * VideoInfo.height_scale)) {
-        // Error_String は alloc_decode_rgba_ring 側で設定済み
-        return false;
-    }
+    // ★ ゼロコピー化により d_decode_rgba（および そのリング）は不要になった。
+    //   NV12→RGBA結合はGUIスレッドがOpenGLテクスチャへ直接書き込む。
+    //   16K RGBA 1面 = 約531MB × 4面 = 約2.1GB の削減。
+    //   （CPUデコード系 cpudecode/avidecode は従来どおり d_decode_rgba を使う）
 
     // d_encode_rgba は GUIスレッド内で書いて同一スレッド内で読み切るので1面のまま
     cudaError_t err = cudaMallocPitch(
@@ -442,7 +440,6 @@ void nvgpudecode::get_decode_image(){
 
 //映像シングルストリーム
 void nvgpudecode::get_singledecode_image() {
-    //qDebug()<<"1フレーム読み込み"<<Frame.FrameNo;
     //----------- シーク処理 -----------
     if (slider_No != Frame.FrameNo || video_reverse_flag) {
         // ----------- 逆再生、通常シーク処理 -----------
@@ -528,7 +525,7 @@ void nvgpudecode::get_singledecode_image() {
         av_packet_unref(packet);
     }
 
-    CUDA_RGBA_to_merge();
+    publish_decode_frame();
     av_packet_unref(packet);
 }
 
@@ -613,11 +610,7 @@ void nvgpudecode::get_multidecode_image() {
         av_packet_unref(packet);
     }
 
-    // CUDAの処理,NVDEC完了待ち
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
-
-    CUDA_RGBA_to_merge();
+    publish_decode_frame();
 }
 
 //オーディオ
@@ -701,86 +694,33 @@ void nvgpudecode::get_decode_audio()
     }
 }
 
-//CUDAで映像フレームを処理
-void nvgpudecode::CUDA_RGBA_to_merge(){
-    // ==========================================================
-    // ★ 書き込み先スロットを選択する
-    //   必ずカーネル起動より前に行う。ここで Frame.d_decode_rgba /
-    //   Frame.decode_pitch がリングの現在面に差し替わる。
-    //   emit 済みの VideoFrame は値渡しなので、旧面のポインタを
-    //   保持し続ける（= GUI側が処理中の面を壊さない）。
-    // ==========================================================
-    select_decode_rgba_slot();
+// ==============================================================
+// ★ デコード結果の引き渡し（旧 CUDA_RGBA_to_merge）
+//
+//   ここではもう RGBA を作らない。
+//   NVDEC が出力した NV12 タイルのポインタを VideoFrame に載せるだけ。
+//   NV12→RGBA 結合は GUI スレッドが OpenGL テクスチャへ
+//   surface object 経由で直接書き込む（GLWidget::uploadToGLTexture）。
+//
+//   ・cuvid は avcodec_receive_frame の内部でストリーム同期しているため、
+//     ここでの追加のCUDA同期は不要（従来の Dummy×3 + eventSync を削除）
+//   ・タイルの寿命は vd[i].hw_frames のリングが一周するまで。
+//     ringSize(=12) > 同時走行フレーム数(3〜4) なので安全。
+// ==============================================================
+void nvgpudecode::publish_decode_frame(){
 
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    Frame.src_mode   = SRC_NV12_TILE;
+    Frame.tile_count = (int)vd.size();
+    Frame.tile_w     = VideoInfo.width;
+    Frame.tile_h     = VideoInfo.height;
 
-    //本カーネル
-    if (vd.size() == 2) {
-        //NV12→RGBA→結合
-        CUDA_IMG_Proc->nv12x2_to_rgba_merge(
-            vd[0].hw_frames[ringNo]->data[0],vd[0].hw_frames[ringNo]->linesize[0], vd[0].hw_frames[ringNo]->data[1],vd[0].hw_frames[ringNo]->linesize[1],
-            vd[1].hw_frames[ringNo]->data[0],vd[1].hw_frames[ringNo]->linesize[0], vd[1].hw_frames[ringNo]->data[1],vd[1].hw_frames[ringNo]->linesize[1],
-            Frame.d_decode_rgba,Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
-    }else if (vd.size() == 4) {
-        //NV12→RGBA→結合
-        CUDA_IMG_Proc->nv12x4_to_rgba_merge(
-            vd[0].hw_frames[ringNo]->data[0],vd[0].hw_frames[ringNo]->linesize[0], vd[0].hw_frames[ringNo]->data[1],vd[0].hw_frames[ringNo]->linesize[1],
-            vd[1].hw_frames[ringNo]->data[0],vd[1].hw_frames[ringNo]->linesize[0], vd[1].hw_frames[ringNo]->data[1],vd[1].hw_frames[ringNo]->linesize[1],
-            vd[2].hw_frames[ringNo]->data[0],vd[2].hw_frames[ringNo]->linesize[0], vd[2].hw_frames[ringNo]->data[1],vd[2].hw_frames[ringNo]->linesize[1],
-            vd[3].hw_frames[ringNo]->data[0],vd[3].hw_frames[ringNo]->linesize[0], vd[3].hw_frames[ringNo]->data[1],vd[3].hw_frames[ringNo]->linesize[1],
-            Frame.d_decode_rgba, Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
-    }else if(vd.size() == 8){
-        //NV12→RGBA→結合
-        CUDA_IMG_Proc->nv12x8_to_rgba_merge(
-            vd[0].hw_frames[ringNo]->data[0],vd[0].hw_frames[ringNo]->linesize[0], vd[0].hw_frames[ringNo]->data[1],vd[0].hw_frames[ringNo]->linesize[1],
-            vd[1].hw_frames[ringNo]->data[0],vd[1].hw_frames[ringNo]->linesize[0], vd[1].hw_frames[ringNo]->data[1],vd[1].hw_frames[ringNo]->linesize[1],
-            vd[2].hw_frames[ringNo]->data[0],vd[2].hw_frames[ringNo]->linesize[0], vd[2].hw_frames[ringNo]->data[1],vd[2].hw_frames[ringNo]->linesize[1],
-            vd[3].hw_frames[ringNo]->data[0],vd[3].hw_frames[ringNo]->linesize[0], vd[3].hw_frames[ringNo]->data[1],vd[3].hw_frames[ringNo]->linesize[1],
-            vd[4].hw_frames[ringNo]->data[0],vd[4].hw_frames[ringNo]->linesize[0], vd[4].hw_frames[ringNo]->data[1],vd[4].hw_frames[ringNo]->linesize[1],
-            vd[5].hw_frames[ringNo]->data[0],vd[5].hw_frames[ringNo]->linesize[0], vd[5].hw_frames[ringNo]->data[1],vd[5].hw_frames[ringNo]->linesize[1],
-            vd[6].hw_frames[ringNo]->data[0],vd[6].hw_frames[ringNo]->linesize[0], vd[6].hw_frames[ringNo]->data[1],vd[6].hw_frames[ringNo]->linesize[1],
-            vd[7].hw_frames[ringNo]->data[0],vd[7].hw_frames[ringNo]->linesize[0], vd[7].hw_frames[ringNo]->data[1],vd[7].hw_frames[ringNo]->linesize[1],
-            Frame.d_decode_rgba, Frame.decode_pitch,VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale,VideoInfo.width,VideoInfo.height,stream);
-    }else{
-        // NV12 → RGBA
-        if(VideoInfo.bitdepth == 8){
-            CUDA_IMG_Proc->NV12_to_RGBA_8bit(
-                Frame.d_decode_rgba,
-                Frame.decode_pitch,
-                vd[0].hw_frames[ringNo]->data[0],
-                vd[0].hw_frames[ringNo]->linesize[0],
-                vd[0].hw_frames[ringNo]->data[1],
-                vd[0].hw_frames[ringNo]->linesize[1],
-                VideoInfo.width*VideoInfo.width_scale,
-                VideoInfo.height*VideoInfo.height_scale,
-                stream
-                );
-        }else if(VideoInfo.bitdepth == 10){
-            CUDA_IMG_Proc->NV12_to_RGBA_10bit(
-                Frame.d_decode_rgba,
-                Frame.decode_pitch,
-                vd[0].hw_frames[ringNo]->data[0],
-                vd[0].hw_frames[ringNo]->linesize[0],
-                vd[0].hw_frames[ringNo]->data[1],
-                vd[0].hw_frames[ringNo]->linesize[1],
-                VideoInfo.width*VideoInfo.width_scale,
-                VideoInfo.height*VideoInfo.height_scale,
-                stream
-                );
-        }
+    for (int i = 0; i < (int)vd.size() && i < VideoFrame::MAX_TILES; i++) {
+        AVFrame* f = vd[i].hw_frames[ringNo];
+        Frame.d_y[i]      = f->data[0];
+        Frame.y_pitch[i]  = (size_t)f->linesize[0];
+        Frame.d_uv[i]     = f->data[1];
+        Frame.uv_pitch[i] = (size_t)f->linesize[1];
     }
-
-    //本カーネル同期
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
-
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
 
     //フレーム番号取得
     if(seek_flag){
@@ -803,19 +743,11 @@ void nvgpudecode::CUDA_RGBA_to_merge(){
     Frame.minute = (int(time) % 3600) / 60;
     Frame.second = fmod(time, 60.0);
 
-    //リングを回す
+    //リングを回す（次のデコードは別の面へ）
     ringNo++;
     if(ringNo>=ringSize) ringNo = 0;
 
     emit send_decode_image(Frame,false,video_reverse_flag);
-
-    // ==========================================================
-    // ★ 次フレームは別の面へ
-    //   emit 済みの VideoFrame は値渡しなので旧面のポインタを保持している。
-    //   ここで進めることで、GUIスレッドが処理し終わる前に
-    //   デコードスレッドが同じ面を上書きすることを防ぐ。
-    // ==========================================================
-    advance_decode_rgba_slot();
 }
 
 //高精度シーク
@@ -917,7 +849,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){
-            CUDA_RGBA_to_merge();
+            publish_decode_frame();
             break;
         }
         av_packet_unref(packet);
@@ -978,17 +910,13 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
             av_packet_unref(packet);
         }
 
-        // CUDAの処理,NVDEC完了待ち
-        cudaEventRecord(events, stream);
-        cudaEventSynchronize(events);
-
         //フレーム番号記憶
         back1FrameNo = FrameNo;
         FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo<=FrameNo){
-            CUDA_RGBA_to_merge();
+            publish_decode_frame();
             break;
         }
         av_packet_unref(packet);

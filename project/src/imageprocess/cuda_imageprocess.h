@@ -17,9 +17,43 @@ public:
     bool Dummy(cudaStream_t stream);
 
     //NV12↔RGBA
-    bool NV12_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream);
-    bool NV12_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int height, int width,cudaStream_t stream);
-    bool Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int height, int width,cudaStream_t stream);
+    bool NV12_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int width, int height,cudaStream_t stream);
+    bool NV12_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,int width, int height,cudaStream_t stream);
+    bool Flip_RGBA_to_NV12(uint8_t* d_y, size_t pitch_y,uint8_t* d_uv, size_t pitch_uv,uint8_t* d_rgba, size_t pitch_rgba,int width, int height,cudaStream_t stream);
+
+    // ==========================================================
+    // ★ ゼロコピー版：出力先を linear バッファではなく
+    //   OpenGLテクスチャ(cudaArray) の surface object にする。
+    //   d_decode_rgba と cudaMemcpy2DToArray が不要になる。
+    // ==========================================================
+    bool NV12_to_RGBA_8bit_surf(cudaSurfaceObject_t out,
+                                uint8_t* d_y, size_t pitch_y,
+                                uint8_t* d_uv, size_t pitch_uv,
+                                int width, int height, cudaStream_t stream);
+    bool NV12_to_RGBA_10bit_surf(cudaSurfaceObject_t out,
+                                 uint8_t* d_y, size_t pitch_y,
+                                 uint8_t* d_uv, size_t pitch_uv,
+                                 int width, int height, cudaStream_t stream);
+    bool nv12x2_to_rgba_merge_surf(cudaSurfaceObject_t out,
+                                   uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                   uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                   int outW, int outH, int srcW, int srcH, cudaStream_t stream);
+    bool nv12x4_to_rgba_merge_surf(cudaSurfaceObject_t out,
+                                   uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                   uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                   uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+                                   uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+                                   int outW, int outH, int srcW, int srcH, cudaStream_t stream);
+    bool nv12x8_to_rgba_merge_surf(cudaSurfaceObject_t out,
+                                   uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
+                                   uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
+                                   uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
+                                   uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
+                                   uint8_t* y4, size_t pitchY4, uint8_t* uv4, size_t pitchUV4,
+                                   uint8_t* y5, size_t pitchY5, uint8_t* uv5, size_t pitchUV5,
+                                   uint8_t* y6, size_t pitchY6, uint8_t* uv6, size_t pitchUV6,
+                                   uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
+                                   int outW, int outH, int srcW, int srcH, cudaStream_t stream);
 
     //YUV420p→RGBA
     bool yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
@@ -51,12 +85,13 @@ public:
                               uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
                               uint8_t* y3,  size_t pitchY3,uint8_t* uv3, size_t pitchUV3,
                               uint8_t* out, size_t pitchOut,int outW, int outH,int srcW, int srcH,cudaStream_t stream);
+    // ★ 引数名は定義側(cuda_imageprocess.cpp)に合わせて srcW,srcH,outW,outH の順
     bool rgba_to_nv12x4_flip_split(uint8_t* In, size_t pitchIn,
                                    uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
                                    uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
                                    uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,
                                    uint8_t* y3,  size_t pitchY3,uint8_t* uv3, size_t pitchUV3,
-                                   int outW, int outH,int srcW, int srcH, cudaStream_t stream);
+                                   int srcW, int srcH, int outW, int outH, cudaStream_t stream);
     bool nv12x8_to_rgba_merge(uint8_t* y0,  size_t pitchY0,uint8_t* uv0, size_t pitchUV0,
                               uint8_t* y1,  size_t pitchY1,uint8_t* uv1, size_t pitchUV1,
                               uint8_t* y2,  size_t pitchY2,uint8_t* uv2, size_t pitchUV2,

@@ -251,208 +251,225 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
     if (encode_state==STATE_ENCODING) {
         downloadToGLTexture_and_Encode(Frame);
     } else if(encode_state==STATE_NOT_ENCODE){
-        //画面に描画
+        //画面に描画（paintGL を予約。実際の present は Qt が行う）
         update();
     }
 }
 
 //画面描画
 void GLWidget::paintGL(){
-    // QElapsedTimer timer;
-    // timer.start();
-    painter.begin(this);
+    // ==========================================================
+    // ★① 表示可能な状態かを先に確認する
+    //    video_open_flag が立つのは initialized_ffmpeg 成功時だが、
+    //    width_/height_/fbo が揃うのは最初の uploadToGLTexture なので、
+    //    その間に paintGL が走ると不定値で blit してしまう。
+    // ==========================================================
+    const bool ready =
+        VideoInfo.video_open_flag && fbo != 0 && width_ > 0 && height_ > 0;
 
-    //動画フレーム描画
-    if(VideoInfo.video_open_flag){
-        //描画処理
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    if (!ready) {
+        //ファイルが閉じている / 未初期化のときは真っ黒に
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (viewportWidth > 0 && viewportHeight > 0)
+            glViewport(0, 0, viewportWidth, viewportHeight);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
-
-        // FBO → 画面へ転送
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-        glBlitFramebuffer(
-            0, 0, width_, height_,
-            x0, y0, x1, y1,
-            GL_COLOR_BUFFER_BIT,
-            GL_LINEAR
-            );
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        //ヒストグラム描画
-        if(g_AppSettings.histgram_flag&&cudaResource_hist&&cudaResource2){
-            //ヒストグラムCUDA集計
-            histgram_Analysys();
-            auto labels = make_nice_y_labels(h_hist_stats.max_y_axis);
-            //int labels[5]={1,2,3,4,5};
-
-            //ヒストグラムグラフ描画
-            {
-                QRect rect(viewportWidth -(480+20)*monitor_scaling, 20*monitor_scaling, 480*monitor_scaling, 360*monitor_scaling);
-                glViewport(rect.x(), rect.y(), rect.width(), rect.height());
-
-                // --- OpenGL描画 ---
-                glMatrixMode(GL_PROJECTION);
-                glLoadIdentity();
-                glOrtho(0.0, 1.0, 0.0, 1.0, -1.0, 1.0);
-                glMatrixMode(GL_MODELVIEW);
-                glLoadIdentity();
-
-                // 背景半透明
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                glColor4f(0.0f, 0.0f, 0.0f, 0.5f);
-                glBegin(GL_QUADS);
-                glVertex2f(0.0f, 0.0f);
-                glVertex2f(1.0f, 0.0f);
-                glVertex2f(1.0f, 1.0f);
-                glVertex2f(0.0f, 1.0f);
-                glEnd();
-
-                // --- グリッド ---
-                glLineWidth(2.0f);
-                glColor4f(1.0f, 1.0f, 1.0f, 0.45f);
-                glBegin(GL_LINES);
-                //X軸
-                glVertex2f(0, 0.0f);
-                glVertex2f(0, 1.0f);
-                glVertex2f(0.25f, 0.0f);
-                glVertex2f(0.25f, 1.0f);
-                glVertex2f(0.5f, 0.0f);
-                glVertex2f(0.5f, 1.0f);
-                glVertex2f(0.75f, 0.0f);
-                glVertex2f(0.75f, 1.0f);
-                glVertex2f(1.0f, 0.0f);
-                glVertex2f(1.0f, 1.0f);
-                //Y軸
-                glVertex2f(0.0f, 0);
-                glVertex2f(1.0f, 0);
-                glVertex2f(0.0f, 1.0f);
-                glVertex2f(1.0f, 1.0f);
-                glVertex2f(0.0f, (float)labels[0]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(1.0f, (float)labels[0]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(0.0f, (float)labels[1]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(1.0f, (float)labels[1]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(0.0f, (float)labels[2]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(1.0f, (float)labels[2]/(float)h_hist_stats.max_y_axis);
-                // --- 目盛り ---
-                glLineWidth(3.0f);
-                glColor4f(1.0f, 1.0f, 1.0f, 0.8f);
-                //X軸
-                glVertex2f(0, 0.0f);
-                glVertex2f(0, 0.03f);
-                glVertex2f(0.25f, 0.0f);
-                glVertex2f(0.25f, 0.03f);
-                glVertex2f(0.5f, 0.0f);
-                glVertex2f(0.5f, 0.03f);
-                glVertex2f(0.75f, 0.0f);
-                glVertex2f(0.75f, 0.03f);
-                glVertex2f(1.0f, 0.0f);
-                glVertex2f(1.0f, 0.03f);
-                //Y軸
-                glVertex2f(0.0f, 0);
-                glVertex2f(0.03f, 0);
-                glVertex2f(0.0f, 1.0f);
-                glVertex2f(0.03f, 1.0f);
-                glVertex2f(0.0f, (float)labels[0]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(0.03f, (float)labels[0]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(0.0f, (float)labels[1]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(0.03f, (float)labels[1]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(0.0f, (float)labels[2]/(float)h_hist_stats.max_y_axis);
-                glVertex2f(0.03f, (float)labels[2]/(float)h_hist_stats.max_y_axis);
-                glEnd();
-
-                // --- ヒストグラム ---
-                glBindBuffer(GL_ARRAY_BUFFER, vbo_hist);
-                glEnableClientState(GL_VERTEX_ARRAY);
-                glVertexPointer(3, GL_FLOAT, 0, 0);
-
-                glLineWidth(1.4f);
-                glColor4f(1.0f, 0.0f, 0.0f, 0.9f);
-                glDrawArrays(GL_LINE_STRIP, 0, num_bins);
-                glColor4f(0.0f, 1.0f, 0.0f, 0.9f);
-                glDrawArrays(GL_LINE_STRIP, num_bins, num_bins);
-                glColor4f(0.0f, 0.0f, 1.0f, 0.9f);
-                glDrawArrays(GL_LINE_STRIP, num_bins * 2, num_bins);
-
-                glDisableClientState(GL_VERTEX_ARRAY);
-                glBindBuffer(GL_ARRAY_BUFFER, 0);
-                glDisable(GL_BLEND);
-
-                // --- Qtでラベルを追加 ---
-                // painter.beginNativePainting(); // OpenGLとQtの切り替え開始
-                // painter.endNativePainting();
-
-                //ラベル値
-                //Y座標
-                painter.setPen(Qt::white);
-                painter.setFont(QFont("Arial", 10));
-                painter.drawText((rect.left() - 60)/monitor_scaling,(viewportHeight-25*monitor_scaling)/monitor_scaling,55/monitor_scaling, 20*monitor_scaling,Qt::AlignRight,QString::number(0));
-                painter.drawText((rect.left() - 200)/monitor_scaling,(viewportHeight-(rect.height())-35*monitor_scaling)/monitor_scaling,195/monitor_scaling, 20*monitor_scaling,Qt::AlignRight,"Max Y:"+QString::number(h_hist_stats.max_y_axis));
-                for(int i=0;i<=2;i++){
-                    if(labels[i]<=h_hist_stats.max_y_axis){
-                        painter.drawText((rect.left() - 150)/monitor_scaling,(viewportHeight-(rect.height())*((float)labels[i]/(float)h_hist_stats.max_y_axis)-25*monitor_scaling)/monitor_scaling,145/monitor_scaling, 20*monitor_scaling,Qt::AlignRight,QString::number(labels[i]));
-                    }
-                }
-                //X座標
-                painter.drawText(rect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,126, 20*monitor_scaling,Qt::AlignRight,QString::number(64));
-                painter.drawText(rect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,250, 20*monitor_scaling,Qt::AlignRight,QString::number(128));
-                painter.drawText(rect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,370, 20*monitor_scaling,Qt::AlignRight,QString::number(192));
-                painter.drawText(rect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,488, 20*monitor_scaling,Qt::AlignRight,QString::number(256));
-            }
-
-            //ヒストグラム描画
-            {
-                painter.setPen(Qt::white);
-                painter.setFont(QFont("Consolas", 16));
-                QRect rect(viewportWidth/monitor_scaling -(325), 0, 350*monitor_scaling, 100*monitor_scaling);  // 右端に幅300のエリア
-                painter.drawText(rect, Qt::AlignLeft,"R: min:" + QString::number(h_hist_stats.min_r) +" max:" + QString::number(h_hist_stats.max_r) +" avg:" + QString::number(h_hist_stats.avg_r));
-                painter.drawText(rect.adjusted(0, 20, 0, 0), Qt::AlignLeft,"G: min:" + QString::number(h_hist_stats.min_g) +" max:" + QString::number(h_hist_stats.max_g) +" avg:" + QString::number(h_hist_stats.avg_g));
-                painter.drawText(rect.adjusted(0, 40, 0, 0), Qt::AlignLeft,"B: min:" + QString::number(h_hist_stats.min_b) +" max:" + QString::number(h_hist_stats.max_b) +" avg:" + QString::number(h_hist_stats.avg_b));
-                //painter.drawText(rect.adjusted(0, 60, 0, 0), Qt::AlignLeft,"Axis Y: max:" + QString::number(h_stats.max_y_axis));
-            }
-        }
-
-        //FPSを算出
-        if (fpsTimer.elapsed() >= 1000) {  // 1000ms 経過したら
-            fps = fpsCount * 1000.0 / fpsTimer.elapsed(); // FPS計算
-            fpsCount = 0;
-            fpsTimer.restart();
-        }
-
-        //動画情報描画
-        if(g_AppSettings.videoInfo_flag){
-            painter.setPen(Qt::white);
-            painter.setFont(QFont("Consolas", 16));
-            painter.drawText(2, 20, "Primary Device(Open GL):" + g_GPUInfo[g_openglDeviceID].deviceName + " (CUDA Device " +QString::number(g_openglDeviceID) + ")" +"\n");
-
-            for(int i=0;i<g_GPUInfo.size();i++){
-                painter.drawText(2, 40 + 20*i, "CUDA Device " + QString::number(i) + ":" + g_GPUInfo[i].deviceName +"(sm_"+QString::number(g_GPUInfo[i].CC_major)+QString::number(g_GPUInfo[i].CC_minor)+")" + " Usage:" + QString::number(g_GPUInfo[i].GPU_Usage) + "% Memory:" + QString::number(g_GPUInfo[i].Memory_Usage) + "/" + QString::number(g_GPUInfo[i].Max_Memory_Usage) + " MB\n");
-            }
-
-            painter.drawText(2, 40 + 20*g_GPUInfo.size(), QString("OpenGL Rendering FPS:%1").arg(fps, 0, 'f', 2));
-            painter.drawText(2, 60 + 20*g_GPUInfo.size(), "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
-            painter.drawText(2, 80 + 20*g_GPUInfo.size(), "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
-            painter.drawText(2, 100 + 20*g_GPUInfo.size(), VideoInfo.decode_mode);
-            painter.drawText(2, 120 + 20*g_GPUInfo.size(), "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
-            painter.drawText(2, 140 + 20*g_GPUInfo.size(), "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
-            painter.drawText(2, 160 + 20*g_GPUInfo.size(), "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
-            //painter.drawText(2, 180 + 20*g_GPUInfo.size(), "Current Frame:" + QString::number(Frame.FrameNo)+"\n");
-            if(VideoInfo.audio)
-                painter.drawText(2, 200 + 20*g_GPUInfo.size(), "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
-        }
+        return;
     }
 
-    //ファイルが閉じている時は真っ黒に
-    if(!VideoInfo.video_open_flag){
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+    // ==========================================================
+    // ★② フェーズを分離する
+    //    QPainter のペイントエンジンは生GL呼び出しの状態を保存/復元しない。
+    //    そのため「生OpenGL描画をすべて終えてから QPainter を開く」構成にして、
+    //    両者を混在させない（beginNativePainting で囲む必要もなくなる）。
+    // ==========================================================
+
+    // ----------------------------------------------------------
+    // フェーズ1: 生OpenGL描画
+    // ----------------------------------------------------------
+
+    // --- 映像フレームを画面へ ---
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glViewport(0, 0, viewportWidth, viewportHeight);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glBlitFramebuffer(
+        0, 0, width_, height_,
+        x0, y0, x1, y1,
+        GL_COLOR_BUFFER_BIT,
+        GL_LINEAR
+        );
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // --- ヒストグラム: CUDA集計（GL描画より先に済ませる）---
+    bool histReady = false;
+    std::vector<int> labels;
+    QRect histRect;
+
+    if (g_AppSettings.histgram_flag &&
+        cudaResource_hist && cudaResource_hist_draw && cudaResource2)
+    {
+        histgram_Analysys();
+        labels = make_nice_y_labels(h_hist_stats.max_y_axis);
+
+        // ★ labels[0..2] を無条件に触っていたので範囲チェックを入れる
+        histReady = (h_hist_stats.max_y_axis > 0) && (labels.size() >= 3);
+    }
+
+    // --- ヒストグラムのグラフ本体（生GL）---
+    if (histReady) {
+        histRect = QRect(viewportWidth - (480+20)*monitor_scaling,
+                         20*monitor_scaling,
+                         480*monitor_scaling,
+                         360*monitor_scaling);
+
+        glViewport(histRect.x(), histRect.y(), histRect.width(), histRect.height());
+
+        const float maxY = (float)h_hist_stats.max_y_axis;
+        const float l0 = (float)labels[0] / maxY;
+        const float l1 = (float)labels[1] / maxY;
+        const float l2 = (float)labels[2] / maxY;
+
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrtho(0.0, 1.0, 0.0, 1.0, -1.0, 1.0);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+
+        // 背景半透明
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.0f, 0.0f, 0.0f, 0.5f);
+        glBegin(GL_QUADS);
+        glVertex2f(0.0f, 0.0f);
+        glVertex2f(1.0f, 0.0f);
+        glVertex2f(1.0f, 1.0f);
+        glVertex2f(0.0f, 1.0f);
+        glEnd();
+
+        // --- グリッド ---
+        glLineWidth(2.0f);
+        glColor4f(1.0f, 1.0f, 1.0f, 0.45f);
+        glBegin(GL_LINES);
+        //X軸
+        glVertex2f(0, 0.0f);      glVertex2f(0, 1.0f);
+        glVertex2f(0.25f, 0.0f);  glVertex2f(0.25f, 1.0f);
+        glVertex2f(0.5f, 0.0f);   glVertex2f(0.5f, 1.0f);
+        glVertex2f(0.75f, 0.0f);  glVertex2f(0.75f, 1.0f);
+        glVertex2f(1.0f, 0.0f);   glVertex2f(1.0f, 1.0f);
+        //Y軸
+        glVertex2f(0.0f, 0);      glVertex2f(1.0f, 0);
+        glVertex2f(0.0f, 1.0f);   glVertex2f(1.0f, 1.0f);
+        glVertex2f(0.0f, l0);     glVertex2f(1.0f, l0);
+        glVertex2f(0.0f, l1);     glVertex2f(1.0f, l1);
+        glVertex2f(0.0f, l2);     glVertex2f(1.0f, l2);
+        // --- 目盛り ---
+        glLineWidth(3.0f);
+        glColor4f(1.0f, 1.0f, 1.0f, 0.8f);
+        //X軸
+        glVertex2f(0, 0.0f);      glVertex2f(0, 0.03f);
+        glVertex2f(0.25f, 0.0f);  glVertex2f(0.25f, 0.03f);
+        glVertex2f(0.5f, 0.0f);   glVertex2f(0.5f, 0.03f);
+        glVertex2f(0.75f, 0.0f);  glVertex2f(0.75f, 0.03f);
+        glVertex2f(1.0f, 0.0f);   glVertex2f(1.0f, 0.03f);
+        //Y軸
+        glVertex2f(0.0f, 0);      glVertex2f(0.03f, 0);
+        glVertex2f(0.0f, 1.0f);   glVertex2f(0.03f, 1.0f);
+        glVertex2f(0.0f, l0);     glVertex2f(0.03f, l0);
+        glVertex2f(0.0f, l1);     glVertex2f(0.03f, l1);
+        glVertex2f(0.0f, l2);     glVertex2f(0.03f, l2);
+        glEnd();
+
+        // --- ヒストグラム ---
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_hist);
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glVertexPointer(3, GL_FLOAT, 0, 0);
+
+        glLineWidth(1.4f);
+        glColor4f(1.0f, 0.0f, 0.0f, 0.9f);
+        glDrawArrays(GL_LINE_STRIP, 0, num_bins);
+        glColor4f(0.0f, 1.0f, 0.0f, 0.9f);
+        glDrawArrays(GL_LINE_STRIP, num_bins, num_bins);
+        glColor4f(0.0f, 0.0f, 1.0f, 0.9f);
+        glDrawArrays(GL_LINE_STRIP, num_bins * 2, num_bins);
+
+        glDisableClientState(GL_VERTEX_ARRAY);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDisable(GL_BLEND);
+
+        //★ ビューポートを必ず戻す（戻さないと次の描画が壊れる）
+        glViewport(0, 0, viewportWidth, viewportHeight);
+    }
+
+    // ----------------------------------------------------------
+    // フェーズ2: QPainter（テキストのみ。以降は生GLを呼ばない）
+    // ----------------------------------------------------------
+    painter.begin(this);
+
+    //ヒストグラムのラベル
+    if (histReady) {
+        const float maxY = (float)h_hist_stats.max_y_axis;
+
+        //Y座標
+        painter.setPen(Qt::white);
+        painter.setFont(QFont("Arial", 10));
+        painter.drawText((histRect.left() - 60)/monitor_scaling,
+                         (viewportHeight-25*monitor_scaling)/monitor_scaling,
+                         55/monitor_scaling, 20*monitor_scaling,
+                         Qt::AlignRight, QString::number(0));
+        painter.drawText((histRect.left() - 200)/monitor_scaling,
+                         (viewportHeight-(histRect.height())-35*monitor_scaling)/monitor_scaling,
+                         195/monitor_scaling, 20*monitor_scaling,
+                         Qt::AlignRight, "Max Y:"+QString::number(h_hist_stats.max_y_axis));
+
+        for(int i=0;i<=2;i++){
+            if(labels[i] <= h_hist_stats.max_y_axis){
+                painter.drawText((histRect.left() - 150)/monitor_scaling,
+                                 (viewportHeight-(histRect.height())*((float)labels[i]/maxY)-25*monitor_scaling)/monitor_scaling,
+                                 145/monitor_scaling, 20*monitor_scaling,
+                                 Qt::AlignRight, QString::number(labels[i]));
+            }
+        }
+
+        //X座標
+        painter.drawText(histRect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,126, 20*monitor_scaling,Qt::AlignRight,QString::number(64));
+        painter.drawText(histRect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,250, 20*monitor_scaling,Qt::AlignRight,QString::number(128));
+        painter.drawText(histRect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,370, 20*monitor_scaling,Qt::AlignRight,QString::number(192));
+        painter.drawText(histRect.left()/monitor_scaling,(viewportHeight-19*monitor_scaling)/monitor_scaling,488, 20*monitor_scaling,Qt::AlignRight,QString::number(256));
+
+        //RGB統計値
+        painter.setPen(Qt::white);
+        painter.setFont(QFont("Consolas", 16));
+        QRect rect(viewportWidth/monitor_scaling -(325), 0, 350*monitor_scaling, 100*monitor_scaling);
+        painter.drawText(rect, Qt::AlignLeft,"R: min:" + QString::number(h_hist_stats.min_r) +" max:" + QString::number(h_hist_stats.max_r) +" avg:" + QString::number(h_hist_stats.avg_r));
+        painter.drawText(rect.adjusted(0, 20, 0, 0), Qt::AlignLeft,"G: min:" + QString::number(h_hist_stats.min_g) +" max:" + QString::number(h_hist_stats.max_g) +" avg:" + QString::number(h_hist_stats.avg_g));
+        painter.drawText(rect.adjusted(0, 40, 0, 0), Qt::AlignLeft,"B: min:" + QString::number(h_hist_stats.min_b) +" max:" + QString::number(h_hist_stats.max_b) +" avg:" + QString::number(h_hist_stats.avg_b));
+    }
+
+    //動画情報描画
+    if(g_AppSettings.videoInfo_flag){
+        painter.setPen(Qt::white);
+        painter.setFont(QFont("Consolas", 16));
+        painter.drawText(2, 20, "Primary Device(Open GL):" + g_GPUInfo[g_openglDeviceID].deviceName + " (CUDA Device " +QString::number(g_openglDeviceID) + ")" +"\n");
+
+        for(int i=0;i<g_GPUInfo.size();i++){
+            painter.drawText(2, 40 + 20*i, "CUDA Device " + QString::number(i) + ":" + g_GPUInfo[i].deviceName +"(sm_"+QString::number(g_GPUInfo[i].CC_major)+QString::number(g_GPUInfo[i].CC_minor)+")" + " Usage:" + QString::number(g_GPUInfo[i].GPU_Usage) + "% Memory:" + QString::number(g_GPUInfo[i].Memory_Usage) + "/" + QString::number(g_GPUInfo[i].Max_Memory_Usage) + " MB\n");
+        }
+
+        painter.drawText(2, 40 + 20*g_GPUInfo.size(), QString("OpenGL Rendering FPS:%1").arg(fps, 0, 'f', 2));
+        painter.drawText(2, 60 + 20*g_GPUInfo.size(), "File Name:" + QString::fromStdString(VideoInfo.Name)+"\n");
+        painter.drawText(2, 80 + 20*g_GPUInfo.size(), "Decorder:" + QString::fromStdString(VideoInfo.Codec)+"\n");
+        painter.drawText(2, 100 + 20*g_GPUInfo.size(), VideoInfo.decode_mode);
+        painter.drawText(2, 120 + 20*g_GPUInfo.size(), "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
+        painter.drawText(2, 140 + 20*g_GPUInfo.size(), "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
+        painter.drawText(2, 160 + 20*g_GPUInfo.size(), "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
+        if(VideoInfo.audio)
+            painter.drawText(2, 200 + 20*g_GPUInfo.size(), "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
     }
 
     painter.end();
-
-    // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
-    // qDebug()<<seconds;
 }
 
 //アスペクト比を合わせてリサイズ
@@ -463,6 +480,12 @@ void GLWidget::GLresize() {
     //実ピクセル単位のビューポートサイズを取得
     viewportWidth  = static_cast<GLint>(this->width()  * monitor_scaling);
     viewportHeight = static_cast<GLint>(this->height() * monitor_scaling);
+
+    // ★ 映像サイズが未確定のうちは描画領域を計算できない（0除算になる）
+    if (width_ <= 0 || height_ <= 0 || viewportWidth <= 0 || viewportHeight <= 0) {
+        x0 = y0 = x1 = y1 = 0;
+        return;
+    }
 
     //ソース（動画/FBO）のサイズ
     float srcAspect = static_cast<float>(width_) / static_cast<float>(height_);
@@ -540,12 +563,82 @@ void GLWidget::initCudaTexture(int width,int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    cudaError_t err = cudaGraphicsGLRegisterImage(&cudaResource1, inputTextureID, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
+    // ★ surface object を作るには SurfaceLoadStore で登録する必要がある
+    //   （WriteDiscard のままだと cudaCreateSurfaceObject が失敗する）
+    cudaError_t err = cudaGraphicsGLRegisterImage(&cudaResource1, inputTextureID, GL_TEXTURE_2D,
+                                                  cudaGraphicsRegisterFlagsSurfaceLoadStore);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsGLRegisterImage error:" << cudaGetErrorString(err);
-        // エラー発生時の処理を追加 (例えば、nullptrを設定して後続の処理をスキップするなど)
         cudaResource1 = nullptr;
         inputTextureID = 0;
+    }
+}
+
+// ==============================================================
+// ★ NV12タイル → OpenGLテクスチャ（surface object）へ直接 merge
+//   従来の「merge → d_decode_rgba → cudaMemcpy2DToArray」を置き換える。
+//   16K で 1,062MB/frame の往復が消える。
+// ==============================================================
+bool GLWidget::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
+{
+    const int outW = width_;
+    const int outH = height_;
+    const int srcW = Frame.tile_w;
+    const int srcH = Frame.tile_h;
+
+    // 引数の const を外すだけのローカル（launcher が uint8_t* を取るため）
+    uint8_t* y [VideoFrame::MAX_TILES];
+    uint8_t* uv[VideoFrame::MAX_TILES];
+    size_t   yp[VideoFrame::MAX_TILES];
+    size_t   up[VideoFrame::MAX_TILES];
+    for (int i = 0; i < VideoFrame::MAX_TILES; i++) {
+        y [i] = Frame.d_y[i];
+        uv[i] = Frame.d_uv[i];
+        yp[i] = Frame.y_pitch[i];
+        up[i] = Frame.uv_pitch[i];
+    }
+
+    switch (Frame.tile_count) {
+    case 1:
+        if (VideoInfo.bitdepth == 10) {
+            return CUDA_IMG_Proc->NV12_to_RGBA_10bit_surf(
+                surf, y[0], yp[0], uv[0], up[0], outW, outH, interop_stream);
+        }
+        return CUDA_IMG_Proc->NV12_to_RGBA_8bit_surf(
+            surf, y[0], yp[0], uv[0], up[0], outW, outH, interop_stream);
+
+    case 2:
+        return CUDA_IMG_Proc->nv12x2_to_rgba_merge_surf(
+            surf,
+            y[0], yp[0], uv[0], up[0],
+            y[1], yp[1], uv[1], up[1],
+            outW, outH, srcW, srcH, interop_stream);
+
+    case 4:
+        return CUDA_IMG_Proc->nv12x4_to_rgba_merge_surf(
+            surf,
+            y[0], yp[0], uv[0], up[0],
+            y[1], yp[1], uv[1], up[1],
+            y[2], yp[2], uv[2], up[2],
+            y[3], yp[3], uv[3], up[3],
+            outW, outH, srcW, srcH, interop_stream);
+
+    case 8:
+        return CUDA_IMG_Proc->nv12x8_to_rgba_merge_surf(
+            surf,
+            y[0], yp[0], uv[0], up[0],
+            y[1], yp[1], uv[1], up[1],
+            y[2], yp[2], uv[2], up[2],
+            y[3], yp[3], uv[3], up[3],
+            y[4], yp[4], uv[4], up[4],
+            y[5], yp[5], uv[5], up[5],
+            y[6], yp[6], uv[6], up[6],
+            y[7], yp[7], uv[7], up[7],
+            outW, outH, srcW, srcH, interop_stream);
+
+    default:
+        qWarning() << "[GLWidget] unsupported tile count:" << Frame.tile_count;
+        return false;
     }
 }
 
@@ -612,16 +705,12 @@ void GLWidget::initCudaMalloc(int width, int height)
 
 //CUDAからOpenGLへ転送
 void GLWidget::uploadToGLTexture(VideoFrame Frame) {
-    // QElapsedTimer timer;
-    // timer.start();
-
     //initialized完了チェック
     if (!initialize_completed_flag) {
         return;
     };
 
-    // エンコード中は Monitor_Rendering(painter.begin) を通らないため、
-    // GLコンテキストをここで明示的にカレントにしておく
+    // エンコード中は paintGL を通らないため、GLコンテキストを明示的にカレントにする
     makeCurrent();
 
     //解像度の変更に対応
@@ -638,49 +727,92 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
     }
 
     //入力データチェック
-    if (!Frame.d_decode_rgba) {
-        qDebug() << "入力データがNULLです";
-        return;
+    if (Frame.src_mode == SRC_NV12_TILE) {
+        if (Frame.tile_count <= 0 || !Frame.d_y[0]) {
+            qDebug() << "入力データがNULLです(NV12 tile)";
+            return;
+        }
+    } else {
+        if (!Frame.d_decode_rgba) {
+            qDebug() << "入力データがNULLです(RGBA)";
+            return;
+        }
     }
 
     //CUDA→OpenGL転送の準備
     cudaArray_t array;
-    cudaError_t err = cudaSuccess; // エラーコードを格納する変数、初期値は成功
+    cudaError_t err = cudaSuccess;
     err = cudaGraphicsMapResources(1, &cudaResource1, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
-        return; // エラーが発生したら処理を中断
+        return;
     }
 
     err = cudaGraphicsSubResourceGetMappedArray(&array, cudaResource1, 0, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(1, &cudaResource1, 0); // マップ解除を試みる
-        return; // エラーが発生したら処理を中断
+        cudaGraphicsUnmapResources(1, &cudaResource1, 0);
+        return;
     }
 
-    //OpenGL用テクスチャに変換してOpenGL転送
-    size_t widthBytes = width_ * 4;
-    if (widthBytes <= Frame.decode_pitch) {
-        cudaMemcpy2DToArrayAsync(array,0, 0,Frame.d_decode_rgba,Frame.decode_pitch,widthBytes,height_,cudaMemcpyDeviceToDevice,interop_stream);
+    if (Frame.src_mode == SRC_NV12_TILE) {
+        // ==================================================================
+        // ★ ゼロコピー経路
+        //   NVDEC の NV12 タイルから、GLテクスチャへ直接 merge する。
+        //   d_decode_rgba も cudaMemcpy2DToArray も経由しない。
+        // ==================================================================
+        cudaResourceDesc resDesc = {};
+        resDesc.resType = cudaResourceTypeArray;
+        resDesc.res.array.array = array;
+
+        cudaSurfaceObject_t surf = 0;
+        err = cudaCreateSurfaceObject(&surf, &resDesc);
+        if (err != cudaSuccess) {
+            qDebug() << "cudaCreateSurfaceObject error:" << cudaGetErrorString(err);
+            cudaGraphicsUnmapResources(1, &cudaResource1, 0);
+            return;
+        }
+
+        mergeToSurface(Frame, surf);
+
         cudaEventRecord(interop_event, interop_stream);
         cudaEventSynchronize(interop_event);
+
+        cudaDestroySurfaceObject(surf);
+
     } else {
-        qDebug() << "Invalid pitch: widthBytes > pitch!";
-        return;
+        // ==================================================================
+        // 従来経路（CPUデコード系: cpudecode / avidecode）
+        // ==================================================================
+        size_t widthBytes = width_ * 4;
+        if (widthBytes <= Frame.decode_pitch) {
+            cudaMemcpy2DToArrayAsync(array,0, 0,Frame.d_decode_rgba,Frame.decode_pitch,widthBytes,height_,cudaMemcpyDeviceToDevice,interop_stream);
+            cudaEventRecord(interop_event, interop_stream);
+            cudaEventSynchronize(interop_event);
+        } else {
+            qDebug() << "Invalid pitch: widthBytes > pitch!";
+            cudaGraphicsUnmapResources(1, &cudaResource1, 0);
+            return;
+        }
     }
 
     err = cudaGraphicsUnmapResources(1, &cudaResource1, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        return; // エラーが発生したら処理を中断
+        return;
     }
-
-    // double seconds = timer.nsecsElapsed() / 1e6; // ナノ秒 →  ミリ秒
-    // qDebug()<<seconds;
 
     FBO_Rendering(Frame);
     fpsCount++;
+
+    // ★ FPS算出はここで行う
+    //   paintGL 側に置くと、エンコード中（update() を呼ばない）に
+    //   fpsTimer が回らず、エンコード終了直後に異常値が出る
+    if (fpsTimer.elapsed() >= 1000) {
+        fps = fpsCount * 1000.0 / fpsTimer.elapsed();
+        fpsCount = 0;
+        fpsTimer.restart();
+    }
 }
 
 //OpenGLからCUDAへ転送+エンコード
@@ -702,8 +834,8 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     err = cudaGraphicsSubResourceGetMappedArray(&array, cudaResource2, 0, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(1, &cudaResource2, 0); // マップ解除を試みる
-        return; // エラーが発生したら処理を中断
+        cudaGraphicsUnmapResources(1, &cudaResource2, 0);
+        return;
     }
 
     //OpenGL用テクスチャに変換してOpenGL転送
@@ -714,18 +846,16 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
         cudaEventSynchronize(interop_event);
     } else {
         qDebug() << "Invalid pitch: widthBytes > pitch!";
+        cudaGraphicsUnmapResources(1, &cudaResource2, 0);   // ★ unmap 漏れを修正
         return;
     }
 
-
-    //PBOリソースのマップを解除し、制御をOpenGLに戻す
+    //リソースのマップを解除し、制御をOpenGLに戻す
     err = cudaGraphicsUnmapResources(1, &cudaResource2, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
         return;
     }
-
-    //qDebug()<<encode_FrameCount<<":"<<MaxFrame-MinFrame;
 
     if(save_encoder!=nullptr&&encode_FrameCount<=(MaxFrame-MinFrame)){
         save_encoder->encode(Frame);
@@ -775,7 +905,7 @@ void GLWidget::initCudaHist() {
     }
     if (d_hist_data) {
         cudaFree(d_hist_data);
-        d_hist_stats = nullptr;
+        d_hist_data = nullptr;      // ★ 元は d_hist_stats を二重に nullptr していた
     }
 
     // --- 4. 新規登録 fbo → cudaResource_hist ---
@@ -848,8 +978,8 @@ void GLWidget::histgram_Analysys(){
         cudaTextureDesc texDesc = {};
         texDesc.addressMode[0] = cudaAddressModeClamp;
         texDesc.addressMode[1] = cudaAddressModeClamp;
-        texDesc.filterMode = cudaFilterModePoint; // 点サンプリング
-        texDesc.readMode = cudaReadModeElementType; // 生の要素（uchar4）を取りたい
+        texDesc.filterMode = cudaFilterModePoint;
+        texDesc.readMode = cudaReadModeElementType;
         texDesc.normalizedCoords = 0;
 
         cudaTextureObject_t texObj = 0;
@@ -860,7 +990,7 @@ void GLWidget::histgram_Analysys(){
             return;
         }
 
-        //カーネル呼び出し（例: compute_histogram_from_texture）
+        //カーネル呼び出し
         cudaMemset(d_hist_data, 0, sizeof(HistData));
         CUDA_IMG_Proc->calc_histgram(d_hist_data,texObj,width_,height_);
 
@@ -871,9 +1001,8 @@ void GLWidget::histgram_Analysys(){
     //ヒストグラム値解析
     {
         CUDA_IMG_Proc->histogram_status(d_hist_data,d_hist_stats);
-        // cudaEventRecord(e, 0);
-        // cudaStreamWaitEvent(stream, e, 0);
         cudaMemcpyAsync(&h_hist_stats, d_hist_stats,sizeof(HistStats),cudaMemcpyDeviceToHost,hist_stream);
+        cudaStreamSynchronize(hist_stream);   // ★ 直後に h_hist_stats を読むので同期する
     }
 
     //OpenGL VBO転送
@@ -893,52 +1022,7 @@ void GLWidget::histgram_Analysys(){
     err = cudaGraphicsUnmapResources(2, resources, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        cudaGraphicsUnmapResources(2, resources, 0);
         return;
-    }
-
-    //Stream同期
-    //cudaStreamSynchronize(stream);
-
-    //ヒストグラム描画
-    {
-        // // 1) マップ
-        // cudaError_t err = cudaGraphicsMapResources(1, &cudaResource_hist_draw, 0);
-        // if (err != cudaSuccess) {
-        //     qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
-        //     return;
-        // }
-
-        // // 2) サブリソースの cudaArray を取得
-        // cudaArray_t cuArray;
-        // err = cudaGraphicsSubResourceGetMappedArray(&cuArray, cudaResource_hist_draw, 0, 0);
-        // if (err != cudaSuccess) {
-        //     qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
-        //     cudaGraphicsUnmapResources(1, &cudaResource_hist_draw, 0);
-        //     return;
-        // }
-
-        // // 3) SurfaceObject 作成
-        // cudaResourceDesc desc = {};
-        // desc.resType = cudaResourceTypeArray;
-        // desc.res.array.array = cuArray;
-
-        // cudaSurfaceObject_t surfOut;
-        // cudaCreateSurfaceObject(&surfOut, &desc);
-
-        // // 4) CUDA カーネル呼び出し
-        // CUDA_IMG_Proc->draw_histgram(surfOut, width_, height_, d_hist_r, d_hist_g, d_hist_b,d_max_r,d_max_g,d_max_b);
-
-        // // 5) surface object 破棄（重要）
-        // cudaDestroySurfaceObject(surfOut);
-
-        // // 6) アンマップ
-        // err = cudaGraphicsUnmapResources(1, &cudaResource_hist_draw, 0);
-        // if (err != cudaSuccess) {
-        //     qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
-        //     emit decode_please();
-        //     return;
-        // }
     }
 }
 
@@ -974,6 +1058,10 @@ std::vector<int> GLWidget::make_nice_y_labels(int max_value)
     // 4. 必要なら最終ラベルを追加
     if (labels.empty() || labels.back() < max_value)
         labels.push_back(static_cast<int>(ceil(max_value / nice_step) * nice_step));
+
+    // ★ 呼び出し側が labels[0..2] を触るので最低3個に揃える
+    while (labels.size() < 3)
+        labels.push_back(labels.empty() ? max_value : labels.back());
 
     return labels;
 }
