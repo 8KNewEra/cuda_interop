@@ -154,7 +154,7 @@ protected:
     //   面数は「同時に走りうるフレーム数 + 1」あれば足りる。
     //   16K RGBA は 1面あたり約531MBなので、増やしすぎないこと。
     // ==========================================================
-    static const int rgbaRingSize = 4;
+    static const int rgbaRingSize = 3;
     uint8_t* d_decode_rgba_ring[rgbaRingSize] = {};
     size_t   decode_pitch_ring[rgbaRingSize]  = {};
     int      rgbaRingNo = 0;
@@ -163,6 +163,36 @@ protected:
     void free_decode_rgba_ring();
     void select_decode_rgba_slot();    // ★ 書き込み(カーネル起動)より前に呼ぶ
     void advance_decode_rgba_slot();   // ★ emit の後に呼ぶ
+
+    // ==========================================================
+    // ★ YUVプレーンリング（CPUデコード系のゼロコピー用）
+    //
+    //   ゼロコピー化により YUV→RGBA 変換はデコードスレッドではなく
+    //   GUIスレッド（glwidget）で走るようになった。
+    //   つまりプレーンの「消費者」が別スレッドに移ったので、
+    //   GUIスレッドが前フレームを変換している最中に
+    //   デコードスレッドが次フレームを cudaMemcpy2D で上書きしうる。
+    //   → nvgpudecode の hw_frames と同じく多面化して回避する。
+    //
+    //   面数は「同時に走りうるフレーム数 + 1」あれば足りる。
+    //   16K 422P10 は1面あたり約531MBなので増やしすぎないこと。
+    // ==========================================================
+    static const int planeRingSize = 3;
+
+    struct PlaneSlot {
+        uint8_t* p    [3] = {};
+        size_t   pitch[3] = {};
+    };
+
+    PlaneSlot planeRing[planeRingSize];
+    int       planeRingNo   = 0;
+    int       planeCount    = 0;   // 実際に使うプレーン数（packedなら1）
+
+    //  widthBytes[] / heights[] は nplanes 個ぶん指定する
+    bool alloc_yuv_plane_ring(const size_t widthBytes[3], const int heights[3], int nplanes);
+    void free_yuv_plane_ring();
+    void select_yuv_plane_slot();    // ★ cudaMemcpy2D より前に呼ぶ
+    void advance_yuv_plane_slot();   // ★ emit の後に呼ぶ
 };
 
 #endif // DECODE_THREAD_H

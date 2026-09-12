@@ -138,88 +138,94 @@ bool avidecode::initialized_ffmpeg()
     // ------------------------
     // CUDA メモリ確保（CPU decode + GPU upload）
     // ------------------------
-    cudaError_t err;
-    size_t y_size{},uv_size{};
+    // ★ ゼロコピー化
+    //   YUV→RGBA 変換は GUIスレッド(glwidget) が GLテクスチャへ直接書く。
+    //   よって d_decode_rgba / d_encode_rgba は不要。
+    //   代わりに YUVプレーンを「消費者が別スレッドになった」ぶんだけ
+    //   多面化する（上書き事故の防止）。
+    size_t planeWidthBytes[3] = {};
+    int    planeHeights[3]    = {};
+    int    nplanes            = 0;
 
     AVCodecParameters* par = fmt_ctx->streams[video_stream_index]->codecpar;
+
     if(par->format==AV_PIX_FMT_UYVY422){
         VideoInfo.bitdepth = 8;
-        cudaMallocPitch(&d_yuv, &pitch_yuv, VideoInfo.width * 2, VideoInfo.height);
-        y_size  = VideoInfo.width * VideoInfo.height * 2;
-        uv_size = (VideoInfo.width) * (VideoInfo.height) * 2;
+        Frame.plane_format = YUVFMT_UYVY422_8;
+        nplanes = 1;                                  // packed
+        planeWidthBytes[0] = (size_t)VideoInfo.width * 2;
+        planeHeights[0]    = VideoInfo.height;
     }else if(par->format==AV_PIX_FMT_YUV420P){
         VideoInfo.bitdepth = 8;
-        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width, VideoInfo.height);
-        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2), VideoInfo.height / 2);
-        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2), VideoInfo.height / 2);
-        y_size  = VideoInfo.width * VideoInfo.height;
-        uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2);
+        Frame.plane_format = YUVFMT_YUV420P_8;
+        nplanes = 3;
+        planeWidthBytes[0] = (size_t)VideoInfo.width;
+        planeWidthBytes[1] = (size_t)VideoInfo.width / 2;
+        planeWidthBytes[2] = (size_t)VideoInfo.width / 2;
+        planeHeights[0]    = VideoInfo.height;
+        planeHeights[1]    = VideoInfo.height / 2;
+        planeHeights[2]    = VideoInfo.height / 2;
     }
     else if(par->format==AV_PIX_FMT_YUV420P10){
         VideoInfo.bitdepth = 10;
-        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width * 2, VideoInfo.height);
-        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2) * 2, VideoInfo.height / 2);
-        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2) * 2, VideoInfo.height / 2);
-        y_size  = VideoInfo.width * VideoInfo.height * 2;
-        uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2) * 2;
+        Frame.plane_format = YUVFMT_YUV420P_10;
+        nplanes = 3;
+        planeWidthBytes[0] = (size_t)VideoInfo.width * 2;
+        planeWidthBytes[1] = (size_t)(VideoInfo.width / 2) * 2;
+        planeWidthBytes[2] = (size_t)(VideoInfo.width / 2) * 2;
+        planeHeights[0]    = VideoInfo.height;
+        planeHeights[1]    = VideoInfo.height / 2;
+        planeHeights[2]    = VideoInfo.height / 2;
     }else if(par->format==AV_PIX_FMT_YUV422P){
         VideoInfo.bitdepth = 8;
-        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width, VideoInfo.height);
-        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2), VideoInfo.height);
-        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2), VideoInfo.height);
-        y_size  = VideoInfo.width * VideoInfo.height;
-        uv_size = (VideoInfo.width / 2) * VideoInfo.height;
+        Frame.plane_format = YUVFMT_YUV422P_8;
+        nplanes = 3;
+        planeWidthBytes[0] = (size_t)VideoInfo.width;
+        planeWidthBytes[1] = (size_t)VideoInfo.width / 2;
+        planeWidthBytes[2] = (size_t)VideoInfo.width / 2;
+        planeHeights[0]    = VideoInfo.height;
+        planeHeights[1]    = VideoInfo.height;
+        planeHeights[2]    = VideoInfo.height;
     }else if(par->format==AV_PIX_FMT_YUV422P10){
         VideoInfo.bitdepth = 10;
-        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width * 2, VideoInfo.height);
-        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2) * 2, VideoInfo.height);
-        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2) * 2, VideoInfo.height);
-        y_size  = VideoInfo.width * VideoInfo.height * 2;
-        uv_size = (VideoInfo.width / 2) * VideoInfo.height * 2;
+        Frame.plane_format = YUVFMT_YUV422P_10;
+        nplanes = 3;
+        planeWidthBytes[0] = (size_t)VideoInfo.width * 2;
+        planeWidthBytes[1] = (size_t)(VideoInfo.width / 2) * 2;
+        planeWidthBytes[2] = (size_t)(VideoInfo.width / 2) * 2;
+        planeHeights[0]    = VideoInfo.height;
+        planeHeights[1]    = VideoInfo.height;
+        planeHeights[2]    = VideoInfo.height;
     }else if(par->format==AV_PIX_FMT_GBRP10){
         VideoInfo.bitdepth = 10;
-        cudaMallocPitch(&d_r, &pitch_r, VideoInfo.width * 2, VideoInfo.height); // G
-        cudaMallocPitch(&d_g, &pitch_g, VideoInfo.width * 2, VideoInfo.height); // B
-        cudaMallocPitch(&d_b, &pitch_b, VideoInfo.width * 2, VideoInfo.height); // R
-        y_size  = VideoInfo.width * VideoInfo.height * 2;
-        uv_size = VideoInfo.width * VideoInfo.height * 2;
+        Frame.plane_format = YUVFMT_GBRP_10;
+        nplanes = 3;                                  // plane[0]=G, [1]=B, [2]=R
+        for (int p = 0; p < 3; p++) {
+            planeWidthBytes[p] = (size_t)VideoInfo.width * 2;
+            planeHeights[p]    = VideoInfo.height;
+        }
     }else{
         Error_String="非対応フォーマット";
         return false;
     }
 
-    // pinned 登録
-    // cudaHostRegister(vd[0].Frame->data[0], y_size,  cudaHostRegisterDefault);
-    // cudaHostRegister(vd[0].Frame->data[1], uv_size, cudaHostRegisterDefault);
-    // cudaHostRegister(vd[0].Frame->data[2], uv_size, cudaHostRegisterDefault);
+    if (!alloc_yuv_plane_ring(planeWidthBytes, planeHeights, nplanes))
+        return false;   // Error_String は alloc 側で設定済み
 
-    err = cudaMallocPitch(&Frame.d_decode_rgba, &Frame.decode_pitch,
-                          VideoInfo.width * 4,
-                          VideoInfo.height);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch(d_rgba) failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-    err = cudaMallocPitch(&Frame.d_encode_rgba,&Frame.encode_pitch,
-        VideoInfo.width * VideoInfo.width_scale * 4,
-        VideoInfo.height * VideoInfo.height_scale);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
+    Frame.src_mode    = SRC_YUV_PLANE;
+    Frame.plane_is_be = 0;
 
-    // CUDA Stream
-    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+    // CUDA Stream / Event
+    //   変換がGUIスレッドへ移ったため、この経路では実質未使用。
+    //   将来の非同期アップロード用に確保だけしておく。
+    cudaError_t err = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
     if (err != cudaSuccess) {
         Error_String = QString("cudaStream failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
         return false;
     }
 
-    // CUDA Event
-    cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
+    err = cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
     if (err != cudaSuccess) {
         Error_String = QString("cudaEvent failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -592,53 +598,96 @@ void avidecode::get_decode_audio()
     }
 }
 
-//GPUへアップロード
+//GPUへアップロード（★ゼロコピー：RGBA化はGUIスレッドで行う）
 void avidecode::gpu_upload(){
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    AVFrame* f = vd[0].hw_frames[ringNo];
 
+    // ★ 書き込む前にリングのslotを確定させる。
+    //   emit 済みの前フレームは別の面を指しているので上書きされない。
+    select_yuv_plane_slot();
 
-    //CUDAカーネル同期
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
-    if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_UYVY422){
-        cudaMemcpy2D(d_yuv, pitch_yuv,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->uyvy422_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_yuv, pitch_yuv,VideoInfo.width, VideoInfo.height,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV420P){
-        cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2), VideoInfo.height/2,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2),VideoInfo.height/2,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV420P10){
-        int is_be = (vd[0].hw_frames[ringNo]->format == AV_PIX_FMT_YUV420P10BE);
-        cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height/2,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height/2,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV422P){
-        cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2), VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2),VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv422p_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV422P10){
-        int is_be = (vd[0].hw_frames[ringNo]->format == AV_PIX_FMT_YUV422P10BE);
-        cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv422p_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_GBRP10){
-        cudaMemcpy2D(d_g, pitch_g,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_b, pitch_b,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_r, pitch_r,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->rgb_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_r, pitch_r,d_g,pitch_g, d_b,pitch_b,VideoInfo.width, VideoInfo.height,stream);
+    // GPUアップロード
+    //   cudaMemcpy2D(同期版) はホストに対して同期なので、
+    //   戻った時点でデータはデバイス上にある。
+    //   → GUIスレッドが後から起動するカーネルからは必ず見える。
+    //   従来あったダミーカーネル + イベント同期は不要なので削除した。
+    //
+    //   ★ GBRP10 は data[0]=G, data[1]=B, data[2]=R の順で入っている。
+    //      プレーンもその並びのまま格納し、順序の入れ替えは
+    //      呼び出し側(glwidget)で行う。
+    const int W = VideoInfo.width;
+    const int H = VideoInfo.height;
+
+    switch (f->format) {
+    case AV_PIX_FMT_UYVY422:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0],
+                     W * 2, H, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_UYVY422_8;
+        Frame.plane_is_be  = 0;
+        break;
+
+    case AV_PIX_FMT_YUV420P:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W,     H,     cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], W / 2, H / 2, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], W / 2, H / 2, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_YUV420P_8;
+        Frame.plane_is_be  = 0;
+        break;
+
+    case AV_PIX_FMT_YUV420P10:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W * 2,       H,     cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], (W / 2) * 2, H / 2, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], (W / 2) * 2, H / 2, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_YUV420P_10;
+        Frame.plane_is_be  = (f->format == AV_PIX_FMT_YUV420P10BE);
+        break;
+
+    case AV_PIX_FMT_YUV422P:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W,     H, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], W / 2, H, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], W / 2, H, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_YUV422P_8;
+        Frame.plane_is_be  = 0;
+        break;
+
+    case AV_PIX_FMT_YUV422P10:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W * 2,       H, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], (W / 2) * 2, H, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], (W / 2) * 2, H, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_YUV422P_10;
+        Frame.plane_is_be  = (f->format == AV_PIX_FMT_YUV422P10BE);
+        break;
+
+    case AV_PIX_FMT_GBRP10:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W * 2, H, cudaMemcpyHostToDevice);  // G
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], W * 2, H, cudaMemcpyHostToDevice);  // B
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], W * 2, H, cudaMemcpyHostToDevice);  // R
+        Frame.plane_format = YUVFMT_GBRP_10;
+        Frame.plane_is_be  = 0;
+        break;
+
+    default:
+        qWarning() << "[avidecode] unsupported pixel format:" << f->format;
+        return;
     }
 
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    Frame.src_mode = SRC_YUV_PLANE;
 
     //フレーム番号取得
     if(seek_flag){
@@ -666,6 +715,11 @@ void avidecode::gpu_upload(){
     if(ringNo>=ringSize) ringNo = 0;
 
     emit send_decode_image(Frame,false,video_reverse_flag);
+
+    // ★ emit の後に次の面へ。
+    //   GUIスレッドは今 emit した面を読むので、ここで進めておかないと
+    //   次フレームが同じ面を踏む。
+    advance_yuv_plane_slot();
 }
 
 //高精度シーク

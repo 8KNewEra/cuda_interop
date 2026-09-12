@@ -167,74 +167,45 @@ bool cpudecode::initialized_ffmpeg()
 
     // ------------------------
     // CUDA メモリ確保（CPU decode + GPU upload）
+    //
+    // ★ ゼロコピー化
+    //   YUV→RGBA 変換は GUIスレッド(glwidget) が GLテクスチャへ直接書く。
+    //   よって d_decode_rgba / d_encode_rgba は不要。
+    //   代わりに YUVプレーンを「消費者が別スレッドになった」ぶんだけ
+    //   多面化する（上書き事故の防止）。
     // ------------------------
-    int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
+    const int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
 
-    size_t y_size{},uv_size{};
-    y_size  = VideoInfo.width * VideoInfo.height * bytesPerSample;
-    uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2) * bytesPerSample;
+    const size_t planeWidthBytes[3] = {
+        (size_t)VideoInfo.width * bytesPerSample,
+        (size_t)(VideoInfo.width / 2) * bytesPerSample,
+        (size_t)(VideoInfo.width / 2) * bytesPerSample
+    };
+    const int planeHeights[3] = {
+        VideoInfo.height,
+        VideoInfo.height / 2,
+        VideoInfo.height / 2
+    };
 
-    cudaError_t err;
+    if (!alloc_yuv_plane_ring(planeWidthBytes, planeHeights, 3))
+        return false;   // Error_String は alloc 側で設定済み
 
-    err = cudaMallocPitch(&Frame.d_decode_rgba, &Frame.decode_pitch,
-                          VideoInfo.width * 4,
-                          VideoInfo.height);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch(d_rgba) failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-    err = cudaMallocPitch(&Frame.d_encode_rgba,&Frame.encode_pitch,
-                          VideoInfo.width * VideoInfo.width_scale * 4,
-                          VideoInfo.height * VideoInfo.height_scale);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
+    Frame.src_mode     = SRC_YUV_PLANE;
+    Frame.plane_format = (VideoInfo.bitdepth == 10) ? YUVFMT_YUV420P_10
+                                                    : YUVFMT_YUV420P_8;
+    Frame.plane_is_be  = 0;
 
-    err = cudaMallocPitch(&d_y, &pitch_y,
-                          VideoInfo.width * bytesPerSample,
-                          VideoInfo.height);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch(d_y) failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
-    err = cudaMallocPitch(&d_u, &pitch_u,
-                          (VideoInfo.width / 2) * bytesPerSample,
-                          VideoInfo.height / 2);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch(d_u) failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
-    err = cudaMallocPitch(&d_v, &pitch_v,
-                          (VideoInfo.width / 2) * bytesPerSample,
-                          VideoInfo.height / 2);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch(d_v) failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
-    // pinned 登録
-    // cudaHostRegister(vd[0].Frame->data[0], y_size,  cudaHostRegisterDefault);
-    // cudaHostRegister(vd[0].Frame->data[1], uv_size, cudaHostRegisterDefault);
-    // cudaHostRegister(vd[0].Frame->data[2], uv_size, cudaHostRegisterDefault);
-
-    // CUDA Stream
-    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+    // CUDA Stream / Event
+    //   変換がGUIスレッドへ移ったため、この経路では実質未使用。
+    //   将来の非同期アップロード用に確保だけしておく。
+    cudaError_t err = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
     if (err != cudaSuccess) {
         Error_String = QString("cudaStream failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
         return false;
     }
 
-    // CUDA Event
-    cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
+    err = cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
     if (err != cudaSuccess) {
         Error_String = QString("cudaEvent failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
@@ -611,74 +582,43 @@ void cpudecode::get_decode_audio()
     }
 }
 
-//GPUへアップロード
+//GPUへアップロード（★ゼロコピー：RGBA化はGUIスレッドで行う）
 void cpudecode::gpu_upload(){
-    int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
-    //GPUアップロード
-    cudaMemcpy2D(d_y, pitch_y,
-                 vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],
+    const int bytesPerSample = (VideoInfo.bitdepth == 10) ? 2 : 1;
+    AVFrame* f = vd[0].hw_frames[ringNo];
+
+    // ★ 書き込む前にリングのslotを確定させる。
+    //   emit 済みの前フレームは別の面を指しているので上書きされない。
+    select_yuv_plane_slot();
+
+    // GPUアップロード
+    //   cudaMemcpy2D(同期版) はホストに対して同期なので、
+    //   戻った時点でデータはデバイス上にある。
+    //   → GUIスレッドが後から起動するカーネルからは必ず見える。
+    //   従来あったダミーカーネル + イベント同期は不要なので削除した。
+    cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                 f->data[0], f->linesize[0],
                  VideoInfo.width * bytesPerSample,
                  VideoInfo.height,
                  cudaMemcpyHostToDevice);
 
-    cudaMemcpy2D(d_u, pitch_u,
-                 vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],
+    cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                 f->data[1], f->linesize[1],
                  (VideoInfo.width / 2) * bytesPerSample,
                  VideoInfo.height / 2,
                  cudaMemcpyHostToDevice);
 
-    cudaMemcpy2D(d_v, pitch_v,
-                 vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2],
+    cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                 f->data[2], f->linesize[2],
                  (VideoInfo.width / 2) * bytesPerSample,
                  VideoInfo.height / 2,
                  cudaMemcpyHostToDevice);
 
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
-
-    // yuv420p → RGBA
-    if(VideoInfo.bitdepth == 8){
-        CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(
-            Frame.d_decode_rgba,
-            Frame.decode_pitch,
-            d_y,
-            pitch_y,
-            d_u,
-            pitch_u,
-            d_v,
-            pitch_v,
-            VideoInfo.width,
-            VideoInfo.height,
-            stream
-            );
-    }else if(VideoInfo.bitdepth == 10){
-        int is_be = (vd[0].hw_frames[ringNo]->format == AV_PIX_FMT_YUV420P10BE);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(
-            Frame.d_decode_rgba,
-            Frame.decode_pitch,
-            d_y,
-            pitch_y,
-            d_u,
-            pitch_u,
-            d_v,
-            pitch_v,
-            VideoInfo.width,
-            VideoInfo.height,
-            is_be,
-            stream
-            );
-    }
-
-    //CUDAカーネル同期
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
-
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    // 変換に必要な情報をフレームに載せる
+    Frame.src_mode     = SRC_YUV_PLANE;
+    Frame.plane_format = (VideoInfo.bitdepth == 10) ? YUVFMT_YUV420P_10
+                                                    : YUVFMT_YUV420P_8;
+    Frame.plane_is_be  = (f->format == AV_PIX_FMT_YUV420P10BE);
 
     //フレーム番号取得
     if(seek_flag){
@@ -706,6 +646,11 @@ void cpudecode::gpu_upload(){
     if(ringNo>=ringSize) ringNo = 0;
 
     emit send_decode_image(Frame,false,video_reverse_flag);
+
+    // ★ emit の後に次の面へ。
+    //   GUIスレッドは今 emit した面を読むので、ここで進めておかないと
+    //   次フレームが同じ面を踏む。
+    advance_yuv_plane_slot();
 }
 
 //高精度シーク

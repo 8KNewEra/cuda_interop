@@ -192,8 +192,22 @@ private:
 //                   GUI側は surface object でGLテクスチャへ直接 merge する
 // ==============================================================
 enum VideoFrameSrc {
-    SRC_RGBA      = 0,
-    SRC_NV12_TILE = 1
+    SRC_RGBA      = 0,   // 旧経路（linear RGBA を経由する）。現在は未使用
+    SRC_NV12_TILE = 1,   // NVDEC が出した NV12 タイルを直接指す
+    SRC_YUV_PLANE = 2    // CPUデコードをGPUへ上げただけの YUV プレーンを直接指す
+};
+
+// SRC_YUV_PLANE のときの画素フォーマット
+//   AVPixelFormat を直接持たせると glwidget が ffmpeg に依存するので、
+//   必要な種類だけを自前の enum に落としている。
+enum YuvPlaneFormat {
+    YUVFMT_NONE = 0,
+    YUVFMT_YUV420P_8,
+    YUVFMT_YUV420P_10,
+    YUVFMT_YUV422P_8,
+    YUVFMT_YUV422P_10,
+    YUVFMT_UYVY422_8,    // packed。plane[0] のみ使用
+    YUVFMT_GBRP_10       // plane[0]=G, plane[1]=B, plane[2]=R
 };
 
 //デコードフレーム
@@ -218,7 +232,16 @@ struct VideoFrame {
     uint8_t* d_uv    [MAX_TILES] = {};
     size_t   uv_pitch[MAX_TILES] = {};
 
-    // --- エンコード用（GUIスレッド内で完結するので1面のまま）---
+    // --- SRC_YUV_PLANE のとき使用 ---
+    //   CPUデコード結果をGPUへ上げただけのプレーンを直接指す（RGBA化しない）
+    //   有効期間はデコード側のプレーンリングが一周するまで
+    int      plane_format = YUVFMT_NONE;
+    int      plane_is_be  = 0;          // 10bit BE のときのみ 1
+    uint8_t* d_plane    [3] = {};
+    size_t   plane_pitch[3] = {};
+
+    // --- エンコード用 ---
+    //   ★ 出力側もゼロコピー化したため未使用。互換のため残してある。
     uint8_t* d_encode_rgba=nullptr;
     size_t encode_pitch=0;
 

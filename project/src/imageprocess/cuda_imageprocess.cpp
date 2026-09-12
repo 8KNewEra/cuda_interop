@@ -74,6 +74,42 @@ extern "C"{
         uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
         int srcW, int srcH, int outW, int outH, int flip);
 
+    // ★ ゼロコピー版（CPUデコード系の入口：GLテクスチャの surface へ直書き）
+    __global__ void yuv420p_to_rgba_8bit_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* y_plane, size_t y_pitch,
+        const uint8_t* u_plane, size_t u_pitch,
+        const uint8_t* v_plane, size_t v_pitch,
+        int width, int height);
+    __global__ void yuv420p_to_rgba_10bit_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* y_plane, size_t y_pitch,
+        const uint8_t* u_plane, size_t u_pitch,
+        const uint8_t* v_plane, size_t v_pitch,
+        int width, int height, int is_be);
+    __global__ void yuv422p_to_rgba_8bit_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* y_plane, size_t y_pitch,
+        const uint8_t* u_plane, size_t u_pitch,
+        const uint8_t* v_plane, size_t v_pitch,
+        int width, int height);
+    __global__ void yuv422p_to_rgba_10bit_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* y_plane, size_t y_pitch,
+        const uint8_t* u_plane, size_t u_pitch,
+        const uint8_t* v_plane, size_t v_pitch,
+        int width, int height, int is_be);
+    __global__ void uyvy422_to_rgba_8bit_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* yuv, size_t yuv_pitch,
+        int width, int height);
+    __global__ void rgb_to_rgba_10bit_surf_kernel(
+        cudaSurfaceObject_t out,
+        const uint8_t* r_plane, size_t r_pitch,
+        const uint8_t* g_plane, size_t g_pitch,
+        const uint8_t* b_plane, size_t b_pitch,
+        int width, int height);
+
     //YUV420P→RGBA
     __global__ void yuv420p_to_rgba_8bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height);
     __global__ void yuv420p_to_rgba_10bit_kernel(uint8_t* rgba, size_t rgba_pitch,const uint8_t* y_plane, size_t y_pitch,const uint8_t* u_plane, size_t u_pitch,const uint8_t* v_plane, size_t v_pitch,int width, int height,int is_be);
@@ -338,6 +374,126 @@ bool CUDA_ImageProcess::nv12x8_to_rgba_merge_surf(cudaSurfaceObject_t out,
                                        grid, block, args, 0, stream);
 
     return launch_check(err, "nv12x8_to_rgba_merge_surf_kernel");
+}
+
+// ==============================================================
+// ★ ゼロコピー版（CPUデコード系の入口）：GLテクスチャの surface へ直書き
+// ==============================================================
+
+//YUV420P 8bit → RGBA(surface)
+bool CUDA_ImageProcess::yuv420p_to_RGBA_8bit_surf(cudaSurfaceObject_t out,
+                                                  uint8_t* d_y, size_t pitch_y,
+                                                  uint8_t* d_u, size_t pitch_u,
+                                                  uint8_t* d_v, size_t pitch_v,
+                                                  int width, int height, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &d_y, &pitch_y, &d_u, &pitch_u, &d_v, &pitch_v,
+                    &width, &height };
+
+    dim3 block(16,16);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)yuv420p_to_rgba_8bit_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "yuv420p_to_rgba_8bit_surf_kernel");
+}
+
+//YUV420P 10bit → RGBA(surface)
+bool CUDA_ImageProcess::yuv420p_to_RGBA_10bit_surf(cudaSurfaceObject_t out,
+                                                   uint8_t* d_y, size_t pitch_y,
+                                                   uint8_t* d_u, size_t pitch_u,
+                                                   uint8_t* d_v, size_t pitch_v,
+                                                   int width, int height, int is_be, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &d_y, &pitch_y, &d_u, &pitch_u, &d_v, &pitch_v,
+                    &width, &height, &is_be };
+
+    dim3 block(16,16);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)yuv420p_to_rgba_10bit_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "yuv420p_to_rgba_10bit_surf_kernel");
+}
+
+//YUV422P 8bit → RGBA(surface)
+bool CUDA_ImageProcess::yuv422p_to_RGBA_8bit_surf(cudaSurfaceObject_t out,
+                                                  uint8_t* d_y, size_t pitch_y,
+                                                  uint8_t* d_u, size_t pitch_u,
+                                                  uint8_t* d_v, size_t pitch_v,
+                                                  int width, int height, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &d_y, &pitch_y, &d_u, &pitch_u, &d_v, &pitch_v,
+                    &width, &height };
+
+    dim3 block(16,16);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)yuv422p_to_rgba_8bit_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "yuv422p_to_rgba_8bit_surf_kernel");
+}
+
+//YUV422P 10bit → RGBA(surface)
+bool CUDA_ImageProcess::yuv422p_to_RGBA_10bit_surf(cudaSurfaceObject_t out,
+                                                   uint8_t* d_y, size_t pitch_y,
+                                                   uint8_t* d_u, size_t pitch_u,
+                                                   uint8_t* d_v, size_t pitch_v,
+                                                   int width, int height, int is_be, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &d_y, &pitch_y, &d_u, &pitch_u, &d_v, &pitch_v,
+                    &width, &height, &is_be };
+
+    dim3 block(16,16);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)yuv422p_to_rgba_10bit_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "yuv422p_to_rgba_10bit_surf_kernel");
+}
+
+//UYVY422 8bit(packed) → RGBA(surface)
+bool CUDA_ImageProcess::uyvy422_to_RGBA_8bit_surf(cudaSurfaceObject_t out,
+                                                  uint8_t* d_yuv, size_t pitch_yuv,
+                                                  int width, int height, cudaStream_t stream)
+{
+    void* args[] = {&out, &d_yuv, &pitch_yuv, &width, &height };
+
+    dim3 block(16,16);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)uyvy422_to_rgba_8bit_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "uyvy422_to_rgba_8bit_surf_kernel");
+}
+
+//GBRP10 → RGBA(surface)
+bool CUDA_ImageProcess::rgb_to_RGBA_10bit_surf(cudaSurfaceObject_t out,
+                                               uint8_t* d_r, size_t pitch_r,
+                                               uint8_t* d_g, size_t pitch_g,
+                                               uint8_t* d_b, size_t pitch_b,
+                                               int width, int height, cudaStream_t stream)
+{
+    void* args[] = {&out,
+                    &d_r, &pitch_r, &d_g, &pitch_g, &d_b, &pitch_b,
+                    &width, &height };
+
+    dim3 block(16,16);
+    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
+
+    cudaError_t err = cudaLaunchKernel((const void*)rgb_to_rgba_10bit_surf_kernel,
+                                       grid, block, args, 0, stream);
+
+    return launch_check(err, "rgb_to_rgba_10bit_surf_kernel");
 }
 
 // ==============================================================

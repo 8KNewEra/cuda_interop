@@ -85,6 +85,40 @@ public:
                                   uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
                                   int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream);
 
+    // ==========================================================
+    // ★ ゼロコピー版（CPUデコード系の入口）
+    //   YUVプレーンから OpenGLテクスチャの surface へ直接書く。
+    //   d_decode_rgba と cudaMemcpy2DToArray が不要になる。
+    // ==========================================================
+    bool yuv420p_to_RGBA_8bit_surf(cudaSurfaceObject_t out,
+                                   uint8_t* d_y, size_t pitch_y,
+                                   uint8_t* d_u, size_t pitch_u,
+                                   uint8_t* d_v, size_t pitch_v,
+                                   int width, int height, cudaStream_t stream);
+    bool yuv420p_to_RGBA_10bit_surf(cudaSurfaceObject_t out,
+                                    uint8_t* d_y, size_t pitch_y,
+                                    uint8_t* d_u, size_t pitch_u,
+                                    uint8_t* d_v, size_t pitch_v,
+                                    int width, int height, int is_be, cudaStream_t stream);
+    bool yuv422p_to_RGBA_8bit_surf(cudaSurfaceObject_t out,
+                                   uint8_t* d_y, size_t pitch_y,
+                                   uint8_t* d_u, size_t pitch_u,
+                                   uint8_t* d_v, size_t pitch_v,
+                                   int width, int height, cudaStream_t stream);
+    bool yuv422p_to_RGBA_10bit_surf(cudaSurfaceObject_t out,
+                                    uint8_t* d_y, size_t pitch_y,
+                                    uint8_t* d_u, size_t pitch_u,
+                                    uint8_t* d_v, size_t pitch_v,
+                                    int width, int height, int is_be, cudaStream_t stream);
+    bool uyvy422_to_RGBA_8bit_surf(cudaSurfaceObject_t out,
+                                   uint8_t* d_yuv, size_t pitch_yuv,
+                                   int width, int height, cudaStream_t stream);
+    bool rgb_to_RGBA_10bit_surf(cudaSurfaceObject_t out,
+                                uint8_t* d_r, size_t pitch_r,
+                                uint8_t* d_g, size_t pitch_g,
+                                uint8_t* d_b, size_t pitch_b,
+                                int width, int height, cudaStream_t stream);
+
     //YUV420p→RGBA
     bool yuv420p_to_RGBA_8bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,cudaStream_t stream);
     bool yuv420p_to_RGBA_10bit(uint8_t* d_rgba, size_t pitch_rgba,uint8_t* d_y, size_t pitch_y,uint8_t* d_u, size_t pitch_u,uint8_t* d_v, size_t pitch_v,int width, int height,int is_be,cudaStream_t stream);

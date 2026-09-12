@@ -126,6 +126,9 @@ decode_thread::~decode_thread() {
     //   （Frame.d_decode_rgba はリング内の1面を指しているだけなので個別解放しない）
     free_decode_rgba_ring();
 
+    // ★ CPUデコード系のYUVプレーンもリングでまとめて解放する
+    free_yuv_plane_ring();
+
     if(Frame.d_encode_rgba){
         safe_cuda_free((void*&)Frame.d_encode_rgba, "d_encode_rgba");
     }
@@ -236,6 +239,98 @@ void decode_thread::advance_decode_rgba_slot()
 {
     rgbaRingNo++;
     if (rgbaRingNo >= rgbaRingSize) rgbaRingNo = 0;
+}
+
+// ==============================================================
+// ★ YUVプレーンリング（CPUデコード系のゼロコピー用）
+// ==============================================================
+
+//リング確保
+bool decode_thread::alloc_yuv_plane_ring(const size_t widthBytes[3],
+                                         const int heights[3],
+                                         int nplanes)
+{
+    free_yuv_plane_ring();
+
+    if (nplanes < 1 || nplanes > 3) {
+        Error_String = QString("alloc_yuv_plane_ring: invalid nplanes: %1").arg(nplanes);
+        return false;
+    }
+
+    planeCount = nplanes;
+
+    double total_mb = 0.0;
+
+    for (int i = 0; i < planeRingSize; i++) {
+        for (int p = 0; p < nplanes; p++) {
+            cudaError_t err = cudaMallocPitch(
+                &planeRing[i].p[p],
+                &planeRing[i].pitch[p],
+                widthBytes[p],
+                (size_t)heights[p]
+                );
+
+            if (err != cudaSuccess) {
+                Error_String = QString("cudaMallocPitch(planeRing[%1].p[%2]) failed: %3")
+                                   .arg(i).arg(p)
+                                   .arg(QString::fromUtf8(cudaGetErrorString(err)));
+                free_yuv_plane_ring();
+                return false;
+            }
+
+            if (i == 0)
+                total_mb += (double)planeRing[0].pitch[p] * heights[p] / (1024.0*1024.0);
+        }
+    }
+
+    planeRingNo = 0;
+    select_yuv_plane_slot();
+
+    qDebug() << "[decode_thread] yuv plane ring:" << planeRingSize << "faces,"
+             << nplanes << "planes,"
+             << total_mb << "MB/face";
+
+    return true;
+}
+
+//リング解放
+void decode_thread::free_yuv_plane_ring()
+{
+    for (int i = 0; i < planeRingSize; i++) {
+        for (int p = 0; p < 3; p++) {
+            if (planeRing[i].p[p]) {
+                cudaError_t err = cudaFree(planeRing[i].p[p]);
+                if (err != cudaSuccess)
+                    qWarning() << "planeRing cudaFree failed:" << cudaGetErrorString(err);
+                planeRing[i].p[p] = nullptr;
+            }
+            planeRing[i].pitch[p] = 0;
+        }
+    }
+
+    for (int p = 0; p < 3; p++) {
+        Frame.d_plane[p]     = nullptr;
+        Frame.plane_pitch[p] = 0;
+    }
+
+    planeRingNo = 0;
+    planeCount  = 0;
+}
+
+//現在のslotを Frame に割り当て（★cudaMemcpy2D より前に呼ぶ）
+void decode_thread::select_yuv_plane_slot()
+{
+    for (int p = 0; p < 3; p++) {
+        Frame.d_plane[p]     = planeRing[planeRingNo].p[p];
+        Frame.plane_pitch[p] = planeRing[planeRingNo].pitch[p];
+    }
+}
+
+//次のslotへ（★emit の後に呼ぶ）
+void decode_thread::advance_yuv_plane_slot()
+{
+    planeRingNo++;
+    if (planeRingNo >= planeRingSize) planeRingNo = 0;
 }
 
 QString decode_thread::ffmpegErrStr(int errnum) {

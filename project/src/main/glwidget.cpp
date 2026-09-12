@@ -642,6 +642,64 @@ bool GLWidget::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
     }
 }
 
+// ==============================================================
+// ★ ゼロコピー（CPUデコード系の入口）
+//   cpudecode / avidecode が上げた YUVプレーンから
+//   GLテクスチャ(surface)へ直接 RGBA を書く。
+//   d_decode_rgba と cudaMemcpy2DToArray が消える。
+// ==============================================================
+bool GLWidget::yuvToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
+{
+    const int W = width_;
+    const int H = height_;
+
+    // 引数の const を外すだけのローカル（launcher が uint8_t* を取るため）
+    uint8_t* p [3];
+    size_t   pp[3];
+    for (int i = 0; i < 3; i++) {
+        p [i] = Frame.d_plane[i];
+        pp[i] = Frame.plane_pitch[i];
+    }
+
+    switch (Frame.plane_format) {
+    case YUVFMT_YUV420P_8:
+        return CUDA_IMG_Proc->yuv420p_to_RGBA_8bit_surf(
+            surf, p[0], pp[0], p[1], pp[1], p[2], pp[2], W, H, interop_stream);
+
+    case YUVFMT_YUV420P_10:
+        return CUDA_IMG_Proc->yuv420p_to_RGBA_10bit_surf(
+            surf, p[0], pp[0], p[1], pp[1], p[2], pp[2], W, H,
+            Frame.plane_is_be, interop_stream);
+
+    case YUVFMT_YUV422P_8:
+        return CUDA_IMG_Proc->yuv422p_to_RGBA_8bit_surf(
+            surf, p[0], pp[0], p[1], pp[1], p[2], pp[2], W, H, interop_stream);
+
+    case YUVFMT_YUV422P_10:
+        return CUDA_IMG_Proc->yuv422p_to_RGBA_10bit_surf(
+            surf, p[0], pp[0], p[1], pp[1], p[2], pp[2], W, H,
+            Frame.plane_is_be, interop_stream);
+
+    case YUVFMT_UYVY422_8:
+        return CUDA_IMG_Proc->uyvy422_to_RGBA_8bit_surf(
+            surf, p[0], pp[0], W, H, interop_stream);
+
+    case YUVFMT_GBRP_10:
+        // ★ AVFrame の並びは data[0]=G, data[1]=B, data[2]=R
+        //   カーネルは r, g, b の順で受け取るので入れ替える
+        return CUDA_IMG_Proc->rgb_to_RGBA_10bit_surf(
+            surf,
+            p[2], pp[2],   // R
+            p[0], pp[0],   // G
+            p[1], pp[1],   // B
+            W, H, interop_stream);
+
+    default:
+        qWarning() << "[GLWidget] unsupported plane format:" << Frame.plane_format;
+        return false;
+    }
+}
+
 //OpenGL→CUDAの初期化、登録など
 void GLWidget::initTextureCuda(int width,int height) {
         //既存リソースの破棄
@@ -732,6 +790,13 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
             qDebug() << "入力データがNULLです(NV12 tile)";
             return;
         }
+    } else if (Frame.src_mode == SRC_YUV_PLANE) {
+        // ★ CPUデコードのゼロコピー経路。
+        //   d_decode_rgba は使わないので、プレーン側を見る。
+        if (Frame.plane_format == YUVFMT_NONE || !Frame.d_plane[0]) {
+            qDebug() << "入力データがNULLです(YUV plane) fmt=" << Frame.plane_format;
+            return;
+        }
     } else {
         if (!Frame.d_decode_rgba) {
             qDebug() << "入力データがNULLです(RGBA)";
@@ -742,6 +807,12 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
     //CUDA→OpenGL転送の準備
     cudaArray_t array;
     cudaError_t err = cudaSuccess;
+    // 入口側の map/unmap は従来どおり NULL stream に出す。
+    //   変換カーネルが走る interop_stream は blocking stream なので、
+    //   NULL stream 経由で暗黙に順序が付く（出口側は st が non-blocking
+    //   だったためこれが効かず、明示同期が必要だった）。
+    //   ※ここを interop_stream に変えるのは意味的には等価なはずだが、
+    //     実機で表示が出なくなったため元に戻してある。
     err = cudaGraphicsMapResources(1, &cudaResource1, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
@@ -755,11 +826,12 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
         return;
     }
 
-    if (Frame.src_mode == SRC_NV12_TILE) {
+    if (Frame.src_mode == SRC_NV12_TILE || Frame.src_mode == SRC_YUV_PLANE) {
         // ==================================================================
         // ★ ゼロコピー経路
-        //   NVDEC の NV12 タイルから、GLテクスチャへ直接 merge する。
-        //   d_decode_rgba も cudaMemcpy2DToArray も経由しない。
+        //   SRC_NV12_TILE : NVDEC の NV12 タイルから直接 merge
+        //   SRC_YUV_PLANE : CPUデコードのYUVプレーンから直接変換
+        //   どちらも d_decode_rgba も cudaMemcpy2DToArray も経由しない。
         // ==================================================================
         cudaResourceDesc resDesc = {};
         resDesc.resType = cudaResourceTypeArray;
@@ -773,10 +845,26 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
             return;
         }
 
-        mergeToSurface(Frame, surf);
+        const bool ok = (Frame.src_mode == SRC_NV12_TILE)
+                            ? mergeToSurface(Frame, surf)
+                            : yuvToSurface(Frame, surf);
 
         cudaEventRecord(interop_event, interop_stream);
         cudaEventSynchronize(interop_event);
+
+        // ★ 一時デバッグ：最初の3フレームだけ経路と結果を出す
+        //   表示が出ない原因の切り分けが済んだら削除してよい
+        static int dbg = 0;
+        if (dbg < 3) {
+            dbg++;
+            cudaError_t last = cudaGetLastError();
+            qDebug() << "[upload] src_mode=" << Frame.src_mode
+                     << " tile_count=" << Frame.tile_count
+                     << " plane_fmt=" << Frame.plane_format
+                     << " size=" << width_ << "x" << height_
+                     << " launch_ok=" << ok
+                     << " cudaErr=" << cudaGetErrorString(last);
+        }
 
         cudaDestroySurfaceObject(surf);
 

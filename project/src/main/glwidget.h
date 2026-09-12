@@ -59,6 +59,7 @@ private:
     // ★ NV12タイル → OpenGLテクスチャ へ surface object 経由で直接 merge
     //   （d_decode_rgba と cudaMemcpy2DToArray を経由しないゼロコピー経路）
     bool mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf);
+    bool yuvToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf);
     std::vector<int> make_nice_y_labels(int max_value);
     void queryCudaGPUs();
     void getCudaDeviceIDFromOpenGL();
