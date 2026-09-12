@@ -187,8 +187,8 @@ bool cpudecode::initialized_ffmpeg()
         VideoInfo.height / 2
     };
 
-    if (!alloc_yuv_plane_ring(planeWidthBytes, planeHeights, 3))
-        return false;   // Error_String は alloc 側で設定済み
+    if (!planeRing.alloc(planeWidthBytes, planeHeights, 3, Error_String))
+        return false;
 
     Frame.src_mode     = SRC_YUV_PLANE;
     Frame.plane_format = (VideoInfo.bitdepth == 10) ? YUVFMT_YUV420P_10
@@ -589,7 +589,7 @@ void cpudecode::gpu_upload(){
 
     // ★ 書き込む前にリングのslotを確定させる。
     //   emit 済みの前フレームは別の面を指しているので上書きされない。
-    select_yuv_plane_slot();
+    planeRing.select(Frame);
 
     // GPUアップロード
     //   cudaMemcpy2D(同期版) はホストに対して同期なので、
@@ -650,7 +650,7 @@ void cpudecode::gpu_upload(){
     // ★ emit の後に次の面へ。
     //   GUIスレッドは今 emit した面を読むので、ここで進めておかないと
     //   次フレームが同じ面を踏む。
-    advance_yuv_plane_slot();
+    planeRing.advance();
 }
 
 //高精度シーク

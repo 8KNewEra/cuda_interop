@@ -142,7 +142,7 @@ private:
     int encodeRingSize = 8;
 
     // FBO は GL のテクスチャ座標の都合で上下反転しているため 1。
-    // GL をバイパスして d_decode_rgba を直接渡す経路を作る場合は 0 にする。
+    // GLをバイパスして linear な RGBA を直接渡す経路を作る場合は 0 にする。
     int srcFlip = 1;
 
     void encoder_loop(int idx);                 // エンコーダ毎ワーカー本体

@@ -195,16 +195,10 @@ bool nvgpudecode::initialized_ffmpeg()
     // ------------------------
     // CUDA メモリ確保
     // ------------------------
-    // ★ ゼロコピー化により d_decode_rgba（および そのリング）は不要になった。
-    //   NV12→RGBA結合はGUIスレッドがOpenGLテクスチャへ直接書き込む。
-    //   16K RGBA 1面 = 約531MB × 4面 = 約2.1GB の削減。
-    //   （CPUデコード系 cpudecode/avidecode は従来どおり d_decode_rgba を使う）
-
-    // ★ 出口側もゼロコピー化したので d_encode_rgba も不要になった。
-    //   NV12変換カーネルが FBO(cudaArray) を texture object 経由で直読みする。
-    //   16K RGBA 1面 = 約531MB の削減。
-    Frame.d_encode_rgba = nullptr;
-    Frame.encode_pitch  = 0;
+    // ★ ゼロコピー化により、中間の RGBA バッファは入口・出口とも不要。
+    //   入口: NV12→RGBA結合はGUIスレッドがOpenGLテクスチャへ直接書き込む
+    //   出口: NV12変換カーネルが FBO を texture object 経由で直読みする
+    //   16K RGBA 1面 = 約531MB。入口4面 + 出口1面 = 約2.6GB の削減。
 
     // CUDA Stream
     cudaError_t err = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);

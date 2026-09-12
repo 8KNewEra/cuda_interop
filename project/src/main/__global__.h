@@ -186,15 +186,18 @@ private:
 
 // ==============================================================
 // デコード結果の受け渡し形式
-//   SRC_RGBA      : d_decode_rgba に RGBA が入っている（CPUデコード系）
-//                   GUI側は cudaMemcpy2DToArray でGLテクスチャへ転送する
-//   SRC_NV12_TILE : NV12タイルのポインタが入っている（NVDEC系・ゼロコピー）
-//                   GUI側は surface object でGLテクスチャへ直接 merge する
+//   どちらもデコード結果を直接指すゼロコピー。
+//   中間の linear RGBA バッファ(d_decode_rgba) は廃止した。
+//
+//   SRC_NV12_TILE : NVDEC が出した NV12 タイル（nvgpudecode）
+//   SRC_YUV_PLANE : CPUデコードをGPUへ上げた YUV プレーン（cpudecode/avidecode）
+//
+//   いずれも GUIスレッドが surface object でGLテクスチャへ直接書く。
 // ==============================================================
 enum VideoFrameSrc {
-    SRC_RGBA      = 0,   // 旧経路（linear RGBA を経由する）。現在は未使用
-    SRC_NV12_TILE = 1,   // NVDEC が出した NV12 タイルを直接指す
-    SRC_YUV_PLANE = 2    // CPUデコードをGPUへ上げただけの YUV プレーンを直接指す
+    SRC_NONE      = 0,   // 未設定（デコーダが埋め忘れている）
+    SRC_NV12_TILE = 1,
+    SRC_YUV_PLANE = 2
 };
 
 // SRC_YUV_PLANE のときの画素フォーマット
@@ -215,11 +218,7 @@ struct VideoFrame {
     static const int MAX_TILES = 8;
 
     //映像の受け渡し形式
-    int src_mode = SRC_RGBA;
-
-    // --- SRC_RGBA のとき使用 ---
-    uint8_t* d_decode_rgba=nullptr;
-    size_t decode_pitch=0;
+    int src_mode = SRC_NONE;
 
     // --- SRC_NV12_TILE のとき使用 ---
     //   NVDEC が出力した NV12 タイルを直接指す（コピーしない）
@@ -239,11 +238,6 @@ struct VideoFrame {
     int      plane_is_be  = 0;          // 10bit BE のときのみ 1
     uint8_t* d_plane    [3] = {};
     size_t   plane_pitch[3] = {};
-
-    // --- エンコード用 ---
-    //   ★ 出力側もゼロコピー化したため未使用。互換のため残してある。
-    uint8_t* d_encode_rgba=nullptr;
-    size_t encode_pitch=0;
 
     int FrameNo=0;
 

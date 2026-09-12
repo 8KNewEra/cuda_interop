@@ -791,17 +791,13 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
             return;
         }
     } else if (Frame.src_mode == SRC_YUV_PLANE) {
-        // ★ CPUデコードのゼロコピー経路。
-        //   d_decode_rgba は使わないので、プレーン側を見る。
         if (Frame.plane_format == YUVFMT_NONE || !Frame.d_plane[0]) {
             qDebug() << "入力データがNULLです(YUV plane) fmt=" << Frame.plane_format;
             return;
         }
     } else {
-        if (!Frame.d_decode_rgba) {
-            qDebug() << "入力データがNULLです(RGBA)";
-            return;
-        }
+        qWarning() << "[GLWidget] src_mode が未設定です:" << Frame.src_mode;
+        return;
     }
 
     //CUDA→OpenGL転送の準備
@@ -826,13 +822,13 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
         return;
     }
 
-    if (Frame.src_mode == SRC_NV12_TILE || Frame.src_mode == SRC_YUV_PLANE) {
-        // ==================================================================
-        // ★ ゼロコピー経路
-        //   SRC_NV12_TILE : NVDEC の NV12 タイルから直接 merge
-        //   SRC_YUV_PLANE : CPUデコードのYUVプレーンから直接変換
-        //   どちらも d_decode_rgba も cudaMemcpy2DToArray も経由しない。
-        // ==================================================================
+    // ==================================================================
+    // ★ ゼロコピー：デコード結果からGLテクスチャへ直接書く
+    //   SRC_NV12_TILE : NVDEC の NV12 タイルを merge
+    //   SRC_YUV_PLANE : CPUデコードのYUVプレーンを変換
+    //   どちらも中間の linear RGBA も cudaMemcpy2DToArray も経由しない。
+    // ==================================================================
+    {
         cudaResourceDesc resDesc = {};
         resDesc.resType = cudaResourceTypeArray;
         resDesc.res.array.array = array;
@@ -845,43 +841,16 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
             return;
         }
 
-        const bool ok = (Frame.src_mode == SRC_NV12_TILE)
-                            ? mergeToSurface(Frame, surf)
-                            : yuvToSurface(Frame, surf);
+        if (Frame.src_mode == SRC_NV12_TILE)
+            mergeToSurface(Frame, surf);
+        else
+            yuvToSurface(Frame, surf);
 
+        // surface object を破棄する前にカーネル完了を待つ必要がある
         cudaEventRecord(interop_event, interop_stream);
         cudaEventSynchronize(interop_event);
 
-        // ★ 一時デバッグ：最初の3フレームだけ経路と結果を出す
-        //   表示が出ない原因の切り分けが済んだら削除してよい
-        static int dbg = 0;
-        if (dbg < 3) {
-            dbg++;
-            cudaError_t last = cudaGetLastError();
-            qDebug() << "[upload] src_mode=" << Frame.src_mode
-                     << " tile_count=" << Frame.tile_count
-                     << " plane_fmt=" << Frame.plane_format
-                     << " size=" << width_ << "x" << height_
-                     << " launch_ok=" << ok
-                     << " cudaErr=" << cudaGetErrorString(last);
-        }
-
         cudaDestroySurfaceObject(surf);
-
-    } else {
-        // ==================================================================
-        // 従来経路（CPUデコード系: cpudecode / avidecode）
-        // ==================================================================
-        size_t widthBytes = width_ * 4;
-        if (widthBytes <= Frame.decode_pitch) {
-            cudaMemcpy2DToArrayAsync(array,0, 0,Frame.d_decode_rgba,Frame.decode_pitch,widthBytes,height_,cudaMemcpyDeviceToDevice,interop_stream);
-            cudaEventRecord(interop_event, interop_stream);
-            cudaEventSynchronize(interop_event);
-        } else {
-            qDebug() << "Invalid pitch: widthBytes > pitch!";
-            cudaGraphicsUnmapResources(1, &cudaResource1, 0);
-            return;
-        }
     }
 
     err = cudaGraphicsUnmapResources(1, &cudaResource1, 0);

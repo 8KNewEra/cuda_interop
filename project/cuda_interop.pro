@@ -51,6 +51,7 @@ HEADERS += \
     $$PWD/src/videoprocess/cpudecode.h \
     $$PWD/src/videoprocess/decode_thread.h \
     $$PWD/src/videoprocess/nvgpudecode.h \
+    $$PWD/src/videoprocess/yuv_plane_ring.h \
     $$PWD/src/videoprocess/save_encode.h \
     $$PWD/src/ui_control/audio_volume.h \
     $$PWD/src/ui_control/encode_setting.h \
