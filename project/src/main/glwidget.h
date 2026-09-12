@@ -60,6 +60,33 @@ private:
     //   （d_decode_rgba と cudaMemcpy2DToArray を経由しないゼロコピー経路）
     bool mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf);
     bool yuvToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf);
+
+    // ==========================================================
+    // ★ surface / texture object のキャッシュ
+    //
+    //   毎フレーム Create/Destroy していたが、これには2つ問題がある。
+    //     ・API呼び出しのコストを毎フレーム払う
+    //     ・「破棄する前にカーネル完了を待つ」必要があるため、
+    //       GUIスレッドでの CPU同期を外せない
+    //
+    //   cudaArray のハンドルは map/unmap を跨いで実際には安定しているが
+    //   仕様上の保証はない。そこで前回の値と比較し、
+    //   変わったときだけ作り直す。これなら変わっても安全。
+    // ==========================================================
+    bool ensureInputSurface(cudaArray_t array);   // cudaResource1（入力テクスチャ）
+    bool ensureFboTexture  (cudaArray_t array);   // cudaResource2（FBO）
+    bool ensureHistTexture (cudaArray_t array);   // cudaResource_hist（FBO・ヒストグラム読み出し）
+    void invalidateInputSurface();
+    void invalidateFboTexture();
+    void invalidateHistTexture();
+
+    cudaSurfaceObject_t inputSurf        = 0;
+    cudaArray_t         inputSurfArray   = nullptr;
+    cudaTextureObject_t fboTex           = 0;
+    cudaArray_t         fboTexArray      = nullptr;
+    cudaTextureObject_t histTex          = 0;
+    cudaArray_t         histTexArray     = nullptr;
+
     std::vector<int> make_nice_y_labels(int max_value);
     void queryCudaGPUs();
     void getCudaDeviceIDFromOpenGL();
@@ -72,6 +99,10 @@ private:
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
     cudaStream_t interop_stream = nullptr;
     cudaEvent_t interop_event = nullptr;
+
+    // ★ FBOのGL描画完了を save_encode の st へ橋渡しするイベント。
+    //   interop_event と共用すると同一フレーム内で用途が衝突するので分ける。
+    cudaEvent_t encode_gl_event = nullptr;
 
     //OpenGL周り
     bool initialize_completed_flag=false;

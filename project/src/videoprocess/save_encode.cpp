@@ -534,7 +534,8 @@ void save_encode::init_audio_encoder()
 }
 
 //エンコード
-void save_encode::encode(VideoFrame Frame, cudaTextureObject_t srcTex)
+void save_encode::encode(VideoFrame Frame, cudaTextureObject_t srcTex,
+                         cudaEvent_t glWaitEvent, cudaEvent_t* convertDone)
 {
     if (!Frame.audio_pcm.isEmpty()&&VideoInfo.audio)
     {
@@ -557,12 +558,15 @@ void save_encode::encode(VideoFrame Frame, cudaTextureObject_t srcTex)
         audioCV.notify_one();
     }
 
-    encode_video(Frame, srcTex);
+    encode_video(Frame, srcTex, glWaitEvent, convertDone);
 }
 
-//映像エンコード（メインスレッド側 = 変換と発行のみ）
-void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex)
+//映像エンコード（メインスレッド側 = 変換と発行のみ。CPUはブロックしない）
+void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex,
+                               cudaEvent_t glWaitEvent, cudaEvent_t* convertDone)
 {
+    if (convertDone) *convertDone = nullptr;
+
     if (srcTex == 0) {
         qWarning() << "[save_encode] encode_video: srcTex is null";
         return;
@@ -593,6 +597,16 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex)
             ve[i]->hw_frames[slot].d_uv     = out->data[1];
             ve[i]->hw_frames[slot].uv_pitch = out->linesize[1];
         }
+    }
+
+    // ==========================================================
+    // 1.5) ★ GLの描画完了を待つ（GPU側で待つ。CPUは止めない）
+    //    呼び出し側が map 直後に interop_stream へ記録したイベント。
+    //    これを踏まないと、シェーダがFBOにラスタライズしている最中に
+    //    変換カーネルが読み始めてティアリングする。
+    // ==========================================================
+    if (glWaitEvent) {
+        cudaStreamWaitEvent(st, glWaitEvent, 0);
     }
 
     // ==========================================================
@@ -657,26 +671,38 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex)
     }
 
     // ==========================================================
-    // 3) 変換完了待ち
-    //    ★ ゼロコピー化後は「呼び出し元が encode() から戻った時点で
-    //      srcTex を破棄し、FBO を cudaGraphicsUnmapResources してよい」
-    //      という契約を守るため。ここを抜ける前に読み出しは完了している。
-    //      転送とエンコードは以降すべて非同期。
-    //      → convert(N+1) が copy(N) / encode(N) と重なる。
+    // 3) ★ 変換完了を「イベントで記録するだけ」。CPUは待たない。
+    //
+    //    以前はここで cudaEventSynchronize していたが、その理由は
+    //      ・texture object を破棄する前に完了させる
+    //      ・別ストリーム(ve[i]->st)のコピーに変換結果を見せる
+    //    の2つだった。前者は呼び出し側のキャッシュ化で不要になり、
+    //    後者は下の cudaStreamWaitEvent で GPU 側に移した。
+    //
+    //    これで convert(N+1) が copy(N) / encode(N) と本当に重なる。
     // ==========================================================
     cudaEventRecord(ev, st);
-    cudaEventSynchronize(ev);
+
+    // 呼び出し側は、このイベントを interop_stream に待たせてから
+    // FBO を unmap すること（変換中にGLが上書きするのを防ぐ）
+    if (convertDone) *convertDone = ev;
 
     // ==========================================================
     // 4) 各GPUへ転送を「発行するだけ」（待たない）
+    //    ★ どの経路も、まず変換完了(ev)を GPU 側で待つ。
+    //      cudaStreamWaitEvent はデバイス跨ぎで有効。
     // ==========================================================
     for (int i = 0; i < (int)ve.size(); i++)
     {
         FrameSlot& fs = ve[i]->hw_frames[slot];
 
+        // 変換が終わるまでこのストリームを進ませない
+        cudaStreamWaitEvent(ve[i]->st, ev, 0);
+
         if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
         {
-            // 変換結果が直接 hw_frame に入っている（3で同期済み）
+            // 変換結果が直接 hw_frame に入っているのでコピー不要。
+            // 直前の wait があるので、この ready は変換完了後に発火する。
             cudaEventRecord(fs.ready, ve[i]->st);
             continue;
         }

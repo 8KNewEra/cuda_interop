@@ -87,19 +87,33 @@ public:
     save_encode(int h,int w);
     ~save_encode();
 
-    // ★ ゼロコピー化
-    //   RGBA は linear バッファ(d_encode_rgba)ではなく、
-    //   OpenGL FBO をラップした texture object から直接読む。
-    //   srcTex は呼び出し側がマップ中に作ったもので、
-    //   この関数から戻るまでの間だけ有効（内部で変換完了まで同期する）。
-    void encode(VideoFrame Frame, cudaTextureObject_t srcTex);
+    // ★ ゼロコピー化 + 完全非同期化
+    //
+    //   RGBA は linear バッファではなく、OpenGL FBO をラップした
+    //   texture object から直接読む。
+    //
+    //   この関数は CPU をブロックせずに戻る（slot 待ちを除く）。
+    //   順序は全て GPU 側のイベントで担保する。
+    //
+    //   glWaitEvent : 呼び出し側が map 後に interop_stream へ記録したイベント。
+    //                 これを st に待たせることで「GLの描画完了 → 変換開始」を保証する。
+    //   convertDone : 変換完了イベントを返す。呼び出し側はこれを
+    //                 interop_stream に待たせてから unmap すること。
+    //                 そうしないと変換中の FBO を GL が上書きする。
+    void encode(VideoFrame Frame,
+                cudaTextureObject_t srcTex,
+                cudaEvent_t  glWaitEvent = nullptr,
+                cudaEvent_t* convertDone = nullptr);
 
 private:
     void initialized_ffmpeg_hardware_context(int i);
     void initialized_ffmpeg_codec_context(int i,int max_split);
     int height_,width_;
 
-    void encode_video(VideoFrame Frame, cudaTextureObject_t srcTex);
+    void encode_video(VideoFrame Frame,
+                      cudaTextureObject_t srcTex,
+                      cudaEvent_t  glWaitEvent,
+                      cudaEvent_t* convertDone);
 
     // --- FFmpeg 関連 ---
     std::vector<std::unique_ptr<VideoEncoder>> ve;   // デフォルトコンストラクタで N 個作成
