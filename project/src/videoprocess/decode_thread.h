@@ -130,17 +130,12 @@ protected:
     QIODevice* audioOutput = nullptr;
     AVFrame* audio_Frame=nullptr;
 
-    //タイマー関連
-    QTimer *timer;
-    QElapsedTimer elapsedTimer;
-    int interval_ms;
-
     // AVFrame リング（vd[].hw_frames の面数）
     //   ★ デコード結果のRGBA面はもう持たない。
     //     NVDEC経路は hw_frames を、CPUデコード系は各派生クラスが持つ
     //     YuvPlaneRing を GUIスレッドへ直接渡す（ゼロコピー）。
     int ringNo = 0;
-    int ringSize = 12;
+    int ringSize = 4;
 };
 
 #endif // DECODE_THREAD_H

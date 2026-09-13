@@ -104,6 +104,28 @@ private:
     //   interop_event と共用すると同一フレーム内で用途が衝突するので分ける。
     cudaEvent_t encode_gl_event = nullptr;
 
+    // ==========================================================
+    // ★ GPU投入の上限（in-flight クランプ）
+    //
+    //   CPU同期を外した結果、GUIスレッドはGPUの完了を待たずに
+    //   投げ続けられるようになった。GPUが1フレームでも遅れると
+    //   その差分が毎フレーム積み上がり、遅延とキューが青天井になる。
+    //   （タスクマネージャで3D使用率がのこぎり波になる）
+    //
+    //   毎フレーム待つ（＝①以前）のでもなく、無制限でもなく、
+    //   K フレームぶんだけ先行を許して、それ以上は待つ。
+    //   GPUが間に合っている間はこの待ちはノーコストで通過する。
+    //
+    //   ★ K はリング段数より小さくすること。
+    //     nvgpudecode:  ringSize(4)          → K <= 3
+    //     CPUデコード系: YuvPlaneRing(3)      → K <= 2
+    //     よって 2 が両方を満たす安全側の値。
+    // ==========================================================
+    static const int kMaxFramesInFlight = 2;
+    cudaEvent_t frameDone     [kMaxFramesInFlight] = {};
+    bool        frameDoneValid[kMaxFramesInFlight] = {};
+    int         frameDoneNo = 0;
+
     //OpenGL周り
     bool initialize_completed_flag=false;
     GLuint inputTextureID;  // ← 入力用

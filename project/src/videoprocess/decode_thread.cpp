@@ -172,7 +172,6 @@ void decode_thread::slider_range_start(int value){
 }
 
 void decode_thread::resumePlayback() {
-    receve_decode_flag();
     QMutexLocker locker(&mutex);
     video_play_flag = true;
     video_reverse_flag = false;
@@ -184,7 +183,6 @@ void decode_thread::pausePlayback() {
 }
 
 void decode_thread::reversePlayback(){
-    receve_decode_flag();
     QMutexLocker locker(&mutex);
     video_play_flag = true;
     video_reverse_flag = true;

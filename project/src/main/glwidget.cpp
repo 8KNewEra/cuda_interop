@@ -56,6 +56,13 @@ GLWidget::~GLWidget() {
         cudaEventDestroy(encode_gl_event);
         encode_gl_event = nullptr;
     }
+    for (int i = 0; i < kMaxFramesInFlight; i++) {
+        if (frameDone[i]) {
+            cudaEventDestroy(frameDone[i]);
+            frameDone[i] = nullptr;
+        }
+        frameDoneValid[i] = false;
+    }
     if (hist_stream) {
         cudaStreamSynchronize(hist_stream);
         cudaStreamDestroy(hist_stream);
@@ -197,6 +204,10 @@ void GLWidget::initializeGL()
     cudaStreamCreate(&interop_stream);
     cudaEventCreate(&interop_event);   // 現在は未使用（将来の同期用に残置）
     cudaEventCreateWithFlags(&encode_gl_event, cudaEventDisableTiming);
+    for (int i = 0; i < kMaxFramesInFlight; i++) {
+        cudaEventCreateWithFlags(&frameDone[i], cudaEventDisableTiming);
+        frameDoneValid[i] = false;
+    }
     cudaStreamCreate(&hist_stream);
     cudaEventCreate(&hist_event);
 
@@ -939,6 +950,17 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
         return;
     }
 
+    // ==========================================================
+    // ★ in-flight クランプ
+    //   K フレーム前のGPU処理が終わるまで、このフレームを投入しない。
+    //   GPUが間に合っていれば既に完了しているので素通りする。
+    //   間に合っていない場合だけ、ここでCPUが待って先行を打ち切る。
+    // ==========================================================
+    const int fdIdx = frameDoneNo;
+    if (frameDoneValid[fdIdx]) {
+        cudaEventSynchronize(frameDone[fdIdx]);
+    }
+
     //CUDA→OpenGL転送の準備
     cudaArray_t array;
     cudaError_t err = cudaSuccess;
@@ -988,6 +1010,12 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
         return;
     }
+
+    // ★ このフレームのCUDA処理完了を記録しておく。
+    //   K フレーム後にここを待つことで先行が K に制限される。
+    cudaEventRecord(frameDone[fdIdx], interop_stream);
+    frameDoneValid[fdIdx] = true;
+    frameDoneNo = (fdIdx + 1) % kMaxFramesInFlight;
 
     FBO_Rendering(Frame);
     fpsCount++;
