@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QWaitCondition>
 #include <QMutex>
+#include <atomic>
 #include <cuda_runtime.h>
 #include <QDebug>
 #include <QFile>
@@ -37,8 +38,11 @@ class decode_thread : public QObject {
 public:
     explicit decode_thread(QString FilePath,QObject *parent = nullptr);
     ~decode_thread() override;
-    int encode_state=STATE_NOT_ENCODE;
-    bool back1frame_flag = false;
+
+    // ★ GUIスレッドが書き、デコードスレッドが読むので atomic 必須。
+    //   非atomicだとループ内でキャッシュされ、状態遷移が見えない。
+    std::atomic<int>  encode_state{STATE_NOT_ENCODE};
+    std::atomic<bool> back1frame_flag{false};
 
 signals:
     void send_decode_image(VideoFrame Frame,bool pause,bool reverse);
@@ -88,7 +92,10 @@ protected:
     //制御
     bool video_play_flag;
     bool video_reverse_flag;
-    bool thread_stop_flag =false;
+    // ★ GUIスレッドから stopProcessing() で直接書かれるので atomic。
+    //   非atomicだと while(!thread_stop_flag) がレジスタにキャッシュされ、
+    //   終了要求が永久に見えずクローズ時にハングする。
+    std::atomic<bool> thread_stop_flag{false};
     bool seek_flag = false;
     bool high_res_slider_flag = false;
     int slider_No;
@@ -134,8 +141,23 @@ protected:
     //   ★ デコード結果のRGBA面はもう持たない。
     //     NVDEC経路は hw_frames を、CPUデコード系は各派生クラスが持つ
     //     YuvPlaneRing を GUIスレッドへ直接渡す（ゼロコピー）。
+    //
+    //   ★ 段数は「GUIの先行許容(kMaxFramesInFlight=2)」×
+    //     「1表示フレームあたりのデコード数」より大きくなければならない。
+    //     ハンドシェイクを 1:1 に直したので必要なのは 3 段だが、
+    //     安全マージンを見て 6 段とする。
+    //
+    //   ★ これ以上むやみに増やさないこと。
+    //     *_cuvid はアプリが掴んだぶんだけ自前プール（surfaces、既定25枚）
+    //     から出力サーフェスが減る。ここを大きくしすぎると DPB が枯渇して
+    //     デコードが止まる。増やすなら cuvid 側の surfaces も一緒に上げる。
     int ringNo = 0;
-    int ringSize = 4;
+    int ringSize = 6;
+
+    // ★ 追い越し検出用。
+    //   emit した枚数 - GUIが消費した枚数。ringSize に達したら
+    //   「GUIがまだ読んでいる面を上書きしかけている」＝バグ。
+    std::atomic<int> inflight_frames{0};
 };
 
 #endif // DECODE_THREAD_H

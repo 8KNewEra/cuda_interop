@@ -26,6 +26,7 @@ extern "C" {
 #include <libavutil/audio_fifo.h>
 #include <libswscale/swscale.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/buffer.h>          // ★ av_buffer_get_ref_count
 #include "libswresample/swresample.h"
 }
 
@@ -37,6 +38,10 @@ struct FrameSlot {
     size_t y_pitch = 0;
     uint8_t* d_uv = nullptr;
     size_t uv_pitch = 0;
+
+    // ★ submit 済みで、ワーカーがまだ avcodec_send_frame を終えていない。
+    //   VideoEncoder::mtx で保護する。
+    bool submitted_to_worker = false;
 };
 
 // エンコーダスレッドへ渡す1フレーム分の仕事
@@ -66,11 +71,15 @@ struct VideoEncoder {
     std::condition_variable slot_cv;            // slot解放通知  (メインが待つ)
     std::queue<EncodeJob>   jobs;
 
-    // ★ slot の上書き防止カウンタ
-    //   occupied = submitted - completed
-    //   occupied < ring_capacity のときだけ slot(submitted % ring) は空いている
+    // ★ 統計・ログ用カウンタ（占有判定には使わない）
+    //   旧実装は occupied = submitted - completed で slot の空きを判定して
+    //   いたが、これは「出力パケット順 == 入力フレーム順」「1フレーム=1
+    //   パケット」を暗黙に仮定しており、B-frame などで崩れると
+    //   NVENC が読んでいる最中の面に次フレームを書いてしまう。
+    //   現在は FrameSlot::submitted_to_worker と AVFrame の参照カウントで
+    //   判定する（wait_slot_free 参照）。
     uint64_t submitted     = 0;                 // メインが投入したフレーム数
-    uint64_t completed     = 0;                 // ワーカーが完了しslotを返した数
+    uint64_t completed     = 0;                 // ワーカーが回収したパケット数
     int      ring_capacity = 1;                 // = encodeRingSize
 };
 
@@ -151,9 +160,46 @@ private:
     void audio_flush();
 
     // ================= 映像パイプライン =================
-    int  async_depth_ = 1;                      // NVENC内部の遅延段数(ringとの整合をとる)
-    int encodeRingNo = 0;
-    int encodeRingSize = 8;
+    //   ★ b_frames_ / async_depth_ / nvenc_surfaces_ / encodeRingSize は
+    //     コンストラクタ冒頭で encodeSettings.b_frames から動的に決定する。
+    //     ここの初期値は「hw_frames_ctx を作る前に必ず上書きされる」前提の
+    //     仮値なので、直接いじらないこと。
+    //
+    //   ★ 守るべき不変条件（これが崩れるとデッドロックする）
+    //
+    //         encodeRingSize > nvenc_surfaces_
+    //
+    //     NVENC は入力サーフェスを nvenc_surfaces_ 枚しか持てない。
+    //     ring がそれより大きければ、こちらが詰まる前に必ず NVENC の
+    //     入力プールが満杯になり、NVENC は出力を出さざるを得なくなる。
+    //     逆に ring <= nvenc_surfaces_ だと、NVENC が出力を始める前に
+    //     こちらが空き slot 待ちで止まる（wait_slot_free still waiting）。
+    //
+    //       b_frames_       = min(UI値, 7, エンコーダ上限)
+    //                         ※エンコーダ上限は nvenc_max_bframes()
+    //                           av1=7 / hevc=5 / h264=4
+    //       async_depth_    = b_frames_ ? 1 : 4
+    //       nvenc_surfaces_ = b_frames_ ? 3*(b_frames_+1) + 12
+    //                                   : async_depth_ + 1 + 3
+    //       encodeRingSize  = nvenc_surfaces_ + 4
+    //
+    //     b_frames  async  surfaces  ring  pool(=ring+4)
+    //         0       4        8      12       16
+    //         1       1       18      22       26
+    //         2       1       21      25       29
+    //         3       1       24      28       32
+    //         4       1       27      31       35
+    //         5       1       30      34       38
+    //         7       1       36      40       44
+    //
+    //   ※ 16K(15360x8640) 1タイルなら 1面 ≒ 199MB。
+    //     b_frames=7 では pool 44 面 ≒ 8.8GB を使う。
+    //     VRAM が足りない環境では b_frames を下げること。
+    int  async_depth_    = 4;                   // NVENC内部のパイプライン段数
+    int  b_frames_       = 0;                   // 実効 B-frame 数（クランプ後）
+    int  nvenc_surfaces_ = 8;                   // NVENC の入力サーフェス数(明示指定)
+    int  encodeRingNo    = 0;
+    int  encodeRingSize  = 12;                  // = nvenc_surfaces_ + 4
 
     // FBO は GL のテクスチャ座標の都合で上下反転しているため 1。
     // GLをバイパスして linear な RGBA を直接渡す経路を作る場合は 0 にする。
@@ -163,9 +209,10 @@ private:
     void start_encoder_threads();
     void stop_encoder_threads();
 
-    void wait_slot_free(VideoEncoder& enc);      // ★上書き防止（メインがここで待つ）
+    // ★上書き防止（メインがここで待つ）。slot 単位・順序仮定なし
+    void wait_slot_free(VideoEncoder& enc, int slot);
     void submit_job(VideoEncoder& enc, int slot, int64_t pts);
-    void release_slot(VideoEncoder& enc);        // completed++ して通知
+    void release_slot(VideoEncoder& enc);        // パケット回収を通知
     void drain_video_encoder(VideoEncoder& enc); // ワーカー内でのみ呼ぶ
 };
 

@@ -714,6 +714,17 @@ void avidecode::gpu_upload(){
     ringNo++;
     if(ringNo>=ringSize) ringNo = 0;
 
+    // ★ 追い越し検出：GUIが消費する前に YuvPlaneRing を一周していないか
+    //   （こちらの実効段数は planeRing の RING_SIZE）
+    {
+        const int n = ++inflight_frames;
+        if (n >= YuvPlaneRing::RING_SIZE) {
+            qWarning() << "[avidecode] PLANE RING OVERRUN inflight =" << n
+                       << "/" << YuvPlaneRing::RING_SIZE
+                       << " FrameNo =" << Frame.FrameNo;
+        }
+    }
+
     emit send_decode_image(Frame,false,video_reverse_flag);
 
     // ★ emit の後に次の面へ。

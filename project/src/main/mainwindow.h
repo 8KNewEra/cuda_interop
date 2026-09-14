@@ -127,6 +127,10 @@ private:
     //fpsスレッド
     void start_fps_thread(double target_fps);
     void stop_fps_thread();
+    // ★ fps_thread → decode_thread::processFrame の駆動を切り替える。
+    //   エンコード中はタイマー駆動を切り離し、
+    //   「GUIが1枚消費 → 1枚デコード」のハンドシェイク駆動に一本化する。
+    void set_fps_driving(bool on);
     QThread *fps_view_thread=nullptr;
     fps_thread *fpsstream=nullptr;
 

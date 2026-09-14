@@ -144,7 +144,21 @@ bool nvgpudecode::initialized_ffmpeg()
         }
 
         AVDictionary* opts = nullptr;
-        av_dict_set(&opts, "extra_hw_frames", "0", 0);
+        // ★ extra_hw_frames は「指定しない」。FFmpeg 既定の -1（自動）に任せる。
+        //
+        //   *_cuvid は hwaccel ではなく独立したデコーダで、出力サーフェスは
+        //   自前のプール（surfaces オプション、既定 25 枚）から確保する。
+        //   ここに extra_hw_frames を 1 以上で与えると
+        //   ulNumDecodeSurfaces との整合が崩れ、デコード自体は通るのに
+        //   シーク（avcodec_flush_buffers + av_seek_frame）後に
+        //   "cuvid decode callback error" で落ちる。
+        //   0 を明示するのも「追加ゼロ」という明示指示になるので外す。
+        //
+        //   アプリが hw_frames を ringSize(=6) 枚保持しても、
+        //   既定 25 枚のプールに対しては十分余裕がある。
+        //   どうしても枚数を明示したい場合は extra_hw_frames ではなく
+        //   cuvid の surfaces を使うこと（extra_hw_frames とは併用しない）:
+        //     av_dict_set_int(&opts, "surfaces", ringSize + 20, 0);
 
         ret = avcodec_open2(dec.codec_ctx, dec.decoder, &opts);
         av_dict_free(&opts);
@@ -733,6 +747,15 @@ void nvgpudecode::publish_decode_frame(){
     //リングを回す（次のデコードは別の面へ）
     ringNo++;
     if(ringNo>=ringSize) ringNo = 0;
+
+    // ★ 追い越し検出：GUIが消費する前にリングを一周していないか
+    {
+        const int n = ++inflight_frames;
+        if (n >= ringSize) {
+            qWarning() << "[nvgpudecode] RING OVERRUN inflight =" << n
+                       << "/" << ringSize << " FrameNo =" << Frame.FrameNo;
+        }
+    }
 
     emit send_decode_image(Frame,false,video_reverse_flag);
 }

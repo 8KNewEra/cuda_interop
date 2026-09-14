@@ -1380,11 +1380,13 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
 
     if(run_decode_thread){
         //シグナルセット
+        // ★ 1表示フレームにつき「1本だけ」接続する。
+        //   以前はエンコード中に processFrame も直結していたため、
+        //   1回の decode_please で receve_decode_flag（→内部で再投入）と
+        //   processFrame の2回デコードが走り、hw_frames リングを
+        //   追い越して GUI が変換中の面を上書きしていた。
+        //   エンコード中の自己駆動は receve_decode_flag 側へ統合済み。
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
-        //エンコード時はそのままデコードスレッドにシグナルを出して最速でデコードする
-        if(encode_state==STATE_ENCODING){
-            QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
-        }
 
         //再生時間表示
         if (VideoInfo.max_hour > 0) {
@@ -1587,9 +1589,31 @@ void MainWindow::start_fps_thread(double target_fps){
         fpsstream->moveToThread(fps_view_thread);
 
         QObject::connect(fpsstream, &fps_thread::fps_signal,
-                         decodestream, &decode_thread::processFrame);
+                         decodestream, &decode_thread::processFrame,
+                         Qt::UniqueConnection);
 
         fpsstream->start();
+    }
+}
+
+// ==============================================================
+// ★ fps_thread → decode_thread::processFrame の駆動 ON/OFF
+//
+//   エンコード中はタイマー駆動(60Hz)とハンドシェイク駆動が二重になり、
+//   GUIの実描画(数fps)に対してデコードだけが先行してリングを追い越す。
+//   エンコード中は OFF にして、receve_decode_flag の自己駆動に任せる。
+// ==============================================================
+void MainWindow::set_fps_driving(bool on)
+{
+    if(!fpsstream || !decodestream) return;
+
+    if(on){
+        QObject::connect(fpsstream, &fps_thread::fps_signal,
+                         decodestream, &decode_thread::processFrame,
+                         Qt::UniqueConnection);
+    }else{
+        QObject::disconnect(fpsstream, &fps_thread::fps_signal,
+                            decodestream, &decode_thread::processFrame);
     }
 }
 
@@ -1640,6 +1664,9 @@ void MainWindow::encode_set(){
     glWidget->encode_mode(encode_state);
     decodestream->encode_state = encode_state;
 
+    // ★ ここから先はタイマー駆動を切り離す（二重駆動の防止）
+    set_fps_driving(false);
+
     //停止/再生速度を最大に、エンコードは最速でやるため
     emit send_manual_pause();
 
@@ -1669,16 +1696,21 @@ void MainWindow::start_encode(){
 
         //エンコード開始
         encode_state = STATE_ENCODING;
-        fpsstream->change_speed(VideoInfo.fps);
+        // ★ タイマー駆動は使わない（receve_decode_flag の自己駆動に一本化）
+        set_fps_driving(false);
         decodestream->encode_state = encode_state;
         glWidget->encode_mode(encode_state);
         glWidget->MinFrame = VideoInfo.start_range_framesNo;
         glWidget->MaxFrame = VideoInfo.end_range_framesNo;
-        emit decode_please();
 
         //FrameNoが0なことを確認
         emit send_manual_high_res_slider(VideoInfo.start_range_framesNo);
         emit send_manual_resumeplayback();
+
+        // ★ 起動キックは「再生状態にしてから」1回だけ。
+        //   先に投げると receve_decode_flag が video_play_flag=false を見て
+        //   自己駆動せず、エンコードが始まらない。
+        emit decode_please();
 
         //修了処理
         connect(glWidget, &GLWidget::encode_finished, this, [=]() {
@@ -1694,7 +1726,9 @@ void MainWindow::start_encode(){
             QString encode_time = QString::number(seconds, 'f', 3)+"秒";
             encodeSetting->encode_end(encode_time);
         }, Qt::SingleShotConnection);
-        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+        // ★ ここにあった2本目の receve_decode_flag 接続は削除した。
+        //   decode_view 側の接続と重なり、1回の decode_please で
+        //   receve_decode_flag が2回呼ばれて processFrame が2本走っていた。
 
         // 処理ループ内で更新
         while(true) {
@@ -1720,6 +1754,10 @@ void MainWindow::finished_encode(){
     fpsstream->change_speed(g_AppSettings.video_speed_ratio*VideoInfo.fps);
     glWidget->encode_mode(encode_state);
     decodestream->encode_state = encode_state;
-    emit decode_please();
+
+    // ★ 通常再生に戻すのでタイマー駆動を復帰させる
+    set_fps_driving(true);
+
     emit send_manual_resumeplayback();
+    emit decode_please();
 }

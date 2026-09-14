@@ -122,15 +122,38 @@ QString decode_thread::ffmpegErrStr(int errnum) {
     return QString::fromUtf8(buf);
 }
 
+// ==============================================================
+// GUIが1フレーム消費したことの通知（★デコード駆動の唯一の入口）
+//
+//   以前は「エンコード中は decode_view が processFrame を直結でも
+//   叩く」構成だったため、1表示フレームにつき最大2回デコードが走り、
+//   hw_frames リングを追い越して GUI が変換中の面を上書きしていた。
+//   （= エンコード結果がたまに帯状にズレる原因）
+//
+//   ここで
+//     ・通常再生 : fps_thread が駆動。取りこぼし時のみ再投入
+//     ・エンコード中 : fps_thread を切り離し、「1枚消費 → 1枚生成」
+//   に統一する。
+// ==============================================================
 void decode_thread::receve_decode_flag(){
     QMutexLocker locker(&mutex);
+
+    // GUIが1枚消費した
+    if (inflight_frames.load() > 0)
+        --inflight_frames;
+
     if(decode_state==STATE_WAIT_DECODE_FLAG){
         decode_state = STATE_DECODE_READY;
     }
 
-    if(drop_flag){
+    // ★ エンコード中は自己駆動。ただし一時停止中は駆動しない
+    //   （停止中フレームの emit で無限ループになるのを防ぐ）。
+    const bool self_drive =
+        (encode_state.load() == STATE_ENCODING) && video_play_flag;
+
+    if(self_drive || drop_flag){
+        drop_flag = false;
         QMetaObject::invokeMethod(this, "processFrame", Qt::QueuedConnection);
-        drop_flag=false;
     }
 }
 
