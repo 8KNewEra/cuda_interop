@@ -16,6 +16,51 @@
 #include <cuda_gl_interop.h>
 #include <QTimer>
 
+// ==============================================================
+// ★ CUDA object（texture / surface）の遅延破棄リング
+//
+//   cudaGraphicsSubResourceGetMappedArray() が返す cudaArray は
+//   「その map の間だけ有効」で、次の map でも同じ実体を指す保証は無い
+//   （CUDA の仕様上、map のたびに値が変わりうる）。
+//   したがって object を map/unmap を跨いでキャッシュするのは仕様違反で、
+//   ドライバが裏で実体を差し替えると、古いフレームを読む／書くことになる。
+//   ＝「たまにフレームが混ざる」症状を単独で起こせる。
+//
+//   かといって使い終わった直後に破棄すると、その object を使っている
+//   カーネルがまだ走っている可能性があるので CPU同期が必要になり、
+//   せっかく外した GUIスレッドの停止が復活してしまう。
+//
+//   そこで
+//     ・object は map のたびに作り直す（仕様どおり）
+//     ・使い終わりをイベントで記録し、数フレーム後に
+//       そのイベント完了を確認してから破棄する
+//   という形にする。仕様違反もCPU同期も無くなる。
+//   SIZE は in-flight(kMaxFramesInFlight=2) より十分大きくしておくこと。
+// ==============================================================
+struct CudaObjRetireRing
+{
+    static const int SIZE = 4;
+    enum Kind { TEXTURE, SURFACE };
+
+    // cudaTextureObject_t / cudaSurfaceObject_t はどちらも unsigned long long
+    Kind               kind            = TEXTURE;
+    unsigned long long obj    [SIZE]   = {};
+    cudaEvent_t        ev     [SIZE]   = {};
+    bool               evValid[SIZE]   = {};
+    int                no              = 0;
+
+    void init(Kind k);                      // イベント生成（GL/CUDA初期化時に1回）
+    int  acquire();                         // 空きslot確保（前の住人を安全に破棄）
+    void store(int i, unsigned long long o) { if (i >= 0 && i < SIZE) obj[i] = o; }
+    void retire(int i, cudaStream_t s);     // 「このslotの使用終わり」を記録
+    void drain();                           // 全slotを同期して object を破棄
+    void destroy();                         // drain + イベント破棄
+
+private:
+    void destroySlot(int i);
+};
+
+
 class GLWidget : public QOpenGLWindow, protected QOpenGLFunctions_4_5_Core
 {
     Q_OBJECT
@@ -62,30 +107,22 @@ private:
     bool yuvToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf);
 
     // ==========================================================
-    // ★ surface / texture object のキャッシュ
+    // ★ surface / texture object は map のたびに作り直す
     //
-    //   毎フレーム Create/Destroy していたが、これには2つ問題がある。
-    //     ・API呼び出しのコストを毎フレーム払う
-    //     ・「破棄する前にカーネル完了を待つ」必要があるため、
-    //       GUIスレッドでの CPU同期を外せない
-    //
-    //   cudaArray のハンドルは map/unmap を跨いで実際には安定しているが
-    //   仕様上の保証はない。そこで前回の値と比較し、
-    //   変わったときだけ作り直す。これなら変わっても安全。
+    //   以前は cudaArray のハンドルを覚えておいて使い回していたが、
+    //   mapped array の寿命は map 中だけというのが CUDA の仕様で、
+    //   ハンドルが同じでも実体が差し替わりうる（＝古い面を読む）。
+    //   破棄は CudaObjRetireRing がイベントで遅延させるので、
+    //   毎フレーム作り直しても GUIスレッドは止まらない。
     // ==========================================================
-    bool ensureInputSurface(cudaArray_t array);   // cudaResource1（入力テクスチャ）
-    bool ensureFboTexture  (cudaArray_t array);   // cudaResource2（FBO）
-    bool ensureHistTexture (cudaArray_t array);   // cudaResource_hist（FBO・ヒストグラム読み出し）
-    void invalidateInputSurface();
-    void invalidateFboTexture();
-    void invalidateHistTexture();
+    bool createInputSurface(cudaArray_t array, cudaSurfaceObject_t& out);
+    bool createArrayTexture(cudaArray_t array, cudaTextureObject_t& out,
+                            const char* tag);
 
-    cudaSurfaceObject_t inputSurf        = 0;
-    cudaArray_t         inputSurfArray   = nullptr;
-    cudaTextureObject_t fboTex           = 0;
-    cudaArray_t         fboTexArray      = nullptr;
-    cudaTextureObject_t histTex          = 0;
-    cudaArray_t         histTexArray     = nullptr;
+    CudaObjRetireRing inputSurfRetire;   // cudaResource1（入力テクスチャ）
+    CudaObjRetireRing fboTexRetire;      // cudaResource2（FBO → NVENC）
+    // ヒストグラム経路は毎フレーム CPU同期している（cudaStreamSynchronize）ので
+    // リングは使わず、その場で作って同期後に破棄する。
 
     std::vector<int> make_nice_y_labels(int max_value);
     void queryCudaGPUs();

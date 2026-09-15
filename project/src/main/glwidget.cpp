@@ -19,11 +19,10 @@ GLWidget::GLWidget(QWindow *parent)
 
 
 GLWidget::~GLWidget() {
-    // ★ キャッシュした surface / texture object は、
+    // ★ 生存中の surface / texture object は、
     //   参照先の cudaArray を手放す（＝リソースを unregister する）前に破棄する
-    invalidateInputSurface();
-    invalidateFboTexture();
-    invalidateHistTexture();
+    inputSurfRetire.destroy();
+    fboTexRetire.destroy();
 
     if (cudaResource1) {
         cudaGraphicsUnregisterResource(cudaResource1);
@@ -204,6 +203,11 @@ void GLWidget::initializeGL()
     cudaStreamCreate(&interop_stream);
     cudaEventCreate(&interop_event);   // 現在は未使用（将来の同期用に残置）
     cudaEventCreateWithFlags(&encode_gl_event, cudaEventDisableTiming);
+
+    // ★ surface / texture object の遅延破棄リング
+    inputSurfRetire.init(CudaObjRetireRing::SURFACE);
+    fboTexRetire.init(CudaObjRetireRing::TEXTURE);
+
     for (int i = 0; i < kMaxFramesInFlight; i++) {
         cudaEventCreateWithFlags(&frameDone[i], cudaEventDisableTiming);
         frameDoneValid[i] = false;
@@ -569,8 +573,8 @@ void GLWidget::setShaderUniform(int width,int height){
 //CUDA→OpenGLの初期化、登録など
 void GLWidget::initCudaTexture(int width,int height) {
     //古いリソースを破棄
-    // ★ 参照先の cudaArray が無くなるので、先にキャッシュを破棄する
-    invalidateInputSurface();
+    // ★ 参照先の cudaArray が無くなるので、先に生存中の object を破棄する
+    inputSurfRetire.drain();
 
     if (cudaResource1) {
         cudaGraphicsUnregisterResource(cudaResource1);
@@ -726,76 +730,111 @@ bool GLWidget::yuvToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
 }
 
 // ==============================================================
-// ★ surface / texture object のキャッシュ
-//   cudaArray のハンドルが変わったときだけ作り直す。
-//   毎フレームの Create/Destroy を無くすことで、
-//   「破棄前にカーネル完了を待つ」という制約が外れる。
-//   （その CPU同期を実際に外すのは次の段階）
+// ★ CUDA object（texture / surface）の遅延破棄リング
+//
+//   mapped cudaArray の寿命は map 中だけなので、object は map のたびに
+//   作り直す。破棄はイベントで遅延させるので CPU は止まらない。
 // ==============================================================
-
-//入力テクスチャ（cudaResource1）の surface object
-bool GLWidget::ensureInputSurface(cudaArray_t array)
+void CudaObjRetireRing::init(Kind k)
 {
-    if (inputSurf != 0 && inputSurfArray == array)
-        return true;                      // 使い回せる
+    kind = k;
+    no   = 0;
 
-    invalidateInputSurface();
+    for (int i = 0; i < SIZE; i++) {
+        obj[i]     = 0;
+        evValid[i] = false;
+        if (!ev[i])
+            cudaEventCreateWithFlags(&ev[i], cudaEventDisableTiming);
+    }
+}
+
+void CudaObjRetireRing::destroySlot(int i)
+{
+    if (!obj[i]) return;
+
+    if (kind == TEXTURE)
+        cudaDestroyTextureObject((cudaTextureObject_t)obj[i]);
+    else
+        cudaDestroySurfaceObject((cudaSurfaceObject_t)obj[i]);
+
+    obj[i]     = 0;
+    evValid[i] = false;
+}
+
+// 空きslotを確保する。
+//   そのslotに前回の object が残っていれば、それを使っていたカーネルの
+//   完了を待ってから破棄する。SIZE が in-flight より十分大きいので、
+//   通常この待ちは既に完了していて素通りする。
+int CudaObjRetireRing::acquire()
+{
+    const int i = no;
+    no = (no + 1) % SIZE;
+
+    if (obj[i]) {
+        if (evValid[i])
+            cudaEventSynchronize(ev[i]);
+        destroySlot(i);
+    }
+    return i;
+}
+
+// このslotの object を使う処理を stream に積み終えた後で呼ぶ。
+void CudaObjRetireRing::retire(int i, cudaStream_t s)
+{
+    if (i < 0 || i >= SIZE || !ev[i]) return;
+
+    cudaEventRecord(ev[i], s);
+    evValid[i] = true;
+}
+
+void CudaObjRetireRing::drain()
+{
+    for (int i = 0; i < SIZE; i++) {
+        if (obj[i]) {
+            if (evValid[i])
+                cudaEventSynchronize(ev[i]);
+            destroySlot(i);
+        }
+    }
+    no = 0;
+}
+
+void CudaObjRetireRing::destroy()
+{
+    drain();
+
+    for (int i = 0; i < SIZE; i++) {
+        if (ev[i]) {
+            cudaEventDestroy(ev[i]);
+            ev[i] = nullptr;
+        }
+    }
+}
+
+//入力テクスチャ（cudaResource1）の surface object を作る
+bool GLWidget::createInputSurface(cudaArray_t array, cudaSurfaceObject_t& out)
+{
+    out = 0;
 
     cudaResourceDesc resDesc = {};
     resDesc.resType         = cudaResourceTypeArray;
     resDesc.res.array.array = array;
 
-    cudaError_t err = cudaCreateSurfaceObject(&inputSurf, &resDesc);
+    cudaError_t err = cudaCreateSurfaceObject(&out, &resDesc);
     if (err != cudaSuccess) {
         qDebug() << "cudaCreateSurfaceObject error:" << cudaGetErrorString(err);
-        inputSurf = 0;
+        out = 0;
         return false;
     }
-
-    inputSurfArray = array;
-    qDebug() << "[GLWidget] input surface object (re)created";
     return true;
 }
 
-//FBO（cudaResource2）の texture object
-bool GLWidget::ensureFboTexture(cudaArray_t array)
+//cudaArray から texture object を作る（FBO読み出し / ヒストグラム共通）
+//   unnormalized / point sampling。値は 0..255 の生バイトとして読む。
+bool GLWidget::createArrayTexture(cudaArray_t array, cudaTextureObject_t& out,
+                                  const char* tag)
 {
-    if (fboTex != 0 && fboTexArray == array)
-        return true;                      // 使い回せる
-
-    invalidateFboTexture();
-
-    cudaResourceDesc resDesc = {};
-    resDesc.resType         = cudaResourceTypeArray;
-    resDesc.res.array.array = array;
-
-    //   unnormalized / point sampling。値は 0..255 の生バイトとして読む。
-    cudaTextureDesc texDesc = {};
-    texDesc.addressMode[0]   = cudaAddressModeClamp;
-    texDesc.addressMode[1]   = cudaAddressModeClamp;
-    texDesc.filterMode       = cudaFilterModePoint;
-    texDesc.readMode         = cudaReadModeElementType;
-    texDesc.normalizedCoords = 0;
-
-    cudaError_t err = cudaCreateTextureObject(&fboTex, &resDesc, &texDesc, nullptr);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaCreateTextureObject error:" << cudaGetErrorString(err);
-        fboTex = 0;
-        return false;
-    }
-
-    fboTexArray = array;
-    qDebug() << "[GLWidget] fbo texture object (re)created";
-    return true;
-}
-
-//ヒストグラム読み出し（cudaResource_hist）の texture object
-bool GLWidget::ensureHistTexture(cudaArray_t array)
-{
-    if (histTex != 0 && histTexArray == array)
-        return true;                      // 使い回せる
-
-    invalidateHistTexture();
+    out = 0;
 
     cudaResourceDesc resDesc = {};
     resDesc.resType         = cudaResourceTypeArray;
@@ -808,49 +847,20 @@ bool GLWidget::ensureHistTexture(cudaArray_t array)
     texDesc.readMode         = cudaReadModeElementType;
     texDesc.normalizedCoords = 0;
 
-    cudaError_t err = cudaCreateTextureObject(&histTex, &resDesc, &texDesc, nullptr);
+    cudaError_t err = cudaCreateTextureObject(&out, &resDesc, &texDesc, nullptr);
     if (err != cudaSuccess) {
-        qDebug() << "cudaCreateTextureObject(hist) error:" << cudaGetErrorString(err);
-        histTex = 0;
+        qDebug() << "cudaCreateTextureObject(" << tag << ") error:"
+                 << cudaGetErrorString(err);
+        out = 0;
         return false;
     }
-
-    histTexArray = array;
-    qDebug() << "[GLWidget] hist texture object (re)created";
     return true;
-}
-
-void GLWidget::invalidateHistTexture()
-{
-    if (histTex) {
-        cudaDestroyTextureObject(histTex);
-        histTex = 0;
-    }
-    histTexArray = nullptr;
-}
-
-void GLWidget::invalidateInputSurface()
-{
-    if (inputSurf) {
-        cudaDestroySurfaceObject(inputSurf);
-        inputSurf = 0;
-    }
-    inputSurfArray = nullptr;
-}
-
-void GLWidget::invalidateFboTexture()
-{
-    if (fboTex) {
-        cudaDestroyTextureObject(fboTex);
-        fboTex = 0;
-    }
-    fboTexArray = nullptr;
 }
 
 //OpenGL→CUDAの初期化、登録など
 void GLWidget::initTextureCuda(int width,int height) {
-        // ★ 参照先の cudaArray が無くなるので、先にキャッシュを破棄する
-        invalidateFboTexture();
+        // ★ 参照先の cudaArray が無くなるので、先に生存中の object を破棄する
+        fboTexRetire.drain();
 
         //既存リソースの破棄
         if (cudaResource2) {
@@ -988,19 +998,30 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
     //   どちらも中間の linear RGBA も cudaMemcpy2DToArray も経由しない。
     // ==================================================================
     {
-        // ★ surface object はキャッシュから取る（毎フレーム作り直さない）
-        if (!ensureInputSurface(array)) {
+        // ★ surface object は「この map で得た array」から毎回作る。
+        //   mapped array の寿命は map 中だけなので、キャッシュして
+        //   使い回すのは仕様違反（古い面を書く事故になる）。
+        const int si = inputSurfRetire.acquire();
+
+        cudaSurfaceObject_t surf = 0;
+        if (!createInputSurface(array, surf)) {
             cudaGraphicsUnmapResources(1, &cudaResource1, interop_stream);
             return;
         }
+        inputSurfRetire.store(si, surf);
 
         if (Frame.src_mode == SRC_NV12_TILE)
-            mergeToSurface(Frame, inputSurf);
+            mergeToSurface(Frame, surf);
         else
-            yuvToSurface(Frame, inputSurf);
+            yuvToSurface(Frame, surf);
 
-        // ★ CPU同期は不要になった。
-        //   ・surface object はキャッシュなので「破棄前に待つ」必要が無い
+        // ★ カーネルは interop_stream に積んであるので、
+        //   ここで「使い終わり」を記録しておけば、数フレーム後に
+        //   完了を確認してから破棄できる（CPUは止めない）。
+        inputSurfRetire.retire(si, interop_stream);
+
+        // ★ CPU同期は不要。
+        //   ・object の破棄はリングがイベントで遅延させる
         //   ・GLへの順序保証は下の unmap(interop_stream) が与える
         //   GUIスレッドはここで止まらず、そのまま描画発行へ進む。
     }
@@ -1073,18 +1094,25 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     // ==========================================================
     cudaEventRecord(encode_gl_event, interop_stream);
 
-    // ---- FBO(cudaArray) の texture object はキャッシュから取る ----
-    if (!ensureFboTexture(array)) {
+    // ---- FBO(cudaArray) の texture object は「この map で得た array」から毎回作る ----
+    //   mapped array の寿命は map 中だけなので、キャッシュして使い回すのは
+    //   仕様違反。ドライバが実体を差し替えると、変換カーネルが
+    //   前のフレームの FBO を読んでしまう（＝エンコード結果が混ざる）。
+    const int ti = fboTexRetire.acquire();
+
+    cudaTextureObject_t tex = 0;
+    if (!createArrayTexture(array, tex, "fbo")) {
         cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
         return;
     }
+    fboTexRetire.store(ti, tex);
 
     // ---- マップ中にエンコード投入（CPUはブロックされない）----
     bool finished = false;
     cudaEvent_t convertDone = nullptr;
 
     if (save_encoder != nullptr && encode_FrameCount <= (MaxFrame - MinFrame)) {
-        save_encoder->encode(Frame, fboTex, encode_gl_event, &convertDone);
+        save_encoder->encode(Frame, tex, encode_gl_event, &convertDone);
         encode_FrameCount++;
     } else {
         finished = true;
@@ -1101,6 +1129,13 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     if (convertDone) {
         cudaStreamWaitEvent(interop_stream, convertDone, 0);
     }
+
+    // ★ texture object の「使い終わり」を記録する。
+    //   変換カーネルは save_encode 側の st で走るので、
+    //   上の cudaStreamWaitEvent で変換完了を interop_stream に
+    //   引き込んだ後に記録することで、このイベントは
+    //   「変換が tex を読み終えた」を意味する。
+    fboTexRetire.retire(ti, interop_stream);
 
     //リソースのマップを解除し、制御をOpenGLに戻す
     err = cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
@@ -1132,8 +1167,8 @@ void GLWidget::encode_mode(int flag){
 
 //ヒストグラム周り
 void GLWidget::initCudaHist() {
-    // ★ 参照先の cudaArray が無くなるので、先にキャッシュを破棄する
-    invalidateHistTexture();
+    // ★ ヒストグラム用の texture object は histgram_Analysys() の中で
+    //   毎回作って同期後に破棄しているので、ここで破棄するものは無い。
 
     // --- 1. 既存 CUDA Graphics Resource を解放 ---
     if (cudaResource_hist) {
@@ -1212,6 +1247,12 @@ void GLWidget::histgram_Analysys(){
         return;
     }
 
+    // ★ texture object は「この map で得た array」から毎回作る。
+    //   mapped array の寿命は map 中だけなので、キャッシュ禁止。
+    //   この経路は下で必ず CPU同期しているため、遅延破棄リングは使わず
+    //   同期後にその場で破棄する。
+    cudaTextureObject_t histTexObj = 0;
+
     //ヒストグラム計算
     {
         //サブリソースの cudaArray を取得
@@ -1223,15 +1264,14 @@ void GLWidget::histgram_Analysys(){
             return;
         }
 
-        // ★ texture object はキャッシュから取る（毎フレーム作り直さない）
-        if (!ensureHistTexture(cuArray)) {
+        if (!createArrayTexture(cuArray, histTexObj, "hist")) {
             cudaGraphicsUnmapResources(2, resources, 0);
             return;
         }
 
         //カーネル呼び出し
         cudaMemset(d_hist_data, 0, sizeof(HistData));
-        CUDA_IMG_Proc->calc_histgram(d_hist_data,histTex,width_,height_);
+        CUDA_IMG_Proc->calc_histgram(d_hist_data,histTexObj,width_,height_);
     }
 
     //ヒストグラム値解析
@@ -1239,6 +1279,14 @@ void GLWidget::histgram_Analysys(){
         CUDA_IMG_Proc->histogram_status(d_hist_data,d_hist_stats);
         cudaMemcpyAsync(&h_hist_stats, d_hist_stats,sizeof(HistStats),cudaMemcpyDeviceToHost,hist_stream);
         cudaStreamSynchronize(hist_stream);   // ★ 直後に h_hist_stats を読むので同期する
+    }
+
+    // ★ ここまでで calc_histgram / histogram_status は完了している
+    //   （どちらも既定ストリーム。hist_stream は blocking stream なので
+    //     上の同期は既定ストリームの完了も含む）。破棄して安全。
+    if (histTexObj) {
+        cudaDestroyTextureObject(histTexObj);
+        histTexObj = 0;
     }
 
     //OpenGL VBO転送

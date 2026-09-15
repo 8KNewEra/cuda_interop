@@ -118,6 +118,14 @@ save_encode::save_encode(int h,int w) {
     //最初にGPU設定
     cudaSetDevice(g_openglDeviceID);
 
+    // ★ 画像処理インスタンスの生成
+    //   これが無いと encode_video() 内の
+    //   CUDA_IMG_Proc->rgba_to_nv12xN_split_tex() が nullptr 参照になる。
+    //   メンバを触らない実装だと「たまたま動く」ため気づきにくい。
+    if (!CUDA_IMG_Proc) {
+        CUDA_IMG_Proc = new CUDA_ImageProcess();
+    }
+
     width_=w;
     height_=h;
     frame_index = 0;
