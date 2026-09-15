@@ -121,8 +121,7 @@ private:
 
     CudaObjRetireRing inputSurfRetire;   // cudaResource1（入力テクスチャ）
     CudaObjRetireRing fboTexRetire;      // cudaResource2（FBO → NVENC）
-    // ヒストグラム経路は毎フレーム CPU同期している（cudaStreamSynchronize）ので
-    // リングは使わず、その場で作って同期後に破棄する。
+    CudaObjRetireRing histTexRetire;     // cudaResource_hist（ヒストグラム読み出し）
 
     std::vector<int> make_nice_y_labels(int max_value);
     void queryCudaGPUs();

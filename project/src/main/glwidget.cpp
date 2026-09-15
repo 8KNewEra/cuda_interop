@@ -23,6 +23,7 @@ GLWidget::~GLWidget() {
     //   参照先の cudaArray を手放す（＝リソースを unregister する）前に破棄する
     inputSurfRetire.destroy();
     fboTexRetire.destroy();
+    histTexRetire.destroy();
 
     if (cudaResource1) {
         cudaGraphicsUnregisterResource(cudaResource1);
@@ -207,6 +208,7 @@ void GLWidget::initializeGL()
     // ★ surface / texture object の遅延破棄リング
     inputSurfRetire.init(CudaObjRetireRing::SURFACE);
     fboTexRetire.init(CudaObjRetireRing::TEXTURE);
+    histTexRetire.init(CudaObjRetireRing::TEXTURE);
 
     for (int i = 0; i < kMaxFramesInFlight; i++) {
         cudaEventCreateWithFlags(&frameDone[i], cudaEventDisableTiming);
@@ -1167,8 +1169,8 @@ void GLWidget::encode_mode(int flag){
 
 //ヒストグラム周り
 void GLWidget::initCudaHist() {
-    // ★ ヒストグラム用の texture object は histgram_Analysys() の中で
-    //   毎回作って同期後に破棄しているので、ここで破棄するものは無い。
+    // ★ 参照先の cudaArray が無くなるので、先に生存中の object を破棄する
+    histTexRetire.drain();
 
     // --- 1. 既存 CUDA Graphics Resource を解放 ---
     if (cudaResource_hist) {
@@ -1247,12 +1249,6 @@ void GLWidget::histgram_Analysys(){
         return;
     }
 
-    // ★ texture object は「この map で得た array」から毎回作る。
-    //   mapped array の寿命は map 中だけなので、キャッシュ禁止。
-    //   この経路は下で必ず CPU同期しているため、遅延破棄リングは使わず
-    //   同期後にその場で破棄する。
-    cudaTextureObject_t histTexObj = 0;
-
     //ヒストグラム計算
     {
         //サブリソースの cudaArray を取得
@@ -1264,14 +1260,25 @@ void GLWidget::histgram_Analysys(){
             return;
         }
 
-        if (!createArrayTexture(cuArray, histTexObj, "hist")) {
+        // ★ 他の2経路と同じ扱い。
+        //   texture object は「この map で得た array」から毎回作り、
+        //   破棄はリングがイベントで遅延させる。
+        const int hi = histTexRetire.acquire();
+
+        cudaTextureObject_t htex = 0;
+        if (!createArrayTexture(cuArray, htex, "hist")) {
             cudaGraphicsUnmapResources(2, resources, 0);
             return;
         }
+        histTexRetire.store(hi, htex);
 
         //カーネル呼び出し
         cudaMemset(d_hist_data, 0, sizeof(HistData));
-        CUDA_IMG_Proc->calc_histgram(d_hist_data,histTexObj,width_,height_);
+        CUDA_IMG_Proc->calc_histgram(d_hist_data,htex,width_,height_);
+
+        // ★ calc_histgram は既定ストリームで走るので、既定ストリームに
+        //   「使い終わり」を記録する。htex を使うのはこのカーネルだけ。
+        histTexRetire.retire(hi, 0);
     }
 
     //ヒストグラム値解析
@@ -1279,14 +1286,6 @@ void GLWidget::histgram_Analysys(){
         CUDA_IMG_Proc->histogram_status(d_hist_data,d_hist_stats);
         cudaMemcpyAsync(&h_hist_stats, d_hist_stats,sizeof(HistStats),cudaMemcpyDeviceToHost,hist_stream);
         cudaStreamSynchronize(hist_stream);   // ★ 直後に h_hist_stats を読むので同期する
-    }
-
-    // ★ ここまでで calc_histgram / histogram_status は完了している
-    //   （どちらも既定ストリーム。hist_stream は blocking stream なので
-    //     上の同期は既定ストリームの完了も含む）。破棄して安全。
-    if (histTexObj) {
-        cudaDestroyTextureObject(histTexObj);
-        histTexObj = 0;
     }
 
     //OpenGL VBO転送
