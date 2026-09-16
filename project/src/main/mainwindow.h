@@ -148,6 +148,8 @@ private:
     void encode_set();
     void start_encode();
     void finished_encode();
+    // ★ エンコーダ生成失敗（VRAM不足など）の受け口
+    void encode_error_handler(const QString &error);
     bool wasCanceled=false;
     encode_setting *encodeSetting;
     int encode_state=STATE_NOT_ENCODE;

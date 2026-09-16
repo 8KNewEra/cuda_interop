@@ -68,6 +68,9 @@ signals:
     void decode_please();
     void initialized();
     void encode_finished();
+    // ★ エンコーダの生成に失敗した（VRAM不足・コーデック初期化失敗など）。
+    //   save_encode のコンストラクタは例外を投げるので、ここで受けて通知する。
+    void encode_error(QString error);
 
 public:
     explicit GLWidget(QWindow *parent = nullptr);

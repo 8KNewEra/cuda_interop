@@ -220,6 +220,14 @@ void MainWindow::GLwidgetInitialized(){
         QObject::connect(encodeSetting, &encode_setting::signal_encode_start,this, &MainWindow::start_encode,Qt::QueuedConnection);
         QObject::connect(encodeSetting, &encode_setting::signal_encode_finished,this, &MainWindow::finished_encode,Qt::QueuedConnection);
 
+        // ★ エンコーダ生成失敗の通知。
+        //   QueuedConnection にしておくこと。encode_mode() は start_encode() の
+        //   途中から呼ばれるので、Direct だとその内部でモーダルダイアログが開き
+        //   再入する。Queued なら start_encode のイベントループで処理される。
+        QObject::connect(glWidget, &GLWidget::encode_error,
+                         this, &MainWindow::encode_error_handler,
+                         Qt::QueuedConnection);
+
 
         /* 音量調整ボタン */
         audioVolume = new audio_volume(this);
@@ -1746,6 +1754,46 @@ void MainWindow::start_encode(){
             QCoreApplication::processEvents();
         }
     }
+}
+
+// ==============================================================
+// ★ エンコーダ生成失敗の受け口
+//
+//   save_encode のコンストラクタが投げた例外を GLWidget が受けて
+//   encode_error で上げてくる。ここで
+//     ・start_encode の待ちループを抜けさせる
+//     ・再生/エンコード状態を安全側へ戻す
+//     ・ユーザーへ通知する
+//   を行う。save_encoder は nullptr のままなので、
+//   エンコード経路には一切入らない。
+// ==============================================================
+void MainWindow::encode_error_handler(const QString &error)
+{
+    // start_encode の while ループを抜けさせる
+    wasCanceled = true;
+
+    // 状態を戻す（エンコード設定ウィンドウは開いたまま。
+    // ユーザーが閉じれば finished_encode() で通常再生に復帰する）
+    emit send_manual_pause();
+
+    encode_state = STATE_ENCODE_READY;
+    if (decodestream)
+        decodestream->encode_state = encode_state;
+
+    if (glWidget) {
+        glWidget->encode_mode(encode_state);
+        glWidget->encode_FrameCount = 0;
+    }
+
+    qWarning() << "[MainWindow] encode error:" << error;
+
+    QMessageBox::warning(
+        this,
+        tr("エンコード開始エラー"),
+        tr("エンコーダの初期化に失敗しました。\n\n%1\n\n"
+           "解像度・分割数・B-frame 数を下げると改善する場合があります。")
+            .arg(error),
+        QMessageBox::Ok);
 }
 
 //エンコードウィンドウを閉じる

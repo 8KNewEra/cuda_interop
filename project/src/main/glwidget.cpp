@@ -1,6 +1,7 @@
 #include "src/main/glwidget.h"
 #include "qdir.h"
 #include <QDebug>
+#include <stdexcept>
 
 #define Rerease 1
 
@@ -1162,7 +1163,34 @@ void GLWidget::encode_mode(int flag){
     //エンコードモードの場合はエンコード用インスタンス生成
     if(flag==STATE_ENCODING){
         if(save_encoder==nullptr){
-            save_encoder = new save_encode(height_,width_);
+            // ★ save_encode のコンストラクタは
+            //     ・hw_frames_ctx の確保失敗（VRAM不足）
+            //     ・エンコーダが見つからない / avcodec_open2 失敗
+            //     ・出力ファイルが開けない
+            //   などで std::runtime_error を投げる。
+            //   ここで受けないと誰も catch せず std::terminate でアプリごと落ちる。
+            //   16K + B-frame 多め の設定はリングだけで数GB使うので、
+            //   VRAM の少ない環境では現実に踏む。
+            try {
+                save_encoder = new save_encode(height_, width_);
+            }
+            catch (const std::exception& e) {
+                save_encoder = nullptr;
+                encode_state = STATE_NOT_ENCODE;   // エンコード経路へ入らせない
+
+                const QString msg = QString::fromUtf8(e.what());
+                qWarning() << "[GLWidget] save_encode init failed:" << msg;
+                emit encode_error(msg);
+                return;
+            }
+            catch (...) {
+                save_encoder = nullptr;
+                encode_state = STATE_NOT_ENCODE;
+
+                qWarning() << "[GLWidget] save_encode init failed (unknown exception)";
+                emit encode_error(QStringLiteral("不明なエラー"));
+                return;
+            }
         }
     }
 }
