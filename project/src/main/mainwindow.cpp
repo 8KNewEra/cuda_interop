@@ -992,7 +992,7 @@ void MainWindow::Open_Video_File()
         this,
         tr("動画ファイルを開く"),
         startDir,
-        tr("動画ファイル (*.mp4 *.avi)")
+        tr("動画ファイル (*.mp4 *.avi *.mkv)")
         );
 
     // ファイルが選択されたかどうかを確認

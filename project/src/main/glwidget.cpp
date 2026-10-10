@@ -3,8 +3,7 @@
 #include <QDebug>
 #include <stdexcept>
 
-#define Rerease 1
-
+#define Rerease 0
 GLWidget::GLWidget(QWindow *parent)
     :  QOpenGLWindow(NoPartialUpdate, parent),
     cudaResource1(nullptr),
@@ -154,12 +153,12 @@ void GLWidget::initializeGL()
     Averaging_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "shaders/averaging.vert");
     Averaging_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "shaders/averaging.frag");
 #else
-    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../project/shaders/sobel.vert");
-    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../project/shaders/sobel.frag");
-    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../project/shaders/gaussian.vert");
-    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../project/shaders/gaussian.frag");
-    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../project/shaders/averaging.vert");
-    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../project/shaders/averaging.frag");
+    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../project/shaders/sobel.vert");
+    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../project/shaders/sobel.frag");
+    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../project/shaders/gaussian.vert");
+    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../project/shaders/gaussian.frag");
+    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../project/shaders/averaging.vert");
+    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../project/shaders/averaging.frag");
 #endif
 
     //シェーダーリンク
