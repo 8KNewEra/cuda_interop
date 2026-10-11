@@ -15,6 +15,8 @@
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <QTimer>
+#include <QWheelEvent>
+#include <QMouseEvent>
 
 // ==============================================================
 // ★ CUDA object（texture / surface）の遅延破棄リング
@@ -91,9 +93,18 @@ public:
 
     double fps = 0.0;
 
+    void resetZoom();
+
 protected:
     void initializeGL() override;
     void paintGL() override;
+
+    // ズーム/パン: ホイール=拡大縮小, 左/中ドラッグ=移動, ダブルクリック=等倍
+    void wheelEvent(QWheelEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
 
 private:
     void initTextureCuda(int width,int height);
@@ -197,6 +208,20 @@ private:
     GLint viewportWidth  = 0;
     GLint viewportHeight = 0;
     GLint x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+
+    // ズーム（viewCx/viewCy は元画像座標の表示中心、左上原点）
+    double zoomFactor = 1.0;
+    double viewCx = 0.0;
+    double viewCy = 0.0;
+    bool   panning = false;
+    Qt::MouseButton panButton = Qt::NoButton;
+    QPointF panLastPos;
+
+    double zoomMax() const;
+    void   clampView();
+    void   visibleSrcRect(double& sx, double& sy, double& sw, double& sh) const;
+    QPointF windowToDisplayUV(const QPointF& pos) const;
+    void   drawZoomNavigator(QPainter& p);
 
     //エンコード関連
     int encode_state=STATE_NOT_ENCODE;
