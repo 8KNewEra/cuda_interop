@@ -75,8 +75,25 @@ protected:
     // 保留パケットの破棄（flush / シーク / 終了時）
     void clear_pending();
 
-    // タイル間 pts 不一致の検出（再発したら即分かるように）
-    void check_tile_pts_mismatch();
+    // ==========================================================
+    // ★ リングのコマを壊さない受信
+    //
+    //   avcodec_receive_frame() は「何をするより先に必ず
+    //   av_frame_unref(frame) する」と公式に明記されている。
+    //   よって hw_frames[ringNo] を直接渡すと、EAGAIN で
+    //   失敗しただけで取得済みのコマが消える。
+    //   ここでは vd[i].tmp_frame へ受け、成功したときだけ
+    //   move_ref でリングへ移す。失敗時 ring は無傷。
+    //
+    //   戻り値 true = フレームが 1 枚出てリングへ入った
+    // ==========================================================
+    bool receive_into_slot(int i, int64_t* out_pts = nullptr);
+
+    // タイル間 pts 不一致の検出。
+    //   ★ 戻り値 false = 揃っていない（＝絵が割れる）。
+    //     エンコード中にこれを出すとファイルに永久に焼き付くので、
+    //     publish 側はこの場合コマを出さず前フレームを再送する。
+    bool check_tile_pts_mismatch();
 
     // 警告の連打を防ぐ
     void warn_once_in_a_while(const QString& msg);
@@ -97,6 +114,15 @@ protected:
 
     // 直近に警告を出したフレーム番号
     int last_warn_frame_ = -100000;
+
+    // ★ pts 不一致で publish を見送った連続回数。
+    //   いつまでも見送ると再生が止まるので、この回数を超えたら
+    //   警告を出したうえで通す（止まるよりは出す）。
+    int mismatch_skips_ = 0;
+    static const int kMaxMismatchSkips = 8;
+
+    // 累計の不一致回数（警告が間引かれても総数は分かるように）
+    int mismatch_total_ = 0;
 
     int a=0;
 };

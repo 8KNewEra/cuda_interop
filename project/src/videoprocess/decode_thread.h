@@ -28,6 +28,28 @@ struct VideoDecorder {
     int stream_index=0;
     const AVCodec* decoder;
     std::vector<AVFrame*> hw_frames;
+
+    // ==========================================================
+    // ★ 受信用スクラッチ（リングのコマを壊さないための緩衝材）
+    //
+    //   avcodec_receive_frame() は公式ドキュメントに
+    //     "the function will always call av_frame_unref(frame)
+    //      before doing anything else"
+    //   と明記されている。つまり EAGAIN で失敗しても、
+    //   渡した AVFrame の中身は先に消される。
+    //
+    //   hw_frames[ringNo] を直接渡していると、
+    //   「すでにこのラウンドで取得済みのコマ」が、後続の
+    //   『進めてみる』receive の失敗で無言で消滅する。
+    //   NVDEC が飽和しているときほど EAGAIN を踏むので、
+    //   負荷が高いときだけタイルが別フレームになる＝今回の症状。
+    //
+    //   そこで必ずここへ受けて、成功したときだけ
+    //   av_frame_move_ref() でリングへ移す。
+    //   失敗しても ring は無傷。
+    // ==========================================================
+    AVFrame* tmp_frame = nullptr;
+
     cudaStream_t st = nullptr;
     cudaEvent_t ev = nullptr;
 };
@@ -153,6 +175,34 @@ protected:
     //     デコードが止まる。増やすなら cuvid 側の surfaces も一緒に上げる。
     int ringNo = 0;
     int ringSize = 6;
+
+    // ==========================================================
+    // ★ NVDEC の出力コピー完了イベント（リング各段に1つ）
+    //
+    //   cuvid は出力を device_hwctx->stream へ cuMemcpy2DAsync で
+    //   積むだけで同期しない（cuviddec.c 参照）。そこで全タイルを
+    //   受け取った後にこのイベントを「そのストリームへ」記録し、
+    //   GUI側に cudaStreamWaitEvent させる。
+    //
+    //   ★ 記録先が ffmpeg のストリームなので、hw_device_ctx を
+    //     プライマリコンテキストで作れていることが前提。
+    //     作れなかった場合は dec_stream = nullptr のままにして、
+    //     publish 側がホスト同期にフォールバックする。
+    // ==========================================================
+    std::vector<cudaEvent_t> decode_ready_ev;
+
+    // = AVCUDADeviceContext::stream。
+    //   ★ hwcontext_cuda.c は cuda_context_init で
+    //       hwctx->stream = NULL;   // 既定ストリームを使う、の意味
+    //     を設定する。プライマリかどうかに関係なく常に NULL。
+    //     「NULL だから駄目」と判定してはいけない（前版の誤り）。
+    cudaStream_t dec_stream = nullptr;
+
+    // ★ イベント方式で NVDEC の完了を待てるか。
+    //   false のときはホスト同期へ落ちるが、ffmpeg が別コンテキストに
+    //   いる場合 cudaDeviceSynchronize() では *待てない* ので、
+    //   その状況は初期化時に警告する。
+    bool dec_sync_by_event = false;
 
     // ★ 追い越し検出用。
     //   emit した枚数 - GUIが消費した枚数。ringSize に達したら

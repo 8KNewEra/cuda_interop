@@ -514,6 +514,205 @@ void GLWidget::paintGL(){
     painter.end();
 }
 
+// ==============================================================
+// ズーム
+// ==============================================================
+
+// 最大倍率: 表示範囲が 320x240 程度まで
+double GLWidget::zoomMax() const
+{
+    if (width_ <= 0 || height_ <= 0) return 1.0;
+    return std::max(1.0, std::min(width_ / 320.0, height_ / 240.0));
+}
+
+void GLWidget::resetZoom()
+{
+    zoomFactor = 1.0;
+    viewCx = width_  * 0.5;
+    viewCy = height_ * 0.5;
+    panning = false;
+    panButton = Qt::NoButton;
+}
+
+void GLWidget::clampView()
+{
+    zoomFactor = std::clamp(zoomFactor, 1.0, zoomMax());
+    const double sw = width_  / zoomFactor;
+    const double sh = height_ / zoomFactor;
+    viewCx = std::clamp(viewCx, sw * 0.5, width_  - sw * 0.5);
+    viewCy = std::clamp(viewCy, sh * 0.5, height_ - sh * 0.5);
+}
+
+void GLWidget::visibleSrcRect(double& sx, double& sy, double& sw, double& sh) const
+{
+    if (zoomFactor <= 1.0 || width_ <= 0 || height_ <= 0) {
+        sx = 0; sy = 0; sw = width_; sh = height_;
+        return;
+    }
+    sw = width_  / zoomFactor;
+    sh = height_ / zoomFactor;
+    sx = viewCx - sw * 0.5;
+    sy = viewCy - sh * 0.5;
+}
+
+// ウィンドウ座標 → 表示枠内の 0..1
+QPointF GLWidget::windowToDisplayUV(const QPointF& pos) const
+{
+    const double dispW = static_cast<double>(x1 - x0);
+    const double dispH = static_cast<double>(y1 - y0);
+    if (dispW <= 0 || dispH <= 0) return QPointF(0.5, 0.5);
+
+    const double px = pos.x() * monitor_scaling;
+    const double py = pos.y() * monitor_scaling;
+    const double u = std::clamp((px - x0) / dispW, 0.0, 1.0);
+    const double v = std::clamp((py - (viewportHeight - y1)) / dispH, 0.0, 1.0);
+    return QPointF(u, v);
+}
+
+void GLWidget::wheelEvent(QWheelEvent *event)
+{
+    const bool ready = VideoInfo.video_open_flag && width_ > 0 && height_ > 0;
+    if (!ready || encode_state != STATE_NOT_ENCODE) {
+        event->ignore();
+        return;
+    }
+
+    const int delta = event->angleDelta().y();
+    if (delta == 0) { event->accept(); return; }
+
+    // カーソル下の画像位置を固定して拡大縮小
+    const QPointF uv = windowToDisplayUV(event->position());
+    double sx, sy, sw, sh;
+    visibleSrcRect(sx, sy, sw, sh);
+    const double imgX = sx + uv.x() * sw;
+    const double imgY = sy + uv.y() * sh;
+
+    zoomFactor = std::clamp(zoomFactor * std::pow(2.0, delta / 360.0), 1.0, zoomMax());   // 3ノッチで2倍
+
+    const double nsw = width_  / zoomFactor;
+    const double nsh = height_ / zoomFactor;
+    viewCx = imgX + (0.5 - uv.x()) * nsw;
+    viewCy = imgY + (0.5 - uv.y()) * nsh;
+    clampView();
+
+    event->accept();
+    update();
+}
+
+void GLWidget::mousePressEvent(QMouseEvent *event)
+{
+    const bool panBtn = (event->button() == Qt::LeftButton ||
+                         event->button() == Qt::MiddleButton);
+    if (panBtn && !panning && zoomFactor > 1.0001) {
+        panning = true;
+        panButton = event->button();
+        panLastPos = event->position();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+    QOpenGLWindow::mousePressEvent(event);
+}
+
+void GLWidget::mouseMoveEvent(QMouseEvent *event)
+{
+    if (panning) {
+        const double dispW = static_cast<double>(x1 - x0);
+        const double dispH = static_cast<double>(y1 - y0);
+        if (dispW > 0 && dispH > 0) {
+            double sx, sy, sw, sh;
+            visibleSrcRect(sx, sy, sw, sh);
+            const QPointF d = (event->position() - panLastPos) * monitor_scaling;
+            viewCx -= d.x() * (sw / dispW);
+            viewCy -= d.y() * (sh / dispH);
+            clampView();
+            update();
+        }
+        panLastPos = event->position();
+        event->accept();
+        return;
+    }
+    QOpenGLWindow::mouseMoveEvent(event);
+}
+
+void GLWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (panning && event->button() == panButton) {
+        panning = false;
+        panButton = Qt::NoButton;
+        unsetCursor();
+        event->accept();
+        return;
+    }
+    QOpenGLWindow::mouseReleaseEvent(event);
+}
+
+void GLWidget::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && zoomFactor > 1.0001) {
+        resetZoom();
+        unsetCursor();
+        update();
+        event->accept();
+        return;
+    }
+    QOpenGLWindow::mouseDoubleClickEvent(event);
+}
+
+// 左下ナビ: 外枠=全体, 内枠=表示範囲
+void GLWidget::drawZoomNavigator(QPainter& p)
+{
+    if (width_ <= 0 || height_ <= 0 || x1 <= x0 || y1 <= y0) return;
+
+    const double dispLeft   = x0 / monitor_scaling;
+    const double dispBottom = (viewportHeight - y0) / monitor_scaling;
+    const double dispW      = (x1 - x0) / monitor_scaling;
+    const double dispH      = (y1 - y0) / monitor_scaling;
+
+    const double aspect = static_cast<double>(width_) / height_;
+    double navW = 240.0;
+    double navH = navW / aspect;
+    if (navH > 160.0) { navH = 160.0; navW = navH * aspect; }
+    const double fit = std::min(1.0, std::min(dispW * 0.3 / navW, dispH * 0.3 / navH));
+    navW *= fit;
+    navH *= fit;
+
+    const double margin = 20.0;
+    const QRectF outer(dispLeft + margin, dispBottom - margin - navH, navW, navH);
+
+    double sx, sy, sw, sh;
+    visibleSrcRect(sx, sy, sw, sh);
+    const double k = navW / width_;
+    QRectF inner(outer.left() + sx * k, outer.top() + sy * k, sw * k, sh * k);
+    if (inner.width() < 4.0) {
+        inner.setLeft(inner.center().x() - 2.0);
+        inner.setWidth(4.0);
+    }
+    if (inner.height() < 4.0) {
+        inner.setTop(inner.center().y() - 2.0);
+        inner.setHeight(4.0);
+    }
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.setBrush(QColor(0, 0, 0, 60));
+    p.setPen(QPen(QColor(230, 30, 40), 2));
+    p.drawRect(outer);
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(inner);
+
+    // 倍率と表示範囲の解像度
+    const QString label = QString("x%1  %2x%3")
+                              .arg(zoomFactor, 0, 'f', 2)
+                              .arg(qRound(sw))
+                              .arg(qRound(sh));
+    p.setPen(Qt::white);
+    p.setFont(QFont("Consolas", 11));
+    p.drawText(QRectF(outer.left(), outer.top() - 20, std::max(outer.width(), 240.0), 18),
+               Qt::AlignLeft | Qt::AlignBottom, label);
+    p.restore();
+}
+
 //アスペクト比を合わせてリサイズ
 void GLWidget::GLresize() {
     //現在のウィンドウのDPIスケールを取得
@@ -1027,6 +1226,21 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
             return;
         }
         inputSurfRetire.store(si, surf);
+
+        // ==========================================================
+        // ★ NVDEC の出力コピー完了を GPU 側で待つ
+        //
+        //   cuvid は出力 NV12 を自分のストリームへ cuMemcpy2DAsync で
+        //   積むだけで同期せずに戻る（libavcodec/cuviddec.c）。
+        //   この待ちが無いと、結合カーネルが「書き込み途中の面」を
+        //   読んでタイルの途中に水平の継ぎ目が出る。
+        //   pts は正しいので TILE PTS MISMATCH には引っかからない。
+        //
+        //   cudaStreamWaitEvent は GPU 側の待ちなので CPU は止まらない。
+        // ==========================================================
+        if (Frame.decode_ready) {
+            cudaStreamWaitEvent(interop_stream, Frame.decode_ready, 0);
+        }
 
         if (Frame.src_mode == SRC_NV12_TILE)
             mergeToSurface(Frame, surf);
@@ -1691,202 +1905,4 @@ void GLWidget::getCudaDeviceIDFromOpenGL()
                  << "VRAM =" << oglVRAM << "MB"
                  << "PCI =" << oglDomain << ":" << oglBus << ":" << oglDevice;
     }
-}
-
-// ==============================================================
-// ズーム
-// ==============================================================
-// 最大倍率: 表示範囲が 320x240 程度まで
-double GLWidget::zoomMax() const
-{
-    if (width_ <= 0 || height_ <= 0) return 1.0;
-    return std::max(1.0, std::min(width_ / 320.0, height_ / 240.0));
-}
-
-void GLWidget::resetZoom()
-{
-    zoomFactor = 1.0;
-    viewCx = width_  * 0.5;
-    viewCy = height_ * 0.5;
-    panning = false;
-    panButton = Qt::NoButton;
-}
-
-void GLWidget::clampView()
-{
-    zoomFactor = std::clamp(zoomFactor, 1.0, zoomMax());
-    const double sw = width_  / zoomFactor;
-    const double sh = height_ / zoomFactor;
-    viewCx = std::clamp(viewCx, sw * 0.5, width_  - sw * 0.5);
-    viewCy = std::clamp(viewCy, sh * 0.5, height_ - sh * 0.5);
-}
-
-void GLWidget::visibleSrcRect(double& sx, double& sy, double& sw, double& sh) const
-{
-    if (zoomFactor <= 1.0 || width_ <= 0 || height_ <= 0) {
-        sx = 0; sy = 0; sw = width_; sh = height_;
-        return;
-    }
-    sw = width_  / zoomFactor;
-    sh = height_ / zoomFactor;
-    sx = viewCx - sw * 0.5;
-    sy = viewCy - sh * 0.5;
-}
-
-// ウィンドウ座標 → 表示枠内の 0..1
-QPointF GLWidget::windowToDisplayUV(const QPointF& pos) const
-{
-    const double dispW = static_cast<double>(x1 - x0);
-    const double dispH = static_cast<double>(y1 - y0);
-    if (dispW <= 0 || dispH <= 0) return QPointF(0.5, 0.5);
-
-    const double px = pos.x() * monitor_scaling;
-    const double py = pos.y() * monitor_scaling;
-    const double u = std::clamp((px - x0) / dispW, 0.0, 1.0);
-    const double v = std::clamp((py - (viewportHeight - y1)) / dispH, 0.0, 1.0);
-    return QPointF(u, v);
-}
-
-void GLWidget::wheelEvent(QWheelEvent *event)
-{
-    const bool ready = VideoInfo.video_open_flag && width_ > 0 && height_ > 0;
-    if (!ready || encode_state != STATE_NOT_ENCODE) {
-        event->ignore();
-        return;
-    }
-
-    const int delta = event->angleDelta().y();
-    if (delta == 0) { event->accept(); return; }
-
-    // カーソル下の画像位置を固定して拡大縮小
-    const QPointF uv = windowToDisplayUV(event->position());
-    double sx, sy, sw, sh;
-    visibleSrcRect(sx, sy, sw, sh);
-    const double imgX = sx + uv.x() * sw;
-    const double imgY = sy + uv.y() * sh;
-
-    zoomFactor = std::clamp(zoomFactor * std::pow(2.0, delta / 360.0), 1.0, zoomMax());   // 3ノッチで2倍
-
-    const double nsw = width_  / zoomFactor;
-    const double nsh = height_ / zoomFactor;
-    viewCx = imgX + (0.5 - uv.x()) * nsw;
-    viewCy = imgY + (0.5 - uv.y()) * nsh;
-    clampView();
-
-    event->accept();
-    update();
-}
-
-void GLWidget::mousePressEvent(QMouseEvent *event)
-{
-    const bool panBtn = (event->button() == Qt::LeftButton ||
-                         event->button() == Qt::MiddleButton);
-    if (panBtn && !panning && zoomFactor > 1.0001) {
-        panning = true;
-        panButton = event->button();
-        panLastPos = event->position();
-        setCursor(Qt::ClosedHandCursor);
-        event->accept();
-        return;
-    }
-    QOpenGLWindow::mousePressEvent(event);
-}
-
-void GLWidget::mouseMoveEvent(QMouseEvent *event)
-{
-    if (panning) {
-        const double dispW = static_cast<double>(x1 - x0);
-        const double dispH = static_cast<double>(y1 - y0);
-        if (dispW > 0 && dispH > 0) {
-            double sx, sy, sw, sh;
-            visibleSrcRect(sx, sy, sw, sh);
-            const QPointF d = (event->position() - panLastPos) * monitor_scaling;
-            viewCx -= d.x() * (sw / dispW);
-            viewCy -= d.y() * (sh / dispH);
-            clampView();
-            update();
-        }
-        panLastPos = event->position();
-        event->accept();
-        return;
-    }
-    QOpenGLWindow::mouseMoveEvent(event);
-}
-
-void GLWidget::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (panning && event->button() == panButton) {
-        panning = false;
-        panButton = Qt::NoButton;
-        unsetCursor();
-        event->accept();
-        return;
-    }
-    QOpenGLWindow::mouseReleaseEvent(event);
-}
-
-void GLWidget::mouseDoubleClickEvent(QMouseEvent *event)
-{
-    if (event->button() == Qt::LeftButton && zoomFactor > 1.0001) {
-        resetZoom();
-        unsetCursor();
-        update();
-        event->accept();
-        return;
-    }
-    QOpenGLWindow::mouseDoubleClickEvent(event);
-}
-
-// 左下ナビ: 外枠=全体, 内枠=表示範囲
-void GLWidget::drawZoomNavigator(QPainter& p)
-{
-    if (width_ <= 0 || height_ <= 0 || x1 <= x0 || y1 <= y0) return;
-
-    const double dispLeft   = x0 / monitor_scaling;
-    const double dispBottom = (viewportHeight - y0) / monitor_scaling;
-    const double dispW      = (x1 - x0) / monitor_scaling;
-    const double dispH      = (y1 - y0) / monitor_scaling;
-
-    const double aspect = static_cast<double>(width_) / height_;
-    double navW = 240.0;
-    double navH = navW / aspect;
-    if (navH > 160.0) { navH = 160.0; navW = navH * aspect; }
-    const double fit = std::min(1.0, std::min(dispW * 0.3 / navW, dispH * 0.3 / navH));
-    navW *= fit;
-    navH *= fit;
-
-    const double margin = 20.0;
-    const QRectF outer(dispLeft + margin, dispBottom - margin - navH, navW, navH);
-
-    double sx, sy, sw, sh;
-    visibleSrcRect(sx, sy, sw, sh);
-    const double k = navW / width_;
-    QRectF inner(outer.left() + sx * k, outer.top() + sy * k, sw * k, sh * k);
-    if (inner.width() < 4.0) {
-        inner.setLeft(inner.center().x() - 2.0);
-        inner.setWidth(4.0);
-    }
-    if (inner.height() < 4.0) {
-        inner.setTop(inner.center().y() - 2.0);
-        inner.setHeight(4.0);
-    }
-
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, false);
-    p.setBrush(QColor(0, 0, 0, 60));
-    p.setPen(QPen(QColor(230, 30, 40), 2));
-    p.drawRect(outer);
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(inner);
-
-    // 倍率と表示範囲の解像度
-    const QString label = QString("x%1  %2x%3")
-                              .arg(zoomFactor, 0, 'f', 2)
-                              .arg(qRound(sw))
-                              .arg(qRound(sh));
-    p.setPen(Qt::white);
-    p.setFont(QFont("Consolas", 11));
-    p.drawText(QRectF(outer.left(), outer.top() - 20, std::max(outer.width(), 240.0), 18),
-               Qt::AlignLeft | Qt::AlignBottom, label);
-    p.restore();
 }

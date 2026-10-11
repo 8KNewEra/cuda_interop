@@ -67,6 +67,11 @@ decode_thread::~decode_thread() {
                     vd[i].hw_frames[j] = nullptr;
                 }
             }
+            // ★ 受信用スクラッチも解放する
+            if (vd[i].tmp_frame) {
+                av_frame_free(&vd[i].tmp_frame);
+                vd[i].tmp_frame = nullptr;
+            }
         }
         if (audio_frame) {
             av_frame_free(&audio_frame);
@@ -107,6 +112,13 @@ decode_thread::~decode_thread() {
         cudaEventDestroy(events);
         events = nullptr;
     }
+
+    // ★ NVDEC 転送完了イベントの破棄
+    for (auto& e : decode_ready_ev) {
+        if (e) { cudaEventDestroy(e); e = nullptr; }
+    }
+    decode_ready_ev.clear();
+    dec_stream = nullptr;
 
     VideoInfo.video_open_flag = false;
     // ★ デコード面のメモリはここでは持たない。

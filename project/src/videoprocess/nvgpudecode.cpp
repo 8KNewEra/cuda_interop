@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <cstdlib>
 
+extern "C" {
+#include <libavutil/hwcontext_cuda.h>
+}
+
 // ===============================
 // mp4 NVIDIA向けGPUデコード
 // ===============================
@@ -22,13 +26,61 @@ bool nvgpudecode::initialized_ffmpeg()
     QString gpuId = QString::number(g_openglDeviceID);
     qDebug() << "GPU No:" << gpuId;
 
-    ret = av_hwdevice_ctx_create(
-        &hw_device_ctx,
-        AV_HWDEVICE_TYPE_CUDA,
-        gpuId.toUtf8().data(),
-        nullptr,
-        0
-        );
+    // ==========================================================
+    // ★ プライマリコンテキストで作る（dict オプションで指定）
+    //
+    //   既定(flags=0)だと hwcontext_cuda は cuCtxCreate で
+    //   *独立したコンテキスト* を作る。そこに属するストリームは
+    //   Runtime API (cudaStreamSynchronize / cudaStreamWaitEvent) から
+    //   正しく扱えないので、デコード完了を待つ手段が無くなる。
+    //   （以前 cudaStreamSynchronize(cuda->stream) が「効かなかった」のは
+    //     別コンテキストのストリームを Runtime API に渡していたから）
+    //
+    //   ★ flags 引数に AV_CUDA_USE_PRIMARY_CONTEXT を渡すのは誤り。
+    //     環境によって -129(ENOTSUP) で失敗する。dict で渡すこと。
+    // ==========================================================
+    //   ★ プライマリコンテキストを確実に存在させてから作る。
+    //     cudaFree(0) で Runtime API の遅延初期化を強制する。
+    cudaFree(0);
+
+    bool ctx_shared = false;        // ffmpeg が我々と同じコンテキストにいるか
+
+    {
+        // ① primary_ctx=1
+        AVDictionary* devopts = nullptr;
+        av_dict_set(&devopts, "primary_ctx", "1", 0);
+        ret = av_hwdevice_ctx_create(
+            &hw_device_ctx, AV_HWDEVICE_TYPE_CUDA,
+            gpuId.toUtf8().data(), devopts, 0);
+        av_dict_free(&devopts);
+        ctx_shared = (ret >= 0);
+
+        // ② 駄目なら current_ctx=1（今カレントなプライマリをそのまま使わせる）
+        if (ret < 0) {
+            qWarning() << "[nvgpudecode] primary_ctx 失敗:" << ffmpegErrStr(ret)
+                       << "/ current_ctx を試します";
+            if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
+
+            AVDictionary* o2 = nullptr;
+            av_dict_set(&o2, "current_ctx", "1", 0);
+            ret = av_hwdevice_ctx_create(
+                &hw_device_ctx, AV_HWDEVICE_TYPE_CUDA,
+                gpuId.toUtf8().data(), o2, 0);
+            av_dict_free(&o2);
+            ctx_shared = (ret >= 0);
+        }
+
+        // ③ それも駄目なら既定（別コンテキスト）。同期手段が無いので後で警告。
+        if (ret < 0) {
+            qWarning() << "[nvgpudecode] current_ctx も失敗:" << ffmpegErrStr(ret);
+            if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
+
+            ret = av_hwdevice_ctx_create(
+                &hw_device_ctx, AV_HWDEVICE_TYPE_CUDA,
+                gpuId.toUtf8().data(), nullptr, 0);
+            ctx_shared = false;
+        }
+    }
 
     if (ret < 0) {
         Error_String = QString("av_hwdevice_ctx_create failed (GPU %1): %2")
@@ -110,6 +162,13 @@ bool nvgpudecode::initialized_ffmpeg()
                 Error_String = "av_frame_alloc failed";
                 return false;
             }
+        }
+
+        // ★ 受信用スクラッチ（receive_into_slot が使う）
+        dec.tmp_frame = av_frame_alloc();
+        if (!dec.tmp_frame) {
+            Error_String = "av_frame_alloc(tmp) failed";
+            return false;
         }
 
         dec.stream_index = stream_index;
@@ -231,6 +290,65 @@ bool nvgpudecode::initialized_ffmpeg()
         Error_String = QString("cudaEvent failed: %1")
         .arg(QString::fromUtf8(cudaGetErrorString(err)));
         return false;
+    }
+
+    // ==========================================================
+    // ★ NVDEC 転送完了イベントの用意
+    //
+    //   全デコーダが同じ hw_device_ctx を共有しているので、
+    //   タイルの出力コピーは *全部まとめて* 同じ
+    //   AVCUDADeviceContext::stream に積まれる。
+    //   よって「全タイル受け取った後にこのストリームへ1回記録する」
+    //   だけで、全タイルの転送完了を表せる。
+    // ==========================================================
+    {
+        AVHWDeviceContext*   dctx = (AVHWDeviceContext*)hw_device_ctx->data;
+        AVCUDADeviceContext* cu   = (AVCUDADeviceContext*)dctx->hwctx;
+
+        // ★★ ここが前版の誤りだった。★★
+        //   hwcontext_cuda.c の cuda_context_init は
+        //       // Setting stream to NULL will make functions
+        //       // automatically use the default CUstream
+        //       hwctx->stream = NULL;
+        //   と、プライマリかどうかに関係なく *常に NULL* を入れる。
+        //   前版は !s_dec で弾いていたため、primary_ctx が成功していても
+        //   必ずフォールバックに落ち、同期がゼロのままだった。
+        //
+        //   NULL は「既定ストリーム」という正常な値なので、そのまま使う。
+        //   cudaEventRecord(ev, NULL) は合法で、既定ストリームに記録される。
+        //   cuvid も NULL ストリームへ cuMemcpy2DAsync を積むので対象が一致する。
+        dec_stream = (cudaStream_t)cu->stream;      // NULL のまま使ってよい
+
+        // 既定ストリームへ記録できるかを一度だけ確かめる
+        cudaEvent_t probe = nullptr;
+        bool rec_ok = false;
+        if (cudaEventCreateWithFlags(&probe, cudaEventDisableTiming) == cudaSuccess) {
+            rec_ok = (cudaEventRecord(probe, dec_stream) == cudaSuccess);
+            cudaGetLastError();
+            cudaEventDestroy(probe);
+        }
+
+        dec_sync_by_event = (ctx_shared && rec_ok);
+
+        if (dec_sync_by_event) {
+            decode_ready_ev.assign(ringSize, nullptr);
+            for (int j = 0; j < ringSize; j++) {
+                if (cudaEventCreateWithFlags(&decode_ready_ev[j],
+                                             cudaEventDisableTiming) != cudaSuccess) {
+                    Error_String = "cudaEventCreate(decode_ready) failed";
+                    return false;
+                }
+            }
+            qDebug() << "[nvgpudecode] NVDEC 完了待ち: イベント方式 (CPU は止めません)"
+                     << "/ dec_stream =" << (void*)dec_stream
+                     << "(NULL = 既定ストリーム。これで正常)";
+        } else {
+            decode_ready_ev.clear();
+            qWarning() << "[nvgpudecode] ★警告★ NVDEC 完了待ちが確立できません。"
+                       << "ctx_shared =" << ctx_shared << "rec_ok =" << rec_ok
+                       << "/ ffmpeg が別コンテキストにいる場合、"
+                          "cudaDeviceSynchronize() では待てないため絵が割れます。";
+        }
     }
 
     // ------------------------
@@ -465,12 +583,58 @@ nvgpudecode::~nvgpudecode()
 
 
 // ==============================================================
+// ★ リングのコマを壊さない受信（★今回の修正の中核）
+//
+//   avcodec_receive_frame() の公式ドキュメント:
+//     "Note that the function will always call av_frame_unref(frame)
+//      before doing anything else."
+//
+//   つまり EAGAIN / EOF で「出せませんでした」と返るときも、
+//   渡した AVFrame の中身は先に捨てられている。
+//
+//   以前は hw_frames[ringNo] を直接渡していたため、
+//   「このタイルを少し進めてみる」という投機的な receive が
+//   失敗しただけで、すでに取得済みのコマが無言で消えていた。
+//   さらに呼び出し側の pts[] は更新されないので、
+//   「揃っているつもり」のまま別フレームのタイルを publish できた。
+//
+//   NVDEC が飽和しているときほど EAGAIN を踏む。
+//   エンコード設定が軽い＝NVDEC が 100% 張り付く条件で
+//   だけ絵が割れていたのはこれが理由。
+//
+//   対策は単純で、受けるのは必ずスクラッチ。
+//   成功したときだけリングへ移す。失敗時リングは無傷。
+// ==============================================================
+bool nvgpudecode::receive_into_slot(int i, int64_t* out_pts)
+{
+    if (i < 0 || i >= (int)vd.size())      return false;
+    AVFrame* tmp = vd[i].tmp_frame;
+    if (!tmp)                              return false;
+
+    if (avcodec_receive_frame(vd[i].codec_ctx, tmp) != 0) {
+        // ★ ここで戻っても hw_frames[ringNo] は触っていない
+        return false;
+    }
+
+    AVFrame* dst = vd[i].hw_frames[ringNo];
+    av_frame_unref(dst);                    // move_ref は dst が空であることを要求する
+    av_frame_move_ref(dst, tmp);            // tmp はここでリセットされる
+
+    if (out_pts) *out_pts = dst->best_effort_timestamp;
+    return true;
+}
+
+
+// ==============================================================
 // ★ 保留パケットの破棄
 //   flush / シーク / 終了時に呼ぶ。残したまま flush すると、
 //   シーク前のパケットをシーク後のデコーダへ入れてしまう。
 // ==============================================================
 void nvgpudecode::clear_pending()
 {
+    // ★ シーク/flush をまたいで見送り回数を持ち越さない
+    mismatch_skips_ = 0;
+
     for (auto& q : pending_) {
         while (!q.empty()) {
             AVPacket* p = q.front();
@@ -555,8 +719,8 @@ bool nvgpudecode::pump_stream(int i, std::vector<bool>& got,
     if (r == AVERROR(EAGAIN)) {
         // 出力キューが満杯。1 枚受け取って空けてから送り直す。
         // ★ ここで pending_ から取り除かないこと（＝捨てない）
-        if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
-            pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+        // ★ receive_into_slot なので、受け取れなくてもリングは壊れない
+        if (receive_into_slot(i, &pts[i])) {
             if (!got[i]) { got[i] = true; got_count++; }
             return true;
         }
@@ -569,8 +733,7 @@ bool nvgpudecode::pump_stream(int i, std::vector<bool>& got,
 
     if (r < 0) return false;
 
-    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
-        pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+    if (receive_into_slot(i, &pts[i])) {
         if (!got[i]) { got[i] = true; got_count++; }
         return true;
     }
@@ -641,10 +804,14 @@ bool nvgpudecode::align_tiles_pts(std::vector<int64_t>& pts)
             if (pts[i] != AV_NOPTS_VALUE && pts[i] + tol >= target) continue;
 
             // ① デコーダ内部の出力遅延ぶんを引き出す
+            //   ★ ここが一番危なかった箇所。
+            //     get_multidecode_image の最後に呼ばれるので、
+            //     このとき全タイルは hw_frames[ringNo] にコマを持っている。
+            //     以前は直接 receive していたため、最初の 1 回が EAGAIN を
+            //     返しただけでそのタイルのコマが消え、しかも pts[i] は
+            //     古いまま残って「揃っている」と誤判定していた。
             while (pts[i] == AV_NOPTS_VALUE || pts[i] + tol < target) {
-                if (avcodec_receive_frame(vd[i].codec_ctx,
-                                          vd[i].hw_frames[ringNo]) != 0) break;
-                pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+                if (!receive_into_slot(i, &pts[i])) break;   // ★ 失敗しても ring は無傷
                 advanced = true;
             }
 
@@ -684,10 +851,10 @@ bool nvgpudecode::align_tiles_pts(std::vector<int64_t>& pts)
 //   出た場合は「同じ表示フレームに別の絵のタイルが混ざっている」ので、
 //   絵が割れる。再発を取り逃がさないための保険。
 // ==============================================================
-void nvgpudecode::check_tile_pts_mismatch()
+bool nvgpudecode::check_tile_pts_mismatch()
 {
     const int N = (int)vd.size();
-    if (N <= 1) return;
+    if (N <= 1) return true;
 
     const int64_t tol = (VideoInfo.pts_per_frame > 1.0)
                             ? (int64_t)(VideoInfo.pts_per_frame / 2.0)
@@ -699,13 +866,23 @@ void nvgpudecode::check_tile_pts_mismatch()
         const int64_t p = vd[i].hw_frames[ringNo]->best_effort_timestamp;
         const int64_t d = (p > base) ? (p - base) : (base - p);
         if (d > tol) {
-            warn_once_in_a_while(
-                QString("[nvgpudecode] TILE PTS MISMATCH tile%1 pts=%2 vs tile0=%3 (%4 frames)")
-                    .arg(i).arg(p).arg(base)
-                    .arg((double)(p - base) / VideoInfo.pts_per_frame, 0, 'f', 1));
-            break;
+            mismatch_total_++;
+            // ★ ここは warn_once_in_a_while を使わない。
+            //   ±60フレームの間引きが強すぎて、実際には割れているのに
+            //   ログが綺麗に見えていた。最初の数回は必ず出し、
+            //   以降は累計だけ定期的に出す。
+            if (mismatch_total_ <= 10 || (mismatch_total_ % 100) == 0) {
+                qWarning().noquote()
+                    << QString("[nvgpudecode] TILE PTS MISMATCH tile%1 pts=%2 vs tile0=%3 "
+                               "(%4 frames) FrameNo=%5 累計=%6")
+                           .arg(i).arg(p).arg(base)
+                           .arg((double)(p - base) / VideoInfo.pts_per_frame, 0, 'f', 1)
+                           .arg(Frame.FrameNo).arg(mismatch_total_);
+            }
+            return false;
         }
     }
+    return true;
 }
 
 
@@ -750,7 +927,7 @@ void nvgpudecode::get_singledecode_image() {
 
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
-            if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
+            if (receive_into_slot(0)) {
                 av_packet_unref(packet);
                 break;
             }
@@ -791,16 +968,14 @@ void nvgpudecode::get_singledecode_image() {
             //   そのぶんフレームが欠けてカクつきの原因になる。
             int r = avcodec_send_packet(vd[0].codec_ctx, packet);
             if (r == AVERROR(EAGAIN)) {
-                if (avcodec_receive_frame(vd[0].codec_ctx,
-                                          vd[0].hw_frames[ringNo]) == 0) {
+                if (receive_into_slot(0)) {
                     av_packet_unref(packet);
                     break;
                 }
                 r = avcodec_send_packet(vd[0].codec_ctx, packet);   // ★ 再送
             }
             if (r == 0) {
-                if (avcodec_receive_frame(vd[0].codec_ctx,
-                                          vd[0].hw_frames[ringNo]) == 0) {
+                if (receive_into_slot(0)) {
                     av_packet_unref(packet);
                     break;
                 }
@@ -894,10 +1069,13 @@ void nvgpudecode::get_multidecode_image() {
     // ----------- EOF 処理 -----------
     if (eof) {
         for (int i = 0; i < N; i++) {
+            // ★ すでにこのラウンドでコマを取れているタイルには触らない。
+            //   以前は全タイルに receive していたので、取得済みのコマを
+            //   EAGAIN で消していた（flush 中は特に出やすい）。
+            if (got_frame[i]) continue;
             avcodec_send_packet(vd[i].codec_ctx, nullptr);
-            if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
-                pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
-                if (!got_frame[i]) { got_frame[i] = true; got_count++; }
+            if (receive_into_slot(i, &pts[i])) {
+                got_frame[i] = true; got_count++;
             }
         }
 
@@ -1056,8 +1234,32 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
         }
     }
 
-    // ★ タイル間の pts がずれていないか最終確認（保険）
-    check_tile_pts_mismatch();
+    // ==============================================================
+    // ★ タイル間の pts がずれていたら、このコマは出さない。
+    //
+    //   再生中なら 1 コマ飛ぶだけだが、エンコード中は割れた絵が
+    //   そのまま出力ファイルに焼き付いて二度と直らない。
+    //   前フレームを再送してハンドシェイクだけ回し、次のラウンドで
+    //   align_tiles_pts に揃え直させる。
+    //
+    //   ただし永久に見送ると再生が止まるので、連続 kMaxMismatchSkips 回で
+    //   諦めて通す（そのときは必ず警告を出す）。
+    // ==============================================================
+    if (!check_tile_pts_mismatch()) {
+        if (mismatch_skips_ < kMaxMismatchSkips) {
+            mismatch_skips_++;
+            if (Frame.d_y[0] != nullptr)
+                emit send_decode_image(Frame, true, video_reverse_flag);
+            return;
+        }
+        qWarning().noquote()
+            << QString("[nvgpudecode] タイルが連続 %1 回揃わないので、"
+                       "割れたまま出力します FrameNo=%2")
+                   .arg(kMaxMismatchSkips).arg(Frame.FrameNo);
+        mismatch_skips_ = 0;
+    } else {
+        mismatch_skips_ = 0;
+    }
 
     Frame.src_mode   = SRC_NV12_TILE;
     Frame.tile_count = (int)vd.size();
@@ -1092,6 +1294,36 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
     Frame.hour = time / 3600;
     Frame.minute = (int(time) % 3600) / 60;
     Frame.second = fmod(time, 60.0);
+
+    // ==============================================================
+    // ★ NVDEC の出力コピー完了を記録する（★今回の修正の中核）
+    //
+    //   cuvid は avcodec_receive_frame の中で同期していない。
+    //   cuviddec.c の cuvid_output_frame は
+    //       cuMemcpy2DAsync(&cpy, device_hwctx->stream)
+    //   を積むだけで cuStreamSynchronize を呼ばずに戻る。
+    //   したがってここで Frame.d_y が指す NV12 面は「まだ転送中」。
+    //
+    //   「cuvid が内部で同期しているから追加同期は不要」として
+    //   以前の Dummy×3 + eventSync を外したのが誤りだった。
+    //
+    //   CPU は止めず、GPU 側の順序だけを渡す。
+    // ==============================================================
+    //   ★ dec_stream は NULL（既定ストリーム）でも正常。
+    //     判定には dec_sync_by_event を使うこと。
+    if (dec_sync_by_event && ringNo < (int)decode_ready_ev.size() && decode_ready_ev[ringNo]) {
+        if (cudaEventRecord(decode_ready_ev[ringNo], dec_stream) == cudaSuccess) {
+            Frame.decode_ready = decode_ready_ev[ringNo];
+        } else {
+            cudaGetLastError();
+            cudaDeviceSynchronize();          // 記録できないなら確実に待つ
+            Frame.decode_ready = nullptr;
+        }
+    } else {
+        // フォールバック（別コンテキスト等）。CPU を止めてでも正しさを採る。
+        cudaDeviceSynchronize();
+        Frame.decode_ready = nullptr;
+    }
 
     //リングを回す（次のデコードは別の面へ）
     ringNo++;
@@ -1168,7 +1400,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
             // ---------- EOF ----------
             if (ret < 0) {
                 avcodec_send_packet(vd[0].codec_ctx, nullptr);
-                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
+                if (receive_into_slot(0)) {
                     av_packet_unref(packet);
                     break;
                 }
@@ -1196,16 +1428,14 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
                 // ★ EAGAIN でパケットを捨てない
                 int r = avcodec_send_packet(vd[0].codec_ctx, packet);
                 if (r == AVERROR(EAGAIN)) {
-                    if (avcodec_receive_frame(vd[0].codec_ctx,
-                                              vd[0].hw_frames[ringNo]) == 0) {
+                    if (receive_into_slot(0)) {
                         av_packet_unref(packet);
                         break;
                     }
                     r = avcodec_send_packet(vd[0].codec_ctx, packet);   // ★ 再送
                 }
                 if (r == 0) {
-                    if (avcodec_receive_frame(vd[0].codec_ctx,
-                                              vd[0].hw_frames[ringNo]) == 0) {
+                    if (receive_into_slot(0)) {
                         av_packet_unref(packet);
                         break;
                     }
@@ -1272,10 +1502,10 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
 
         if (eof) {
             for (int i = 0; i < N; i++) {
+                if (got_frame[i]) continue;          // ★ 取得済みは触らない
                 avcodec_send_packet(vd[i].codec_ctx, nullptr);
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
-                    pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
-                    if (!got_frame[i]) { got_frame[i] = true; got_count++; }
+                if (receive_into_slot(i, &pts[i])) {
+                    got_frame[i] = true; got_count++;
                 }
             }
         }

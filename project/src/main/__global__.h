@@ -241,6 +241,26 @@ struct VideoFrame {
 
     int FrameNo=0;
 
+    // ==========================================================
+    // ★ デコード結果の「GPU転送完了」イベント
+    //
+    //   FFmpeg の cuvid_output_frame (libavcodec/cuviddec.c) は
+    //     cuMemcpy2DAsync(&cpy, device_hwctx->stream)
+    //   で NV12 を出力フレームへ積むだけで、cuStreamSynchronize を
+    //   一切呼ばずに戻る。つまり avcodec_receive_frame() が成功した
+    //   時点でも、d_y / d_uv の中身はまだ転送中でありうる。
+    //
+    //   GUIスレッドの結合カーネルは別ストリーム(interop_stream)で
+    //   走るので、何もしないと「書き込み途中のNV12面」を読む。
+    //   タイルの途中に水平の継ぎ目が出る、pts は正しいのに絵が壊れる、
+    //   他アプリを前面に出したりNVDECが混むと悪化する——の正体。
+    //
+    //   そこでデコード側が転送完了をイベントに記録し、GUI側は
+    //   cudaStreamWaitEvent() でGPU側だけ待つ。CPUは止めない。
+    //   nullptr のときは待ち不要（CPUデコード経路など）。
+    // ==========================================================
+    cudaEvent_t decode_ready = nullptr;
+
     //時間
     int hour = 0;
     int minute = 0;
