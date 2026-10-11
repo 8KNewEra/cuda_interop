@@ -204,7 +204,7 @@ save_encode::save_encode(int h,int w) {
 
     // ★ 不変条件: ring > nvenc_surfaces_
     //   VRAM が厳しい場合はこの +4 を詰められるが、+1 未満にはしないこと。
-    encodeRingSize = nvenc_surfaces_ + 144;
+    encodeRingSize = nvenc_surfaces_ + 4;
 
     // ---- 参考: リングが消費する VRAM を出しておく ----
     {

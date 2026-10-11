@@ -1,5 +1,8 @@
 #include "src/videoprocess/nvgpudecode.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 // ===============================
 // mp4 NVIDIA向けGPUデコード
 // ===============================
@@ -439,6 +442,273 @@ void nvgpudecode::get_decode_image(){
     }
 }
 
+
+// ==============================================================
+// ★ パケット 1 本をストリーム i のデコーダへ渡し、出たフレームを受け取る
+//
+//   ★★ EAGAIN でパケットを捨てないこと。★★
+//
+//   cuvid は出力キューが埋まると avcodec_send_packet() が EAGAIN を返す。
+//   以前は戻り値が 0 のときしか処理せず、そのまま av_packet_unref() で
+//   捨てていたため、そのストリームだけフレームが 1 枚永久に欠けていた。
+//   負荷が高いストリームほど EAGAIN を踏みやすいので、
+//   「たまにどこかのタイルだけ取り残される」症状の原因になる。
+//
+//   EAGAIN が来たら 1 枚受け取ってキューを空け、必ず送り直す。
+// ==============================================================
+// ★ デストラクタ：保留パケットを解放する
+// ==============================================================
+nvgpudecode::~nvgpudecode()
+{
+    clear_pending();
+}
+
+
+// ==============================================================
+// ★ 保留パケットの破棄
+//   flush / シーク / 終了時に呼ぶ。残したまま flush すると、
+//   シーク前のパケットをシーク後のデコーダへ入れてしまう。
+// ==============================================================
+void nvgpudecode::clear_pending()
+{
+    for (auto& q : pending_) {
+        while (!q.empty()) {
+            AVPacket* p = q.front();
+            q.pop_front();
+            av_packet_free(&p);
+        }
+    }
+}
+
+
+// ==============================================================
+// ★ ファイルからパケットを 1 本読んで pending_ へ積む
+//
+//   ★★ ここでデコーダへは入れない。★★
+//     デコーダに溜めると *_cuvid の出力サーフェス（自前プール、
+//     既定 25 枚）を食い潰してデコードが止まる。
+//     圧縮パケットをアプリ側で持つぶんには桁違いに軽い。
+//
+//   音声パケットはその場で処理して積まない。
+//   戻り値 false = EOF
+// ==============================================================
+bool nvgpudecode::read_into_pending()
+{
+    if (pending_.size() != vd.size()) pending_.resize(vd.size());
+
+    int ret = av_read_frame(fmt_ctx, packet);
+    if (ret < 0) {
+        av_packet_unref(packet);
+        return false;                       // EOF
+    }
+
+    if (packet->stream_index == audio_stream_index) {
+        get_decode_audio();
+        av_packet_unref(packet);
+        return true;
+    }
+
+    for (int i = 0; i < (int)vd.size(); i++) {
+        if (packet->stream_index != vd[i].stream_index) continue;
+
+        if ((int)pending_[i].size() >= kMaxPending) {
+            // ここまで溜まるのは揃えられていない証拠。捨てずに警告だけ出し、
+            // 一番古いものから落とす（落とさないとメモリが伸び続ける）。
+            warn_once_in_a_while(
+                QString("[nvgpudecode] tile%1 の保留パケットが上限 %2 に達しました")
+                    .arg(i).arg(kMaxPending));
+            AVPacket* old = pending_[i].front();
+            pending_[i].pop_front();
+            av_packet_free(&old);
+        }
+
+        AVPacket* clone = av_packet_clone(packet);
+        if (clone) pending_[i].push_back(clone);
+        break;
+    }
+
+    av_packet_unref(packet);
+    return true;
+}
+
+
+// ==============================================================
+// ★ pending_[i] から 1 本取り出してデコーダへ入れ、出た絵を受け取る
+//
+//   ★ 送ったら必ず受け取ること（入出力 1:1）。
+//     受け取らずに溜めると cuvid の出力プールが枯渇する。
+//   ★ EAGAIN でパケットを捨てないこと。捨てるとそのタイルだけ
+//     フレームが欠けて、以降ずっとタイル間がずれる。
+//     （これが元々のズレの原因だった）
+//
+//   戻り値 true = このストリームからフレームが 1 枚出た
+// ==============================================================
+bool nvgpudecode::pump_stream(int i, std::vector<bool>& got,
+                              std::vector<int64_t>& pts, int& got_count)
+{
+    if (i < 0 || i >= (int)pending_.size() || pending_[i].empty()) return false;
+
+    AVPacket* p = pending_[i].front();
+
+    int r = avcodec_send_packet(vd[i].codec_ctx, p);
+
+    if (r == AVERROR(EAGAIN)) {
+        // 出力キューが満杯。1 枚受け取って空けてから送り直す。
+        // ★ ここで pending_ から取り除かないこと（＝捨てない）
+        if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
+            pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+            if (!got[i]) { got[i] = true; got_count++; }
+            return true;
+        }
+        return false;
+    }
+
+    // 送れたので保留から外す
+    pending_[i].pop_front();
+    av_packet_free(&p);
+
+    if (r < 0) return false;
+
+    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
+        pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+        if (!got[i]) { got[i] = true; got_count++; }
+        return true;
+    }
+    return false;                           // まだ出力遅延の途中
+}
+
+
+// ==============================================================
+// ★ 警告の連打を防ぐ
+//   同じ原因で毎フレーム出すと、肝心のログが流れて読めなくなる。
+// ==============================================================
+void nvgpudecode::warn_once_in_a_while(const QString& msg)
+{
+    const int d = Frame.FrameNo - last_warn_frame_;
+    if (d > -60 && d < 60) return;
+    last_warn_frame_ = Frame.FrameNo;
+    qWarning().noquote() << msg;
+}
+
+
+// ==============================================================
+// ★ タイル間の pts を揃える（max 基準・順再生のまま）
+//
+//   一番進んでいるタイルを基準に、「遅れているタイルだけ」を前へ進める。
+//   シークはしない。
+//
+//   進め方は 2 段階:
+//     ① デコーダ内部に溜まっている出力をまず引き出す
+//        （出力遅延の差ぶんは、これだけで追いつく）
+//     ② それでも足りなければ、そのストリームの pending_ から
+//        パケットを入れて進める
+//
+//   ★ 他のタイルには触らない。全員へ一斉に送ると全員が進むので
+//     差が縮まらない。読んだパケットは pending_ に積むだけで、
+//     デコーダへは入れない（プールを食わない）。
+//
+//   ★ 揃っている間のコストは int64 の比較 N 回だけで、そのまま return する。
+// ==============================================================
+bool nvgpudecode::align_tiles_pts(std::vector<int64_t>& pts)
+{
+    const int N = (int)vd.size();
+    if (N <= 1) return true;
+    if ((int)pending_.size() != N) pending_.resize(N);
+
+    // 許容誤差は半フレーム
+    const int64_t tol = (VideoInfo.pts_per_frame > 1.0)
+                            ? (int64_t)(VideoInfo.pts_per_frame / 2.0)
+                            : 0;
+
+    std::vector<bool> dummy_got(N, true);   // ここでは got を進めない
+    int dummy_count = N;
+
+    for (int round = 0; round < kAlignMaxRounds; round++) {
+
+        // ---- 基準 = 一番進んでいるタイル（max）----
+        int64_t target = AV_NOPTS_VALUE;
+        for (int i = 0; i < N; i++) {
+            if (pts[i] == AV_NOPTS_VALUE) continue;
+            if (target == AV_NOPTS_VALUE || pts[i] > target) target = pts[i];
+        }
+        if (target == AV_NOPTS_VALUE) return false;   // 1 枚も取れていない
+
+        bool aligned   = true;
+        bool advanced  = false;
+        bool need_read = false;
+
+        for (int i = 0; i < N; i++) {
+            if (pts[i] != AV_NOPTS_VALUE && pts[i] + tol >= target) continue;
+
+            // ① デコーダ内部の出力遅延ぶんを引き出す
+            while (pts[i] == AV_NOPTS_VALUE || pts[i] + tol < target) {
+                if (avcodec_receive_frame(vd[i].codec_ctx,
+                                          vd[i].hw_frames[ringNo]) != 0) break;
+                pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+                advanced = true;
+            }
+
+            // ② 足りなければ、このストリームにだけパケットを入れて進める
+            int spin = 0;
+            while ((pts[i] == AV_NOPTS_VALUE || pts[i] + tol < target) &&
+                   !pending_[i].empty() && spin < kLoopGuard) {
+                if (pump_stream(i, dummy_got, pts, dummy_count)) advanced = true;
+                spin++;
+            }
+
+            if (pts[i] == AV_NOPTS_VALUE || pts[i] + tol < target) {
+                aligned = false;
+                if (pending_[i].empty()) need_read = true;
+            }
+        }
+
+        if (aligned) return true;
+
+        // 追いつかせる材料が無いなら読み足す（pending_ に積むだけ）
+        if (need_read) {
+            if (!read_into_pending()) return false;   // EOF
+            continue;
+        }
+
+        if (!advanced) return false;        // これ以上進めない
+    }
+
+    return false;
+}
+
+
+// ==============================================================
+// ★ タイル間 pts 不一致の検出
+//
+//   align_tiles_pts() で揃えているので通常は出ない。
+//   出た場合は「同じ表示フレームに別の絵のタイルが混ざっている」ので、
+//   絵が割れる。再発を取り逃がさないための保険。
+// ==============================================================
+void nvgpudecode::check_tile_pts_mismatch()
+{
+    const int N = (int)vd.size();
+    if (N <= 1) return;
+
+    const int64_t tol = (VideoInfo.pts_per_frame > 1.0)
+                            ? (int64_t)(VideoInfo.pts_per_frame / 2.0)
+                            : 0;
+
+    const int64_t base = vd[0].hw_frames[ringNo]->best_effort_timestamp;
+
+    for (int i = 1; i < N; i++) {
+        const int64_t p = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+        const int64_t d = (p > base) ? (p - base) : (base - p);
+        if (d > tol) {
+            warn_once_in_a_while(
+                QString("[nvgpudecode] TILE PTS MISMATCH tile%1 pts=%2 vs tile0=%3 (%4 frames)")
+                    .arg(i).arg(p).arg(base)
+                    .arg((double)(p - base) / VideoInfo.pts_per_frame, 0, 'f', 1));
+            break;
+        }
+    }
+}
+
+
 //映像シングルストリーム
 void nvgpudecode::get_singledecode_image() {
     //----------- シーク処理 -----------
@@ -516,8 +786,21 @@ void nvgpudecode::get_singledecode_image() {
 
         // ----------- VIDEO PACKET -----------
         if (packet->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
-                if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
+            // ★ EAGAIN でパケットを捨てない（マルチと同じ理由）。
+            //   単一ストリームではタイルズレにはならないが、
+            //   そのぶんフレームが欠けてカクつきの原因になる。
+            int r = avcodec_send_packet(vd[0].codec_ctx, packet);
+            if (r == AVERROR(EAGAIN)) {
+                if (avcodec_receive_frame(vd[0].codec_ctx,
+                                          vd[0].hw_frames[ringNo]) == 0) {
+                    av_packet_unref(packet);
+                    break;
+                }
+                r = avcodec_send_packet(vd[0].codec_ctx, packet);   // ★ 再送
+            }
+            if (r == 0) {
+                if (avcodec_receive_frame(vd[0].codec_ctx,
+                                          vd[0].hw_frames[ringNo]) == 0) {
                     av_packet_unref(packet);
                     break;
                 }
@@ -532,7 +815,11 @@ void nvgpudecode::get_singledecode_image() {
 
 //映像マルチストリーム
 void nvgpudecode::get_multidecode_image() {
-    std::vector<bool> got_frame(vd.size(), false);
+    const int N = (int)vd.size();
+    if ((int)pending_.size() != N) pending_.resize(N);
+
+    std::vector<bool>    got_frame(N, false);
+    std::vector<int64_t> pts(N, AV_NOPTS_VALUE);   // ★ 各タイルが掴んだ絵の pts
     int got_count = 0;
 
     //----------- シーク処理 -----------
@@ -551,6 +838,7 @@ void nvgpudecode::get_multidecode_image() {
         for (auto& dec : vd) {
             avcodec_flush_buffers(dec.codec_ctx);
         }
+        clear_pending();          // ★ flush したら保留パケットも捨てる
 
         av_seek_frame(fmt_ctx, vd[0].stream_index,
                       slider_No * VideoInfo.pts_per_frame,
@@ -567,51 +855,74 @@ void nvgpudecode::get_multidecode_image() {
         }
     }
 
-    while (got_count < vd.size()) {
-        int ret = av_read_frame(fmt_ctx, packet);
+    // -------------------------------------------------------------
+    // ★ 各ストリームから 1 枚ずつ取り出す。
+    //
+    //   パケットは pending_ に積んでから、まだフレームを取れていない
+    //   ストリームにだけ投入する。全員へ一斉に送らないのが要点で、
+    //   これによって「遅れているタイルだけを進める」ことができる。
+    //   投入したら必ず受け取る（cuvid のプールを食わないため）。
+    // -------------------------------------------------------------
+    bool eof = false;
+    // ★ 空回りガード。pump_stream が EAGAIN で送れず受け取れもしない、
+    //   あるいは映像パケットがいつまでも来ない場合に無限ループしないよう、
+    //   読み足し回数で上限を切る。
+    int read_guard = 0;
+    while (got_count < N && read_guard < kLoopGuard) {
 
-        if (ret < 0) {
-            for (int i = 0; i < vd.size(); i++) {
-                avcodec_send_packet(vd[i].codec_ctx, nullptr);
-                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
-                    got_frame[i] = true;
-                    got_count++;
-                }
-            }
-
-            if (Frame.FrameNo >= VideoInfo.end_range_framesNo) {
-                emit decode_end();
-                high_res_seek_frame(VideoInfo.start_range_framesNo,false);
-                // ★ high_res_seek_frame の中で既に1フレーム emit しているので抜ける
-                av_packet_unref(packet);
-                return;
-            }
-
-            av_packet_unref(packet);
-            break;
-        }
-
-        if (packet->stream_index == audio_stream_index) {
-            get_decode_audio();
-            av_packet_unref(packet);
-            continue;
-        }
-
-        for (int i = 0; i < vd.size(); i++) {
-            if (packet->stream_index == vd[i].stream_index && !got_frame[i]) {
-                if (avcodec_send_packet(vd[i].codec_ctx, packet) == 0) {
-                    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
-                        got_frame[i] = true;
-                        got_count++;
-                    }
-                }
+        // ① 保留分から、まだ取れていないストリームを進める
+        for (int i = 0; i < N; i++) {
+            int spin = 0;
+            while (!got_frame[i] && !pending_[i].empty() && spin < kLoopGuard) {
+                pump_stream(i, got_frame, pts, got_count);
+                spin++;
             }
         }
+        if (got_count >= N) break;
 
-        av_packet_unref(packet);
+        // ② 足りなければ読み足す（pending_ に積むだけ）
+        if (!read_into_pending()) { eof = true; break; }
+        read_guard++;
     }
 
-    publish_decode_frame();
+    if (read_guard >= kLoopGuard) {
+        warn_once_in_a_while(
+            QString("[nvgpudecode] フレームを揃えられずに打ち切りました FrameNo=%1 (取得 %2/%3)")
+                .arg(Frame.FrameNo).arg(got_count).arg(N));
+    }
+
+    // ----------- EOF 処理 -----------
+    if (eof) {
+        for (int i = 0; i < N; i++) {
+            avcodec_send_packet(vd[i].codec_ctx, nullptr);
+            if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
+                pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+                if (!got_frame[i]) { got_frame[i] = true; got_count++; }
+            }
+        }
+
+        if (Frame.FrameNo >= VideoInfo.end_range_framesNo) {
+            emit decode_end();
+            high_res_seek_frame(VideoInfo.start_range_framesNo,false);
+            // ★ high_res_seek_frame の中で既に1フレーム emit しているので抜ける
+            return;
+        }
+    }
+
+    // -------------------------------------------------------------
+    // ★ タイル間の pts を揃える（順再生のまま。シークはしない）
+    //
+    //   揃わなかった場合もここでは何もしない。前フレームを保持したまま
+    //   次のラウンドへ進めば、遅れているタイルだけが前進して自然に揃う。
+    //   publish 側が null を弾くので、割れた絵は表示されない。
+    // -------------------------------------------------------------
+    if (!align_tiles_pts(pts)) {
+        warn_once_in_a_while(
+            QString("[nvgpudecode] タイルの pts がまだ揃っていません FrameNo=%1")
+                .arg(Frame.FrameNo));
+    }
+
+    publish_decode_frame(&got_frame);
 }
 
 //オーディオ
@@ -708,7 +1019,45 @@ void nvgpudecode::get_decode_audio()
 //   ・タイルの寿命は vd[i].hw_frames のリングが一周するまで。
 //     ringSize(=12) > 同時走行フレーム数(3〜4) なので安全。
 // ==============================================================
-void nvgpudecode::publish_decode_frame(){
+void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
+
+    // -------------------------------------------------------------
+    // ★ 1 タイルでもフレームを取れていなければ、新しい Frame を作らない。
+    //
+    //   hw_frames[ringNo] が埋まっていないタイルの data[0] は null で、
+    //   そのまま GUI へ渡すと「入力データが null です」になる。
+    //   前回の Frame を pause 扱いで再送し、ハンドシェイクだけ回す
+    //   （emit しないと receve_decode_flag が来ず、再生が止まる）。
+    // -------------------------------------------------------------
+    if (got) {
+        for (int i = 0; i < (int)vd.size() && i < (int)got->size(); i++) {
+            if ((*got)[i]) continue;
+
+            warn_once_in_a_while(
+                QString("[nvgpudecode] tile%1 のフレームを取得できませんでした。"
+                        "前フレームを再送します FrameNo=%2").arg(i).arg(Frame.FrameNo));
+
+            if (Frame.d_y[0] != nullptr)
+                emit send_decode_image(Frame, true, video_reverse_flag);
+            return;
+        }
+    }
+
+    // ★ 念のためポインタを直接確認する（上の got と二重だが、
+    //   got を渡さない経路からの呼び出しもあるため）
+    for (int i = 0; i < (int)vd.size() && i < VideoFrame::MAX_TILES; i++) {
+        if (vd[i].hw_frames[ringNo]->data[0] == nullptr) {
+            warn_once_in_a_while(
+                QString("[nvgpudecode] tile%1 の中身が空です。前フレームを再送します")
+                    .arg(i));
+            if (Frame.d_y[0] != nullptr)
+                emit send_decode_image(Frame, true, video_reverse_flag);
+            return;
+        }
+    }
+
+    // ★ タイル間の pts がずれていないか最終確認（保険）
+    check_tile_pts_mismatch();
 
     Frame.src_mode   = SRC_NV12_TILE;
     Frame.tile_count = (int)vd.size();
@@ -844,8 +1193,19 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
             // ----------- VIDEO PACKET -----------
             if (packet->stream_index == vd[0].stream_index) {
-                if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
-                    if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
+                // ★ EAGAIN でパケットを捨てない
+                int r = avcodec_send_packet(vd[0].codec_ctx, packet);
+                if (r == AVERROR(EAGAIN)) {
+                    if (avcodec_receive_frame(vd[0].codec_ctx,
+                                              vd[0].hw_frames[ringNo]) == 0) {
+                        av_packet_unref(packet);
+                        break;
+                    }
+                    r = avcodec_send_packet(vd[0].codec_ctx, packet);   // ★ 再送
+                }
+                if (r == 0) {
+                    if (avcodec_receive_frame(vd[0].codec_ctx,
+                                              vd[0].hw_frames[ringNo]) == 0) {
                         av_packet_unref(packet);
                         break;
                     }
@@ -868,6 +1228,9 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
 //高精度シークマルチストリーム
 void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
+    const int N = (int)vd.size();
+    if ((int)pending_.size() != N) pending_.resize(N);
+
     // ----------- シーク処理 -----------
     // ビデオ/オーディオの両方 flush
     if (audio_ctx)
@@ -876,6 +1239,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
     for (auto& dec : vd) {
         avcodec_flush_buffers(dec.codec_ctx);
     }
+    clear_pending();              // ★ flush したら保留パケットも捨てる
 
     av_seek_frame(fmt_ctx, vd[0].stream_index,
                   targetFrameNo * VideoInfo.pts_per_frame,
@@ -887,38 +1251,38 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
         FrameNo = 0;
     }
     while(!thread_stop_flag){
-        std::vector<bool> got_frame(vd.size(), false);
+        std::vector<bool>    got_frame(N, false);
+        std::vector<int64_t> pts(N, AV_NOPTS_VALUE);
         int got_count = 0;
 
-        while (got_count < vd.size()) {
-            int ret = av_read_frame(fmt_ctx, packet);
-
-            if (ret < 0) {
-                for (int i = 0; i < vd.size(); i++) {
-                    avcodec_send_packet(vd[i].codec_ctx, nullptr);
-                    if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
-                        got_frame[i] = true;
-                        got_count++;
-                    }
-                }
-
-                av_packet_unref(packet);
-                break;
-            }
-
-            for (int i = 0; i < vd.size(); i++) {
-                if (packet->stream_index == vd[i].stream_index && !got_frame[i]) {
-                    if (avcodec_send_packet(vd[i].codec_ctx, packet) == 0) {
-                        if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
-                            got_frame[i] = true;
-                            got_count++;
-                        }
-                    }
+        bool eof = false;
+        int  read_guard = 0;
+        while (got_count < N && read_guard < kLoopGuard) {
+            for (int i = 0; i < N; i++) {
+                int spin = 0;
+                while (!got_frame[i] && !pending_[i].empty() && spin < kLoopGuard) {
+                    pump_stream(i, got_frame, pts, got_count);
+                    spin++;
                 }
             }
-
-            av_packet_unref(packet);
+            if (got_count >= N) break;
+            if (!read_into_pending()) { eof = true; break; }
+            read_guard++;
         }
+
+        if (eof) {
+            for (int i = 0; i < N; i++) {
+                avcodec_send_packet(vd[i].codec_ctx, nullptr);
+                if (avcodec_receive_frame(vd[i].codec_ctx, vd[i].hw_frames[ringNo]) == 0) {
+                    pts[i] = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+                    if (!got_frame[i]) { got_frame[i] = true; got_count++; }
+                }
+            }
+        }
+
+        // ★ シーク直後はタイル間のずれが一番出やすい。ここで必ず揃える。
+        //   flush 直後なので各デコーダは空から始まっており、通常は揃う。
+        align_tiles_pts(pts);
 
         //フレーム番号記憶
         back1FrameNo = FrameNo;
@@ -926,9 +1290,10 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo<=FrameNo){
-            publish_decode_frame();
+            publish_decode_frame(&got_frame);
             break;
         }
-        av_packet_unref(packet);
+
+        if (eof) break;           // これ以上進めない
     }
 }
