@@ -135,7 +135,7 @@ private:
 
     CudaObjRetireRing inputSurfRetire;   // cudaResource1（入力テクスチャ）
     CudaObjRetireRing fboTexRetire;      // cudaResource2（FBO → NVENC）
-    CudaObjRetireRing histTexRetire;     // cudaResource_hist（ヒストグラム読み出し）
+    CudaObjRetireRing histTexRetire;     // cudaResource2（ヒストグラム読み出し）
 
     std::vector<int> make_nice_y_labels(int max_value);
     void queryCudaGPUs();
@@ -144,14 +144,11 @@ private:
     //CUDA Interop
     cudaGraphicsResource* cudaResource1;
     cudaGraphicsResource* cudaResource2;
-    cudaGraphicsResource* cudaResource_hist=nullptr;
     cudaGraphicsResource* cudaResource_hist_draw=nullptr;
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
     cudaStream_t interop_stream = nullptr;
-    cudaEvent_t interop_event = nullptr;
 
-    // ★ FBOのGL描画完了を save_encode の st へ橋渡しするイベント。
-    //   interop_event と共用すると同一フレーム内で用途が衝突するので分ける。
+    // ★ FBOのGL描画完了を save_encode の st へ橋渡しするイベント
     cudaEvent_t encode_gl_event = nullptr;
 
     // ==========================================================
@@ -231,7 +228,6 @@ private:
     //動画情報
     // ★ 未初期化のまま paintGL / GLresize から参照されるのを防ぐ
     int width_ = 0, height_ = 0;
-    int FrameNo=0;
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
     //fpsタイマー
@@ -243,13 +239,11 @@ private:
     cudaEvent_t hist_event = nullptr;
     HistData* d_hist_data = nullptr;
     HistStats* d_hist_stats = nullptr;
-    HistData h_hist_data;
     HistStats h_hist_stats;
     int num_bins = 256;
     int line_y1,line_y2,line_y3,line_y4;
 
     // 音声
-    bool audio_mode=false;
     QVector<QByteArray> audio_pcm{};
 };
 

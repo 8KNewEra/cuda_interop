@@ -50,10 +50,6 @@ GLWidget::~GLWidget() {
         cudaStreamDestroy(interop_stream);
         interop_stream = nullptr;
     }
-    if (interop_event) {
-        cudaEventDestroy(interop_event);
-        interop_event = nullptr;
-    }
     if (encode_gl_event) {
         cudaEventDestroy(encode_gl_event);
         encode_gl_event = nullptr;
@@ -75,10 +71,6 @@ GLWidget::~GLWidget() {
         hist_event = nullptr;
     }
 
-    if (cudaResource_hist) {
-        cudaGraphicsUnregisterResource(cudaResource_hist);
-        cudaResource_hist = nullptr;
-    }
     if (cudaResource_hist_draw) {
         cudaGraphicsUnregisterResource(cudaResource_hist_draw);
         cudaResource_hist_draw = nullptr;
@@ -204,7 +196,6 @@ void GLWidget::initializeGL()
 
     //stream
     cudaStreamCreate(&interop_stream);
-    cudaEventCreate(&interop_event);   // 現在は未使用（将来の同期用に残置）
     cudaEventCreateWithFlags(&encode_gl_event, cudaEventDisableTiming);
 
     // ★ surface / texture object の遅延破棄リング
@@ -347,7 +338,7 @@ void GLWidget::paintGL(){
     QRect histRect;
 
     if (g_AppSettings.histgram_flag &&
-        cudaResource_hist && cudaResource_hist_draw && cudaResource2)
+        cudaResource_hist_draw && cudaResource2)
     {
         histgram_Analysys();
         labels = make_nice_y_labels(h_hist_stats.max_y_axis);
@@ -1075,8 +1066,10 @@ bool GLWidget::createArrayTexture(cudaArray_t array, cudaTextureObject_t& out,
 
 //OpenGL→CUDAの初期化、登録など
 void GLWidget::initTextureCuda(int width,int height) {
-        // ★ 参照先の cudaArray が無くなるので、先に生存中の object を破棄する
+        // ★ 参照先の cudaArray が無くなるので、先に生存中の object を破棄する。
+        //   ヒストグラムも cudaResource2 の array を使うので一緒に drain する。
         fboTexRetire.drain();
+        histTexRetire.drain();
 
         //既存リソースの破棄
         if (cudaResource2) {
@@ -1227,17 +1220,10 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
         }
         inputSurfRetire.store(si, surf);
 
-        // ==========================================================
-        // ★ NVDEC の出力コピー完了を GPU 側で待つ
-        //
-        //   cuvid は出力 NV12 を自分のストリームへ cuMemcpy2DAsync で
-        //   積むだけで同期せずに戻る（libavcodec/cuviddec.c）。
-        //   この待ちが無いと、結合カーネルが「書き込み途中の面」を
-        //   読んでタイルの途中に水平の継ぎ目が出る。
-        //   pts は正しいので TILE PTS MISMATCH には引っかからない。
-        //
-        //   cudaStreamWaitEvent は GPU 側の待ちなので CPU は止まらない。
-        // ==========================================================
+        // ★ NVDEC の出力コピー完了を GPU 側で待つ。
+        //   cuvid は cuMemcpy2DAsync を積むだけで同期せずに戻るので、
+        //   これが無いと結合カーネルが転送途中の面を読み、タイルの
+        //   途中に水平の継ぎ目が出る（pts は正しいので検出もされない）。
         if (Frame.decode_ready) {
             cudaStreamWaitEvent(interop_stream, Frame.decode_ready, 0);
         }
@@ -1430,10 +1416,6 @@ void GLWidget::initCudaHist() {
     histTexRetire.drain();
 
     // --- 1. 既存 CUDA Graphics Resource を解放 ---
-    if (cudaResource_hist) {
-        cudaGraphicsUnregisterResource(cudaResource_hist);
-        cudaResource_hist = nullptr;
-    }
     if (cudaResource_hist_draw) {
         cudaGraphicsUnregisterResource(cudaResource_hist_draw);
         cudaResource_hist_draw = nullptr;
@@ -1455,24 +1437,21 @@ void GLWidget::initCudaHist() {
         d_hist_data = nullptr;      // ★ 元は d_hist_stats を二重に nullptr していた
     }
 
-    // --- 4. 新規登録 fbo → cudaResource_hist ---
-    cudaError_t err = cudaGraphicsGLRegisterImage(
-        &cudaResource_hist,
-        fboTextureID,
-        GL_TEXTURE_2D,
-        cudaGraphicsRegisterFlagsNone
-        );
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsGLRegisterImage failed:" << cudaGetErrorString(err);
-    }
+    // ★ fbo は CUDA へ登録し直さない。
+    //   同一 GL オブジェクトの複数回登録は CUDA の未定義動作で、
+    //   fboTextureID は initTextureCuda が cudaResource2（ReadOnly）
+    //   として登録済み。ヒストグラムはそれをそのまま使う。
+    //   再生中は NVENC 経路が、エンコード中はヒストグラムが走らないので
+    //   競合しない。
+    cudaError_t err = cudaSuccess;
 
-    // --- 5. 新規 VBO 作成 ---
+    // --- 4. 新規 VBO 作成 ---
     glGenBuffers(1, &vbo_hist);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_hist);
     glBufferData(GL_ARRAY_BUFFER, num_bins * 3 * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    // --- 6. VBO → CUDA Resource 登録 ---
+    // --- 5. VBO → CUDA Resource 登録 ---
     err = cudaGraphicsGLRegisterBuffer(
         &cudaResource_hist_draw,
         vbo_hist,
@@ -1482,24 +1461,23 @@ void GLWidget::initCudaHist() {
         qDebug() << "cudaGraphicsGLRegisterBuffer failed:" << cudaGetErrorString(err);
     }
 
-    // --- 7. CUDA 側のメモリを確保 ---
+    // --- 6. CUDA 側のメモリを確保 ---
     cudaMalloc(&d_hist_stats, sizeof(HistStats));
     cudaMalloc(&d_hist_data, sizeof(HistData));
 }
 
 //OpenGLからCUDAへ転送+ヒストグラム解析
 void GLWidget::histgram_Analysys(){
-    if (!cudaResource_hist) {
-        qDebug() << "cudaResource_analysis is nullptr, can't map";
-        return;
-    }
-    if (!cudaResource2) {
-        qDebug() << "cudaResource_analysis is nullptr, can't map";
+    if (!cudaResource2 || !cudaResource_hist_draw) {
+        qDebug() << "histgram: graphics resource is nullptr, can't map";
         return;
     }
 
-    //一括マップ
-    cudaGraphicsResource* resources[] = { cudaResource_hist, cudaResource_hist_draw };
+    // 一括マップ
+    //   ★ ストリームは 0 のままにすること。calc_histgram /
+    //     histgram_normalize が既定ストリームで走るので、
+    //     map/unmap のフェンスも同じストリームに張る必要がある。
+    cudaGraphicsResource* resources[] = { cudaResource2, cudaResource_hist_draw };
     cudaError_t err = cudaGraphicsMapResources(2, resources, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
@@ -1510,7 +1488,7 @@ void GLWidget::histgram_Analysys(){
     {
         //サブリソースの cudaArray を取得
         cudaArray_t cuArray;
-        err = cudaGraphicsSubResourceGetMappedArray(&cuArray, cudaResource_hist, 0, 0);
+        err = cudaGraphicsSubResourceGetMappedArray(&cuArray, cudaResource2, 0, 0);
         if (err != cudaSuccess) {
             qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
             cudaGraphicsUnmapResources(2, resources, 0);
