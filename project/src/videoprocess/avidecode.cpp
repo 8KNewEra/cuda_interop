@@ -122,6 +122,9 @@ bool avidecode::initialized_ffmpeg()
 
     qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
 
+    // ★ 欠番の多いファイルでは avg_frame_rate が下振れする。実測で補正する。
+    fix_frame_grid(vd[0].stream_index, time_base_d);
+
     if (!get_last_frame_pts()) {
         Error_String = "get_last_frame_pts failed";
         return false;
@@ -438,7 +441,7 @@ void avidecode::gpu_upload(){
         cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
                      f->data[2], f->linesize[2], (W / 2) * 2, H / 2, cudaMemcpyHostToDevice);
         Frame.plane_format = YUVFMT_YUV420P_10;
-        Frame.plane_is_be  = (f->format == AV_PIX_FMT_YUV420P10BE);
+        Frame.plane_is_be  = 0;   // case ラベルが LE なので常に LE
         break;
 
     case AV_PIX_FMT_YUV422P:
@@ -460,7 +463,7 @@ void avidecode::gpu_upload(){
         cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
                      f->data[2], f->linesize[2], (W / 2) * 2, H, cudaMemcpyHostToDevice);
         Frame.plane_format = YUVFMT_YUV422P_10;
-        Frame.plane_is_be  = (f->format == AV_PIX_FMT_YUV422P10BE);
+        Frame.plane_is_be  = 0;   // case ラベルが LE なので常に LE
         break;
 
     case AV_PIX_FMT_GBRP10:
@@ -475,32 +478,21 @@ void avidecode::gpu_upload(){
         break;
 
     default:
+        // ★ ここで何も出さずに返すと emit が飛ばず、GUI からの
+        //   receve_decode_flag が返ってこないので再生が止まったままになる。
+        //   前のコマを送り直してハンドシェイクだけ回す。
         qWarning() << "[avidecode] unsupported pixel format:" << f->format;
+        if (Frame.d_plane[0] != nullptr) {
+            ++inflight_frames;
+            emit send_decode_image(Frame, true, video_reverse_flag);
+        }
         return;
     }
 
     Frame.src_mode = SRC_YUV_PLANE;
 
-    //フレーム番号取得
-    if(seek_flag){
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-        back1FrameNo = Frame.FrameNo-1;
-    }else if(back1frame_flag||high_res_slider_flag){
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-    }else{
-        back1FrameNo = Frame.FrameNo;
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-    }
-    seek_flag = false;
-
-    //時刻を算出
-    double time = Frame.FrameNo/VideoInfo.fps;
-    Frame.hour = time / 3600;
-    Frame.minute = (int(time) % 3600) / 60;
-    Frame.second = fmod(time, 60.0);
+    // フレーム番号と時刻（基底で共通化。0 除算と NOPTS もそこでふさいでいる）
+    advance_frame_no(vd[0].hw_frames[ringNo]->best_effort_timestamp);
 
     //リングを回す
     ringNo++;
@@ -566,8 +558,15 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
     if(FrameNo<0){
         FrameNo = 0;
     }
+    // ★ 終端に当たってデコーダも空、という状態を何回見たか。
+    //   目標が実在しない位置だと、読み直し -> 終端 を永久に繰り返す。
+    //   ここは processFrame のミューテックスの中なので、回り続けると
+    //   GUI スレッドまで巻き込んで固まる。
+    int eof_rounds = 0;
+
     while(!thread_stop_flag){
-        while (true) {
+        // ★ 内側にも停止要求を見せる（長いスキャン中にクローズされても抜ける）
+        while (!thread_stop_flag) {
             int ret = av_read_frame(fmt_ctx, packet);
 
             // ---------- EOF ----------
@@ -576,6 +575,14 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
                     av_packet_unref(packet);
                     break;
+                }
+
+                // ★ デコーダも空。1 回だけ読み直しを許し、それでも届かなければ
+                //   取れている最後のコマを出して諦める。
+                if (++eof_rounds >= 2) {
+                    av_packet_unref(packet);
+                    gpu_upload();
+                    return;
                 }
 
                 // 終端→先頭に戻ってループ
@@ -589,7 +596,7 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
                     avcodec_flush_buffers(audio_ctx);
 
                 av_seek_frame(fmt_ctx, vd[0].stream_index,
-                              seek_frame * VideoInfo.pts_per_frame,
+                              (int64_t)seek_frame * VideoInfo.pts_per_frame,
                               AVSEEK_FLAG_ANY);
 
                 av_packet_unref(packet);
@@ -605,11 +612,17 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
                     }
                 }
             }
+            // ★ 映像以外のパケットもここで解放する。シークは目標まで
+            //   読み続けるので、取りこぼすとその区間ぶん丸ごと漏れる。
+            av_packet_unref(packet);
         }
 
-        //ターゲットフレームの番号かどうか判定
+        //1 つ手前のコマを覚えてから、今のコマの番号を出す
         back1FrameNo = FrameNo;
-        FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
+        FrameNo = (VideoInfo.pts_per_frame > 0)
+                      ? (int)(vd[0].hw_frames[ringNo]->best_effort_timestamp
+                              / VideoInfo.pts_per_frame)
+                      : FrameNo;
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){

@@ -1,11 +1,9 @@
 #include "src/main/glwidget.h"
-#include "qdir.h"
 #include <QDebug>
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
 
-#define Rerease 0
 GLWidget::GLWidget(QWindow *parent)
     :  QOpenGLWindow(NoPartialUpdate, parent),
     cudaResource1(nullptr),
@@ -16,7 +14,6 @@ GLWidget::GLWidget(QWindow *parent)
         CUDA_IMG_Proc=new CUDA_ImageProcess();
     }
 
-    qDebug() << "GLWidget: Contructor called";
 }
 
 
@@ -139,21 +136,12 @@ void GLWidget::initializeGL()
     glBindVertexArray(0);
 
     // === シェーダ読み込み ===
-#if Rerease
-    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "shaders/sobel.vert");
-    Sobel_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "shaders/sobel.frag");
-    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "shaders/gaussian.vert");
-    Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "shaders/gaussian.frag");
-    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "shaders/averaging.vert");
-    Averaging_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "shaders/averaging.frag");
-#else
     Sobel_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../project/shaders/sobel.vert");
     Sobel_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../project/shaders/sobel.frag");
     Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../project/shaders/gaussian.vert");
     Gaussian_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../project/shaders/gaussian.frag");
     Averaging_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../project/shaders/averaging.vert");
     Averaging_program.addShaderFromSourceFile(QOpenGLShader::Fragment, "../../project/shaders/averaging.frag");
-#endif
 
     //シェーダーリンク
     if (!Sobel_program.link()) {
@@ -343,7 +331,7 @@ void GLWidget::paintGL(){
         histgram_Analysys();
         labels = make_nice_y_labels(h_hist_stats.max_y_axis);
 
-        // ★ labels[0..2] を無条件に触っていたので範囲チェックを入れる
+        // ★ 下で labels[0..2] を触るので、本数が足りているかをここで見る
         histReady = (h_hist_stats.max_y_axis > 0) && (labels.size() >= 3);
     }
 
@@ -437,13 +425,17 @@ void GLWidget::paintGL(){
     // ----------------------------------------------------------
     painter.begin(this);
 
+    // ★ QFont の構築はフォント検索を伴うので毎フレーム作らない
+    static const QFont kInfoFont("Consolas", 16);
+
     //ヒストグラムのラベル
     if (histReady) {
         const float maxY = (float)h_hist_stats.max_y_axis;
 
         //Y座標
         painter.setPen(Qt::white);
-        painter.setFont(QFont("Arial", 10));
+        static const QFont kAxisFont("Arial", 10);
+        painter.setFont(kAxisFont);
         painter.drawText((histRect.left() - 60)/monitor_scaling,
                          (viewportHeight-25*monitor_scaling)/monitor_scaling,
                          55/monitor_scaling, 20*monitor_scaling,
@@ -470,7 +462,7 @@ void GLWidget::paintGL(){
 
         //RGB統計値
         painter.setPen(Qt::white);
-        painter.setFont(QFont("Consolas", 16));
+        painter.setFont(kInfoFont);
         QRect rect(viewportWidth/monitor_scaling -(325), 0, 350*monitor_scaling, 100*monitor_scaling);
         painter.drawText(rect, Qt::AlignLeft,"R: min:" + QString::number(h_hist_stats.min_r) +" max:" + QString::number(h_hist_stats.max_r) +" avg:" + QString::number(h_hist_stats.avg_r));
         painter.drawText(rect.adjusted(0, 20, 0, 0), Qt::AlignLeft,"G: min:" + QString::number(h_hist_stats.min_g) +" max:" + QString::number(h_hist_stats.max_g) +" avg:" + QString::number(h_hist_stats.avg_g));
@@ -480,7 +472,7 @@ void GLWidget::paintGL(){
     //動画情報描画
     if(g_AppSettings.videoInfo_flag){
         painter.setPen(Qt::white);
-        painter.setFont(QFont("Consolas", 16));
+        painter.setFont(kInfoFont);
         painter.drawText(2, 20, "Primary Device(Open GL):" + g_GPUInfo[g_openglDeviceID].deviceName + " (CUDA Device " +QString::number(g_openglDeviceID) + ")" +"\n");
 
         for(int i=0;i<g_GPUInfo.size();i++){
@@ -494,6 +486,7 @@ void GLWidget::paintGL(){
         painter.drawText(2, 120 + 20*g_GPUInfo.size(), "Resolution:" + QString::number(width_)+"×"+QString::number(height_)+"\n");
         painter.drawText(2, 140 + 20*g_GPUInfo.size(), "Video Framerate:" + QString::number(VideoInfo.fps)+"\n");
         painter.drawText(2, 160 + 20*g_GPUInfo.size(), "Max Frame:" + QString::number(VideoInfo.max_framesNo)+"\n");
+        painter.drawText(2, 180 + 20*g_GPUInfo.size(), "FrameNo:" + QString::number(FrameNo)+"\n");
         if(VideoInfo.audio)
             painter.drawText(2, 200 + 20*g_GPUInfo.size(), "Audio Channels:" + QString::number(VideoInfo.audio_channels)+"\n");
     }
@@ -698,7 +691,8 @@ void GLWidget::drawZoomNavigator(QPainter& p)
                               .arg(qRound(sw))
                               .arg(qRound(sh));
     p.setPen(Qt::white);
-    p.setFont(QFont("Consolas", 11));
+    static const QFont kOsdFont("Consolas", 11);
+    p.setFont(kOsdFont);
     p.drawText(QRectF(outer.left(), outer.top() - 20, std::max(outer.width(), 240.0), 18),
                Qt::AlignLeft | Qt::AlignBottom, label);
     p.restore();
@@ -804,16 +798,19 @@ void GLWidget::initCudaTexture(int width,int height) {
     cudaError_t err = cudaGraphicsGLRegisterImage(&cudaResource1, inputTextureID, GL_TEXTURE_2D,
                                                   cudaGraphicsRegisterFlagsSurfaceLoadStore);
     if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsGLRegisterImage error:" << cudaGetErrorString(err);
+        qWarning() << "cudaGraphicsGLRegisterImage error:" << cudaGetErrorString(err);
         cudaResource1 = nullptr;
+        // ★ ハンドルを捨てる前に GL 側も解放する。16K の RGBA8 は約 1GiB あり、
+        //   ここを飛ばすと解像度が変わるたびにそのぶん溜まっていく。
+        glDeleteTextures(1, &inputTextureID);
         inputTextureID = 0;
     }
 }
 
 // ==============================================================
 // ★ NV12タイル → OpenGLテクスチャ（surface object）へ直接 merge
-//   従来の「merge → d_decode_rgba → cudaMemcpy2DToArray」を置き換える。
-//   16K で 1,062MB/frame の往復が消える。
+//   中間の linear RGBA バッファを挟まないので、16K でも
+//   1 フレームあたり 1GB 超の往復コピーが発生しない。
 // ==============================================================
 bool GLWidget::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
 {
@@ -882,7 +879,6 @@ bool GLWidget::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
 // ★ ゼロコピー（CPUデコード系の入口）
 //   cpudecode / avidecode が上げた YUVプレーンから
 //   GLテクスチャ(surface)へ直接 RGBA を書く。
-//   d_decode_rgba と cudaMemcpy2DToArray が消える。
 // ==============================================================
 bool GLWidget::yuvToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
 {
@@ -1124,12 +1120,6 @@ void GLWidget::initTextureCuda(int width,int height) {
         }
 }
 
-//初回、解像度が変わった場合再Malloc
-void GLWidget::initCudaMalloc(int width, int height)
-{
-
-}
-
 //CUDAからOpenGLへ転送
 void GLWidget::uploadToGLTexture(VideoFrame Frame) {
     //initialized完了チェック
@@ -1141,18 +1131,24 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
     makeCurrent();
 
     //解像度の変更に対応
-    if (VideoInfo.width*VideoInfo.width_scale != width_ || VideoInfo.height*VideoInfo.height_scale != height_) {
-        initCudaMalloc(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
-        initCudaTexture(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
-        initTextureCuda(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
-        setShaderUniform(VideoInfo.width*VideoInfo.width_scale,VideoInfo.height*VideoInfo.height_scale);
+    //   ★ 寸法は 1 度だけ計算して使い回す。式を並べると、どれか 1 つ
+    //     書き換え忘れたときにテクスチャの寸法だけ黙ってずれる。
+    const int want_w = VideoInfo.width  * VideoInfo.width_scale;
+    const int want_h = VideoInfo.height * VideoInfo.height_scale;
+    if (want_w != width_ || want_h != height_) {
+        initCudaTexture(want_w, want_h);
+        initTextureCuda(want_w, want_h);
+        setShaderUniform(want_w, want_h);
         initCudaHist();
-        width_=VideoInfo.width*VideoInfo.width_scale;
-        height_=VideoInfo.height*VideoInfo.height_scale;
+        width_  = want_w;
+        height_ = want_h;
         resetZoom();
         GLresize();
         return;
     }
+
+    // 現在フレーム番号
+    FrameNo = Frame.FrameNo;
 
     //入力データチェック
     if (Frame.src_mode == SRC_NV12_TILE) {
@@ -1270,10 +1266,9 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
 }
 
 //OpenGL(FBO) → NVENC （★ゼロコピー）
-//   従来: FBO(cudaArray) → cudaMemcpy2DFromArrayAsync → d_encode_rgba(linear) → NV12変換
-//   今回: NV12変換カーネルが FBO を texture object 経由で直読み。
-//         cudaArray は block-linear なので linear へ落とすコピーは
-//         バイト数から想像するよりずっと重い。そこを丸ごと消す。
+//   NV12変換カーネルが FBO を texture object 経由で直読みする。
+//   cudaArray は block-linear なので、いったん linear へ落とすコピーは
+//   バイト数から想像するよりずっと重い。それを挟まない。
 void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     if (!cudaResource2) {
         qDebug() << "cudaResource2 is nullptr, can't map";
@@ -1434,7 +1429,7 @@ void GLWidget::initCudaHist() {
     }
     if (d_hist_data) {
         cudaFree(d_hist_data);
-        d_hist_data = nullptr;      // ★ 元は d_hist_stats を二重に nullptr していた
+        d_hist_data = nullptr;
     }
 
     // ★ fbo は CUDA へ登録し直さない。

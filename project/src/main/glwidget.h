@@ -6,15 +6,12 @@
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "src/main/__global__.h"
 #include <QOpenGLFunctions_4_5_Core>
-#pragma once
 #include <QOpenGLWindow>
 #include <QOpenGLShader>
 #include <QOpenGLShaderProgram>
-#include <QOpenGLFunctions>
 #include <QPainter>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
-#include <QTimer>
 #include <QWheelEvent>
 #include <QMouseEvent>
 
@@ -109,14 +106,13 @@ protected:
 private:
     void initTextureCuda(int width,int height);
     void initCudaTexture(int width,int height);
-    void initCudaMalloc(int width,int height);
     void setShaderUniform(int width,int height);
     void initCudaHist();
     void histgram_Analysys();
     void downloadToGLTexture_and_Encode(VideoFrame Frame);
 
     // ★ NV12タイル → OpenGLテクスチャ へ surface object 経由で直接 merge
-    //   （d_decode_rgba と cudaMemcpy2DToArray を経由しないゼロコピー経路）
+    //   （中間バッファを挟まないゼロコピー経路）
     bool mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf);
     bool yuvToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf);
 
@@ -228,6 +224,7 @@ private:
     //動画情報
     // ★ 未初期化のまま paintGL / GLresize から参照されるのを防ぐ
     int width_ = 0, height_ = 0;
+    int FrameNo = 0;
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
     //fpsタイマー
@@ -239,12 +236,10 @@ private:
     cudaEvent_t hist_event = nullptr;
     HistData* d_hist_data = nullptr;
     HistStats* d_hist_stats = nullptr;
-    HistStats h_hist_stats;
+    // ★ map に失敗した回は更新されないまま paintGL が読むので 0 初期化必須。
+    //   （d_hist_* と同じ理由で、ここだけ初期化子が抜けていた）
+    HistStats h_hist_stats{};
     int num_bins = 256;
-    int line_y1,line_y2,line_y3,line_y4;
-
-    // 音声
-    QVector<QByteArray> audio_pcm{};
 };
 
 

@@ -1,7 +1,6 @@
 #include "src/videoprocess/nvgpudecode.h"
 
 #include <algorithm>
-#include <cstdlib>
 
 extern "C" {
 #include <libavutil/hwcontext_cuda.h>
@@ -235,6 +234,9 @@ bool nvgpudecode::initialized_ffmpeg()
     VideoInfo.pts_per_frame = 1.0 / (VideoInfo.fps * time_base_d);
     qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
 
+    // ★ 欠番の多いファイルでは avg_frame_rate が下振れする。実測で補正する。
+    fix_frame_grid(vd[0].stream_index, time_base_d);
+
     if (!get_last_frame_pts()) {
         Error_String = "get_last_frame_pts failed";
         return false;
@@ -449,7 +451,10 @@ const char*nvgpudecode::selectDecoder(const char* codec_name) {
     }else{
         codec=nullptr;
     }
-    VideoInfo.Codec=codec;
+    // ★ nullptr を std::string へ代入してはいけない（未定義動作）。
+    //   対応していないコーデックのときは表示名を変えずに返す。
+    //   呼び出し側は戻り値の null を見てエラーにする。
+    if (codec) VideoInfo.Codec = codec;
     return codec;
 }
 
@@ -465,18 +470,6 @@ void nvgpudecode::get_decode_image(){
 }
 
 
-// ==============================================================
-// ★ パケット 1 本をストリーム i のデコーダへ渡し、出たフレームを受け取る
-//
-//   ★★ EAGAIN でパケットを捨てないこと。★★
-//
-//   cuvid は出力キューが埋まると avcodec_send_packet() が EAGAIN を返す。
-//   以前は戻り値が 0 のときしか処理せず、そのまま av_packet_unref() で
-//   捨てていたため、そのストリームだけフレームが 1 枚永久に欠けていた。
-//   負荷が高いストリームほど EAGAIN を踏みやすいので、
-//   「たまにどこかのタイルだけ取り残される」症状の原因になる。
-//
-//   EAGAIN が来たら 1 枚受け取ってキューを空け、必ず送り直す。
 // ==============================================================
 // ★ デストラクタ：保留パケットを解放する
 // ==============================================================
@@ -566,8 +559,9 @@ bool nvgpudecode::read_into_pending()
         if (packet->stream_index != vd[i].stream_index) continue;
 
         if ((int)pending_[i].size() >= kMaxPending) {
-            // ここまで溜まるのは揃えられていない証拠。捨てずに警告だけ出し、
-            // 一番古いものから落とす（落とさないとメモリが伸び続ける）。
+            // ★ ここまで溜まるのは揃えられていない証拠。放っておくと
+            //   メモリが伸び続けるので、一番古いものから落とす。
+            //   落とした区間は、そのタイルだけ次のキーフレームまで崩れる。
             warn_once_in_a_while(
                 QString("[nvgpudecode] tile%1 の保留パケットが上限 %2 に達しました")
                     .arg(i).arg(kMaxPending));
@@ -634,14 +628,33 @@ bool nvgpudecode::pump_stream(int i, std::vector<bool>& got,
 // ★ 警告の連打を防ぐ
 //   同じ原因で毎フレーム出すと、肝心のログが流れて読めなくなる。
 // ==============================================================
-void nvgpudecode::warn_once_in_a_while(const QString& msg)
+// ★ 呼び出し側は必ず warn_due() で先に判定すること。
+//   文字列は呼ばれた時点で組み立てられるので、ここで間引いても
+//   QString::arg() の確保は毎フレーム走ってしまう。
+//   揃わないフレームが続くときは、まさにその確保が重なる。
+bool nvgpudecode::warn_due()
 {
     const int d = Frame.FrameNo - last_warn_frame_;
-    if (d > -60 && d < 60) return;
+    return (d <= -60 || d >= 60);
+}
+
+void nvgpudecode::warn_once_in_a_while(const QString& msg)
+{
+    if (!warn_due()) return;
     last_warn_frame_ = Frame.FrameNo;
     qWarning().noquote() << msg;
 }
 
+// ★ 新しい絵が作れないときは前の Frame を送り直す。
+//   in-flight を数えるのを忘れないこと。emit ごとに GUI から
+//   receve_decode_flag が返って減算されるので、ここで足さないと
+//   カウンタが下振れし、リング追い越しの検出が効かなくなる。
+void nvgpudecode::resend_last_frame()
+{
+    if (Frame.d_y[0] == nullptr) return;
+    ++inflight_frames;
+    emit send_decode_image(Frame, true, video_reverse_flag);
+}
 
 // ==============================================================
 // ★ タイル間の pts を揃える（max 基準・順再生のまま）
@@ -673,7 +686,7 @@ bool nvgpudecode::align_tiles_pts(std::vector<int64_t>& pts)
                             : 0;
 
     std::vector<bool> dummy_got(N, true);   // ここでは got を進めない
-    int dummy_count = N;
+    int dummy_count = N;                    // pump_stream の参照引数を埋めるだけ
 
     for (int round = 0; round < kAlignMaxRounds; round++) {
 
@@ -991,10 +1004,11 @@ void nvgpudecode::get_multidecode_image() {
 //   NV12→RGBA 結合は GUI スレッドが OpenGL テクスチャへ
 //   surface object 経由で直接書き込む（GLWidget::uploadToGLTexture）。
 //
-//   ・cuvid は avcodec_receive_frame の内部でストリーム同期しているため、
-//     ここでの追加のCUDA同期は不要（従来の Dummy×3 + eventSync を削除）
+//   ・★ cuvid は出力コピーを積むだけで同期せずに戻る。待ちは下で記録する
+//     decode_ready イベントを使って GUI 側に取らせる。
 //   ・タイルの寿命は vd[i].hw_frames のリングが一周するまで。
-//     ringSize(=12) > 同時走行フレーム数(3〜4) なので安全。
+//     ringSize(=6) > GUI の先行許容(kMaxFramesInFlight=2) なので安全。
+//     減らすときはこの関係を崩さないこと。
 // ==============================================================
 void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
 
@@ -1010,12 +1024,12 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
         for (int i = 0; i < (int)vd.size() && i < (int)got->size(); i++) {
             if ((*got)[i]) continue;
 
-            warn_once_in_a_while(
-                QString("[nvgpudecode] tile%1 のフレームを取得できませんでした。"
-                        "前フレームを再送します FrameNo=%2").arg(i).arg(Frame.FrameNo));
+            if (warn_due())
+                warn_once_in_a_while(
+                    QString("[nvgpudecode] tile%1 のフレームを取得できませんでした。"
+                            "前フレームを再送します FrameNo=%2").arg(i).arg(Frame.FrameNo));
 
-            if (Frame.d_y[0] != nullptr)
-                emit send_decode_image(Frame, true, video_reverse_flag);
+            resend_last_frame();
             return;
         }
     }
@@ -1024,11 +1038,11 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
     //   got を渡さない経路からの呼び出しもあるため）
     for (int i = 0; i < (int)vd.size() && i < VideoFrame::MAX_TILES; i++) {
         if (vd[i].hw_frames[ringNo]->data[0] == nullptr) {
-            warn_once_in_a_while(
-                QString("[nvgpudecode] tile%1 の中身が空です。前フレームを再送します")
-                    .arg(i));
-            if (Frame.d_y[0] != nullptr)
-                emit send_decode_image(Frame, true, video_reverse_flag);
+            if (warn_due())
+                warn_once_in_a_while(
+                    QString("[nvgpudecode] tile%1 の中身が空です。前フレームを再送します")
+                        .arg(i));
+            resend_last_frame();
             return;
         }
     }
@@ -1040,8 +1054,7 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
     if (!check_tile_pts_mismatch()) {
         if (mismatch_skips_ < kMaxMismatchSkips) {
             mismatch_skips_++;
-            if (Frame.d_y[0] != nullptr)
-                emit send_decode_image(Frame, true, video_reverse_flag);
+            resend_last_frame();
             return;
         }
         qWarning().noquote()
@@ -1054,7 +1067,9 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
     }
 
     Frame.src_mode   = SRC_NV12_TILE;
-    Frame.tile_count = (int)vd.size();
+    // ★ d_y/d_uv は MAX_TILES 本しかないので、本数もそこで頭打ちにする。
+    //   ポインタを詰めるループだけ clamp されていて、本数が抜けていた。
+    Frame.tile_count = std::min((int)vd.size(), (int)VideoFrame::MAX_TILES);
     Frame.tile_w     = VideoInfo.width;
     Frame.tile_h     = VideoInfo.height;
 
@@ -1066,26 +1081,8 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
         Frame.uv_pitch[i] = (size_t)f->linesize[1];
     }
 
-    //フレーム番号取得
-    if(seek_flag){
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-        back1FrameNo = Frame.FrameNo-1;
-    }else if(back1frame_flag||high_res_slider_flag){
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-    }else{
-        back1FrameNo = Frame.FrameNo;
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-    }
-    seek_flag = false;
-
-    //時刻を算出
-    double time = Frame.FrameNo/VideoInfo.fps;
-    Frame.hour = time / 3600;
-    Frame.minute = (int(time) % 3600) / 60;
-    Frame.second = fmod(time, 60.0);
+    // フレーム番号と時刻（基底で共通化。0 除算と NOPTS もそこでふさいでいる）
+    advance_frame_no(vd[0].hw_frames[ringNo]->best_effort_timestamp);
 
     // ==============================================================
     // ★ NVDEC の出力コピー完了を記録する
@@ -1179,8 +1176,14 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
     if(FrameNo<0){
         FrameNo = 0;
     }
+    // ★ 終端に当たってデコーダも空、という状態を何回見たか。
+    //   目標が実在しない位置だと、読み直し -> 終端 を永久に繰り返す。
+    int eof_rounds = 0;
+
     while(!thread_stop_flag){
-        while (true) {
+        // ★ 内側にも停止要求を見せる。外側だけだと、1 回のスキャンが
+        //   長いファイルでクローズ時に待たされる。
+        while (!thread_stop_flag) {
             int ret = av_read_frame(fmt_ctx, packet);
 
             // ---------- EOF ----------
@@ -1189,6 +1192,14 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
                 if (receive_into_slot(0)) {
                     av_packet_unref(packet);
                     break;
+                }
+
+                // ★ デコーダも空。これ以上このファイルから先へは進めない。
+                //   1 回だけ読み直しを許し、それでも届かなければ諦める。
+                if (++eof_rounds >= 2) {
+                    av_packet_unref(packet);
+                    publish_seek_fallback(targetFrameNo);
+                    return;
                 }
 
                 // 終端→先頭に戻ってループ
@@ -1227,9 +1238,13 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
                     }
                 }
             }
+            // ★ 映像以外（音声など）のパケットもここで解放する。
+            //   シークは最後のキーフレームから目標まで読み続けるので、
+            //   取りこぼすとその区間ぶん丸ごと漏れる。
+            av_packet_unref(packet);
         }
 
-        //ターゲットフレームの番号かどうか判定
+        //1 つ手前のコマを覚えてから、今のコマの番号を出す
         back1FrameNo = FrameNo;
         FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
 
@@ -1266,6 +1281,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
     if(FrameNo<0){
         FrameNo = 0;
     }
+
     while(!thread_stop_flag){
         std::vector<bool>    got_frame(N, false);
         std::vector<int64_t> pts(N, AV_NOPTS_VALUE);
@@ -1286,12 +1302,46 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
             read_guard++;
         }
 
+        // -------------------------------------------------------------
+        // ★ 終端では各デコーダが出力遅延ぶんのコマを抱えている
+        //
+        //   ファイルを読み切っても、*_cuvid の中には最後の数コマが残って
+        //   いる（実測 3 コマ）。1 枚だけ受け取って終わると、そのぶん手前で
+        //   止まる（実測: target=433 に対して全タイル 430 で停止）。
+        //   ここで各タイルを「目標に届く」か「空になる」まで引き切る。
+        //
+        //   ★ 外側のループで少しずつ引き出す形にしてはいけない。
+        //     リングの段は publish_decode_frame() でしか進まないので、
+        //     全タイルが揃わないラウンドが 1 度でも挟まると、先に空へ
+        //     なったタイルだけ古い絵が残って pts が食い違う。結果、
+        //     1 ラウンドで止めるより手前へ戻る（実測: 2355 -> 2350）。
+        //     引き切るのはこの 1 箇所で完結させること。
+        //
+        //   ★ 取得済みのタイルも対象にしてよい。receive_into_slot() は
+        //     失敗時にリングを触らないので、空振りしても壊れない。
+        // -------------------------------------------------------------
+        //   ★ ここで一度に数コマ進むため、1 コマ戻しの行き先を
+        //     「前ラウンドの番号」で済ませられない。タイル 0 が実際に
+        //     通過したコマを控えておく（実測: 433 まで引き切ったのに
+        //     戻し先が 429 のまま残っていた）。
+        bool drain_tracked_back = false;
         if (eof) {
+            const int ppf = VideoInfo.pts_per_frame;
             for (int i = 0; i < N; i++) {
-                if (got_frame[i]) continue;          // ★ 取得済みは触らない
                 avcodec_send_packet(vd[i].codec_ctx, nullptr);
-                if (receive_into_slot(i, &pts[i])) {
-                    got_frame[i] = true; got_count++;
+                for (;;) {
+                    // 目標に届いているならそれ以上進めない（行き過ぎ防止）
+                    if (got_frame[i] && ppf > 0 && pts[i] != AV_NOPTS_VALUE &&
+                        pts[i] / ppf >= targetFrameNo) break;
+
+                    const int64_t before = pts[i];              // 上書き前の位置
+                    if (!receive_into_slot(i, &pts[i])) break;   // デコーダが空
+                    if (!got_frame[i]) { got_frame[i] = true; got_count++; }
+
+                    if (i == 0 && before != AV_NOPTS_VALUE && ppf > 0) {
+                        back1FrameNo = (int)(before / ppf);
+                        drain_tracked_back = true;
+                    }
                 }
             }
         }
@@ -1301,7 +1351,8 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
         align_tiles_pts(pts);
 
         //フレーム番号記憶
-        back1FrameNo = FrameNo;
+        //   ★ ドレインで実際の 1 つ手前を掴めた場合はそちらを優先する。
+        if (!drain_tracked_back) back1FrameNo = FrameNo;
         FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
 
         //ターゲットフレームの番号かどうか判定
@@ -1310,6 +1361,48 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
             break;
         }
 
-        if (eof) break;           // これ以上進めない
+        if (eof) {
+            // ★ 目標へ届かないまま終端。黙って抜けると
+            //   「末尾へシークしたのに画が変わらない」になるので、
+            //   取れている最後のコマを出す。
+            publish_seek_fallback(targetFrameNo);
+            break;
+        }
     }
+}
+
+// =============================================================================
+// ★ 届かなかったシークの後始末
+//
+//   ここへ来るのは end_range_framesNo が実際の最終フレームより後ろを
+//   指しているとき。取れている最後のコマを出せば、スライダーは
+//   publish_decode_frame() の中で実在する位置へ吸い付く。
+//
+//   原因（fps / pts_per_frame の取り違え か、ファイル側の尺の不一致）を
+//   切り分けられるよう、判断に要る数値を 1 行にまとめて出しておく。
+// =============================================================================
+void nvgpudecode::publish_seek_fallback(int targetFrameNo)
+{
+    const int64_t ts   = vd[0].hw_frames[ringNo]->best_effort_timestamp;
+    const int     ppf  = VideoInfo.pts_per_frame;
+    const int     from = (ppf > 0 && ts != AV_NOPTS_VALUE) ? (int)(ts / ppf) : -1;
+
+    // タイル別の到達位置。ここがバラバラなら出力遅延の差、
+    // 揃っていればファイル側にそのコマが無い（または届く前に止まっている）。
+    QString tiles;
+    for (int i = 0; i < (int)vd.size(); i++) {
+        const int64_t t = vd[i].hw_frames[ringNo]->best_effort_timestamp;
+        tiles += QString(" t%1=%2").arg(i)
+                     .arg((qlonglong)((ppf > 0 && t != AV_NOPTS_VALUE) ? t / ppf : -1));
+    }
+
+    qWarning().noquote() << QString(
+        "[nvgpudecode] 終端へ届きませんでした"
+        " target=%1 reached=%2 last_pts=%3"
+        " end_range=%4 max=%5 pts_per_frame=%6 fps=%7%8")
+        .arg(targetFrameNo).arg(from).arg((qlonglong)ts)
+        .arg(VideoInfo.end_range_framesNo).arg(VideoInfo.max_framesNo)
+        .arg(ppf).arg(VideoInfo.fps).arg(tiles);
+
+    publish_decode_frame();
 }

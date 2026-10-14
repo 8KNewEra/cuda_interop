@@ -34,6 +34,11 @@ protected:
     void high_res_seek_frame_single(int FrameNo);
     void high_res_seek_frame_multi(int FrameNo);
 
+    // ★ 目標フレームへ届かないまま終端に当たったときの後始末。
+    //   「末尾へシークしたのに画が変わらない」を避けるため、取れている
+    //   最後のコマを必ず出す。原因の切り分け用に数値もログへ出す。
+    void publish_seek_fallback(int targetFrameNo);
+
     // ==========================================================
     // ★ タイル間の pts 整列（順再生のまま。シークはしない）
     //
@@ -71,7 +76,14 @@ protected:
     bool check_tile_pts_mismatch();
 
     // 警告の連打を防ぐ
+    // 警告を出してよいタイミングか。文字列を組む前にこれで弾く。
+    bool warn_due();
     void warn_once_in_a_while(const QString& msg);
+
+    // ★ 新しい絵を作れなかったとき、前の Frame をそのまま送り直す。
+    //   emit しないと receve_decode_flag が返らず再生が止まるので、
+    //   ハンドシェイクだけは必ず回すこと。
+    void resend_last_frame();
 
     // ストリームごとの未投入パケット（デコーダには溜めない）
     std::vector<std::deque<AVPacket*>> pending_;

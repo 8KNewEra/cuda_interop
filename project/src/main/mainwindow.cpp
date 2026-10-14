@@ -992,7 +992,7 @@ void MainWindow::Open_Video_File()
         this,
         tr("動画ファイルを開く"),
         startDir,
-        tr("動画ファイル (*.mp4 *.avi *.mkv)")
+        tr("動画ファイル (*.mp4 *.avi *.mkv *.mov)")
         );
 
     // ファイルが選択されたかどうかを確認
@@ -1409,9 +1409,6 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
         }
 
         //UIの制御
-        if (encode_state==STATE_NOT_ENCODE) {
-            //ui->Live_horizontalSlider->setValue(Frame.FrameNo);
-        }
         rangeSlider->setPlayValue(Frame.FrameNo);
         slider_No=Frame.FrameNo;
 

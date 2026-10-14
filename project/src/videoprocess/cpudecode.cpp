@@ -118,8 +118,7 @@ bool cpudecode::initialized_ffmpeg()
             return false;
         }
 
-        // CPU デコード
-        dec.codec_ctx->hw_device_ctx = nullptr;
+        // CPU デコード（hw_device_ctx は alloc 時点で null）
         dec.codec_ctx->pkt_timebase =
             fmt_ctx->streams[video_stream_index]->time_base;
 
@@ -152,6 +151,9 @@ bool cpudecode::initialized_ffmpeg()
         1.0 / (VideoInfo.fps * time_base_d);
 
     qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
+
+    // ★ 欠番の多いファイルでは avg_frame_rate が下振れする。実測で補正する。
+    fix_frame_grid(vd[0].stream_index, time_base_d);
 
     if (!get_last_frame_pts()) {
         Error_String = "get_last_frame_pts failed";
@@ -291,7 +293,10 @@ const char*cpudecode::selectDecoder(const char* codec_name) {
     }else{
         codec=nullptr;
     }
-    VideoInfo.Codec=codec;
+    // ★ nullptr を std::string へ代入してはいけない（未定義動作）。
+    //   対応していないコーデックのときは表示名を変えずに返す。
+    //   呼び出し側は戻り値の null を見てエラーにする。
+    if (codec) VideoInfo.Codec = codec;
     return codec;
 }
 
@@ -424,26 +429,8 @@ void cpudecode::gpu_upload(){
                                                     : YUVFMT_YUV420P_8;
     Frame.plane_is_be  = (f->format == AV_PIX_FMT_YUV420P10BE);
 
-    //フレーム番号取得
-    if(seek_flag){
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-        back1FrameNo = Frame.FrameNo-1;
-    }else if(back1frame_flag||high_res_slider_flag){
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-    }else{
-        back1FrameNo = Frame.FrameNo;
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-    }
-    seek_flag = false;
-
-    //時刻を算出
-    double time = Frame.FrameNo/VideoInfo.fps;
-    Frame.hour = time / 3600;
-    Frame.minute = (int(time) % 3600) / 60;
-    Frame.second = fmod(time, 60.0);
+    // フレーム番号と時刻（基底で共通化。0 除算と NOPTS もそこでふさいでいる）
+    advance_frame_no(vd[0].hw_frames[ringNo]->best_effort_timestamp);
 
     //リングを回す
     ringNo++;
@@ -509,8 +496,15 @@ void cpudecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
     if(FrameNo<0){
         FrameNo = 0;
     }
+    // ★ 終端に当たってデコーダも空、という状態を何回見たか。
+    //   目標が実在しない位置だと、読み直し -> 終端 を永久に繰り返す。
+    //   ここは processFrame のミューテックスの中なので、回り続けると
+    //   GUI スレッドまで巻き込んで固まる。
+    int eof_rounds = 0;
+
     while(!thread_stop_flag){
-        while (true) {
+        // ★ 内側にも停止要求を見せる（長いスキャン中にクローズされても抜ける）
+        while (!thread_stop_flag) {
             int ret = av_read_frame(fmt_ctx, packet);
 
             // ---------- EOF ----------
@@ -519,6 +513,14 @@ void cpudecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
                     av_packet_unref(packet);
                     break;
+                }
+
+                // ★ デコーダも空。1 回だけ読み直しを許し、それでも届かなければ
+                //   取れている最後のコマを出して諦める。
+                if (++eof_rounds >= 2) {
+                    av_packet_unref(packet);
+                    gpu_upload();
+                    return;
                 }
 
                 // 終端→先頭に戻ってループ
@@ -532,7 +534,7 @@ void cpudecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
                     avcodec_flush_buffers(audio_ctx);
 
                 av_seek_frame(fmt_ctx, vd[0].stream_index,
-                              seek_frame * VideoInfo.pts_per_frame,
+                              (int64_t)seek_frame * VideoInfo.pts_per_frame,
                               AVSEEK_FLAG_ANY);
 
                 av_packet_unref(packet);
@@ -548,11 +550,17 @@ void cpudecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
                     }
                 }
             }
+            // ★ 映像以外のパケットもここで解放する。シークは目標まで
+            //   読み続けるので、取りこぼすとその区間ぶん丸ごと漏れる。
+            av_packet_unref(packet);
         }
 
-        //ターゲットフレームの番号かどうか判定
+        //1 つ手前のコマを覚えてから、今のコマの番号を出す
         back1FrameNo = FrameNo;
-        FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
+        FrameNo = (VideoInfo.pts_per_frame > 0)
+                      ? (int)(vd[0].hw_frames[ringNo]->best_effort_timestamp
+                              / VideoInfo.pts_per_frame)
+                      : FrameNo;
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){

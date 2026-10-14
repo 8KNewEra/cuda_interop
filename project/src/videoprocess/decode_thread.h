@@ -3,22 +3,18 @@
 
 #include <QThread>
 #include <QObject>
-#include <QWaitCondition>
 #include <QMutex>
 #include <atomic>
+#include <algorithm>
+#include <vector>
 #include <cuda_runtime.h>
 #include <QDebug>
-#include <QFile>
 #include "src/main/__global__.h"
 #include "qaudiosink.h"
-#include "qelapsedtimer.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/opt.h>
-#include <libswscale/swscale.h>
 #include <libavutil/hwcontext.h>
 #include "libswresample/swresample.h"
 }
@@ -29,10 +25,12 @@ struct VideoDecorder {
     const AVCodec* decoder;
     std::vector<AVFrame*> hw_frames;
 
-    // ★ 受信用スクラッチ。
+    // ★ 受信用スクラッチ（NVDEC 経路のみ使用）。
     //   avcodec_receive_frame() は「何をするより先に必ず av_frame_unref する」
     //   仕様なので、hw_frames を直接渡すと EAGAIN で失敗しただけで
-    //   取得済みのコマが消える。必ずここへ受け、成功時だけ move_ref する。
+    //   取得済みのコマが消える。タイルを並べる NVDEC 経路では致命的なので、
+    //   必ずここへ受けて成功時だけ move_ref する（receive_into_slot）。
+    //   CPU デコード経路は 1 枚ずつ同期的に使い切るので直接受けている。
     AVFrame* tmp_frame = nullptr;
 };
 
@@ -85,19 +83,34 @@ protected:
     virtual void get_decode_image()=0;
     virtual void high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)=0;
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
+    // インデックスから 1 フレームぶんの pts を実測する。0 = 判定不能。
+    int    detect_pts_per_frame(int stream_index);
+    // 宣言値と実測値を突き合わせ、食い違っていれば実測値へ寄せる。
+    void   fix_frame_grid(int stream_index, double time_base_d);
     bool get_last_frame_pts();
     void get_decode_audio();
+
+    // デコードできたコマの pts から、表示用のフレーム番号と時刻を決める。
+    //   3 派生クラス共通。0 除算と AV_NOPTS_VALUE もここでふさいでいる。
+    void advance_frame_no(int64_t ts);
+
+    // ★ スピーカーへ流してよい状況か。
+    //   順方向の通常再生中だけ true。シーク・逆再生・コマ送りの最中は
+    //   その位置の音声パケットが短く鳴ってブツブツ聞こえる。
+    bool audio_playable() const;
+    // 出力デバイスに積んである再生待ちの PCM を捨てる。
+    void reset_audio_sink();
 
     //エラー処理
     QString Error_String="";
     QString ffmpegErrStr(int errnum);
 
     //制御
-    bool video_play_flag;
-    bool video_reverse_flag;
-    // ★ GUIスレッドから stopProcessing() で直接書かれるので atomic。
-    //   非atomicだと while(!thread_stop_flag) がレジスタにキャッシュされ、
-    //   終了要求が永久に見えずクローズ時にハングする。
+    // ★ GUIスレッドが書き、デコードスレッドが読む値は atomic にする。
+    //   非atomicだとループ内でレジスタにキャッシュされ、状態の変化が
+    //   いつまでも見えない（thread_stop_flag ではクローズ時のハングになった）。
+    std::atomic<bool> video_play_flag{false};
+    std::atomic<bool> video_reverse_flag{false};
     std::atomic<bool> thread_stop_flag{false};
     bool seek_flag = false;
     bool high_res_slider_flag = false;
@@ -106,7 +119,6 @@ protected:
     bool drop_flag=false;
     bool go1frame_flag = false;
     int back1FrameNo = 0;
-    int go1FrameNo = 0;
     int high_res_sliderNo = 0;
 
     //FFmpeg関連
@@ -114,15 +126,15 @@ protected:
     AVFrame* audio_frame = nullptr;
     QByteArray File_byteArray;
     const char* input_filename;
-    std::vector<VideoDecorder> vd;   // デフォルトコンストラクタで N 個作成
+    // タイルの本数ぶん。実体は各派生の initialized_ffmpeg() が push_back する。
+    std::vector<VideoDecorder> vd;
     AVFormatContext* fmt_ctx = nullptr;
     AVBufferRef* hw_device_ctx = nullptr;
     DecodeState decode_state = STATE_DECODE_READY;
     DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettingsNonConst();
 
-    //CUDA
-    //  ★ 画像変換はすべてGUIスレッド(glwidget)へ移ったので、
-    //    デコードスレッド側は CUDA_ImageProcess も専用ストリームも持たない。
+    //  ★ 画像変換はすべて GUI スレッド(glwidget)が行う。ここは
+    //    デコード結果のポインタを載せて渡すだけ。
     VideoFrame Frame{};
 
     //音声
@@ -130,12 +142,15 @@ protected:
     AVCodecContext* audio_ctx = nullptr;
     const AVCodec* audio_decoder = nullptr;
     SwrContext* swr = nullptr;
-    uint8_t* audio_buffer = nullptr;
-    int audio_buffer_size = 0;
     AVChannelLayout in_ch_layout = {};
     AVChannelLayout out_ch_layout = {};
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
+
+    // ★ 消音中かどうか。消音へ入った最初の 1 回だけ出力デバイスを捨てる。
+    //   毎回 reset すると、スライダーをドラッグしている間ずっと
+    //   オーディオデバイスを開き直すことになる。
+    bool audio_muted_ = false;
 
     // AVFrame リング（vd[].hw_frames の面数）
     //   ★ デコード結果のRGBA面はもう持たない。

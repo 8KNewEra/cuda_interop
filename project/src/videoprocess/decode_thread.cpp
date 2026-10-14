@@ -1,17 +1,10 @@
 #include "src/videoprocess/decode_thread.h"
 #include "qfileinfo.h"
 #include <QDebug>
-#include <QOpenGLContext>
-#include <QOpenGLFunctions>
-#include <QDebug>
-#include <QTimer>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/opt.h>
-#include <libswscale/swscale.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/frame.h>
 #include <libavutil/error.h>
@@ -33,17 +26,18 @@ decode_thread::decode_thread(QString FilePath,QObject *parent)
 }
 
 decode_thread::~decode_thread() {
-    // 1) デコードループ停止要求
+    // ★ デコードスレッドが最後の 1 周を抜けるのを待つ。
+    //   stopProcessing() で thread_stop_flag は立っている前提。
     QThread::msleep(10);
 
-    // 2) CUDA同期（非同期処理完了待ち）
+    // CUDA同期（非同期処理完了待ち）
     cudaError_t cerr = cudaDeviceSynchronize();
     if (cerr != cudaSuccess) {
         qWarning() << "cudaDeviceSynchronize failed:"
                    << cudaGetErrorString(cerr);
     }
 
-    // 3) FFmpeg関係の安全な解放
+    // FFmpeg関係の安全な解放
     auto safe_free_codec = [&]() {
         for (int i = 0; i < vd.size(); i++) {
             if (vd[i].codec_ctx) {
@@ -96,12 +90,29 @@ decode_thread::~decode_thread() {
         }
     };
 
+    // ★ 音声側。ここが丸ごと抜けていて、ファイルを開き直すたびに
+    //   SwrContext / AVCodecContext / QAudioSink が漏れていた。
+    auto safe_free_audio = [&]() {
+        if (audioSink) {
+            audioSink->stop();
+            delete audioSink;          // audioOutput は audioSink の子
+            audioSink  = nullptr;
+            audioOutput = nullptr;
+        }
+        if (swr)       swr_free(&swr);
+        if (audio_ctx) avcodec_free_context(&audio_ctx);
+        av_channel_layout_uninit(&in_ch_layout);
+        av_channel_layout_uninit(&out_ch_layout);
+        audio_stream_index = -1;
+    };
+
     try {
         safe_free_codec();
         safe_free_format();
         safe_free_frames();
         safe_free_hwctx();
         safe_free_packet();
+        safe_free_audio();
     } catch (...) {
         qWarning() << "Exception during FFmpeg cleanup (ignored)";
     }
@@ -156,7 +167,112 @@ double decode_thread::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_in
     return frame_rate_value;
 }
 
-//テストでコード、最終フレームpts取得
+// =============================================================================
+// ★ フレーム間隔（pts_per_frame）を実測で補正する
+//
+//   MP4 / MOV には fps の宣言欄が無く、avg_frame_rate は読み出すときに
+//   「実フレーム数 ÷ 尺」で計算される。コマ落ちが多いファイルではこれが
+//   下振れし、pts_per_frame が本来の何倍にもなる。
+//   （実測: 4 枚に 1 枚だけ残したファイルで avg_frame_rate が 60 -> 15、
+//     time_base 1/15360 で pts_per_frame が 256 -> 1024）
+//
+//   そうなるとフレーム番号も、シーク先として渡す pts も全部ずれる。
+//   とくに max_framesNo が実際の最終フレームより後ろを指すので、
+//   スライダーを末尾まで送っても届かず、画が変わらなくなる。
+//
+//   インデックスに並んだタイムスタンプの最小間隔を本来の 1 フレームとみなす。
+//   欠番の無いファイルでは宣言値と一致するので、そこでは何も変わらない。
+// =============================================================================
+int decode_thread::detect_pts_per_frame(int stream_index)
+{
+    AVStream* st = fmt_ctx->streams[stream_index];
+
+    // ★ パケットは読まない。インデックスだけ見る。
+    //   MP4 / MOV は全サンプルぶんのインデックスをファイルを開いた時点で
+    //   持っているので、ここでの I/O はゼロ。先頭を数百パケット読む作りに
+    //   すると、16K では 1 パケットが MB 単位なのでファイルを開くだけで
+    //   数百 MB を読むことになり、起動が体感できるほど遅くなる。
+    //
+    //   MKV のインデックスはキーフレームだけなので、ここで出てくるのは
+    //   GOP 間隔になる。その場合は下の fix_frame_grid() 側の条件
+    //   （宣言値のほうが大きいときだけ寄せる）で弾かれる。
+    const int n = avformat_index_get_entries_count(st);
+    if (n < 8) return 0;
+
+    const int lim = std::min(n, 256);
+    int64_t best = 0;
+    int64_t prev = AV_NOPTS_VALUE;
+    for (int i = 0; i < lim; i++) {
+        const AVIndexEntry* e = avformat_index_get_entry(st, i);
+        if (!e) break;
+        if (prev != AV_NOPTS_VALUE) {
+            const int64_t d = e->timestamp - prev;   // インデックスは昇順
+            if (d > 0 && (best == 0 || d < best)) best = d;
+        }
+        prev = e->timestamp;
+    }
+    return (int)best;
+}
+
+void decode_thread::fix_frame_grid(int stream_index, double time_base_d)
+{
+    const int observed = detect_pts_per_frame(stream_index);
+    if (observed <= 0 || time_base_d <= 0.0) return;
+
+    // ★ 寄せるのは「宣言値のほうが明らかに大きい」ときだけ。
+    //   MKV は time_base 1/1000 で 60fps が割り切れず（16.67 -> 16）、
+    //   宣言値と実測値が 1 だけ食い違う。そこで差し替えると逆に悪化する。
+    if (VideoInfo.pts_per_frame < observed * 3 / 2) return;
+
+    const double fixed_fps = 1.0 / (observed * time_base_d);
+    qWarning().noquote()
+        << QString("[decode] フレーム間隔が宣言値と食い違うので実測値を使います"
+                   " pts_per_frame %1 -> %2 / fps %3 -> %4")
+               .arg(VideoInfo.pts_per_frame).arg(observed)
+               .arg(VideoInfo.fps).arg(fixed_fps);
+
+    VideoInfo.pts_per_frame = observed;
+    VideoInfo.fps           = fixed_fps;
+}
+
+// =============================================================================
+// ★ デコードできたコマの pts から、表示用のフレーム番号と時刻を決める
+//
+//   3 つの派生クラスに同じものが書かれていたので基底へ出した。
+//   ついでに 2 つの穴をふさいである。
+//     ・pts_per_frame は int。1.0/(fps*time_base) の切り捨てなので 0 になりうる
+//     ・best_effort_timestamp は AV_NOPTS_VALUE (INT64_MIN) になりうる
+//   どちらも、そのまま割って int に落とすと番号が不定になる。
+//   決められないときは番号を動かさない（前のコマの位置を保つ）。
+//
+//   ★ back1FrameNo（1 コマ戻しの行き先）の決め方だけ経路で違う。
+//     ・シーク直後  : 着地点の 1 つ前
+//     ・戻し/スライダー : 呼び出し側が既に決めているので触らない
+//     ・通常再生    : 直前に出したコマ（欠番があっても実在する番号になる）
+// =============================================================================
+void decode_thread::advance_frame_no(int64_t ts)
+{
+    const int  ppf = VideoInfo.pts_per_frame;
+    const bool ok  = (ppf > 0 && ts != AV_NOPTS_VALUE);
+    const int  no  = ok ? (int)(ts / ppf) : Frame.FrameNo;
+
+    if (seek_flag) {
+        back1FrameNo = no - 1;
+    } else if (!back1frame_flag.load() && !high_res_slider_flag) {
+        back1FrameNo = Frame.FrameNo;
+    }
+
+    Frame.FrameNo = no;
+    slider_No     = no;
+    seek_flag     = false;
+
+    const double time = (VideoInfo.fps > 0.0) ? Frame.FrameNo / VideoInfo.fps : 0.0;
+    Frame.hour   = time / 3600;
+    Frame.minute = (int(time) % 3600) / 60;
+    Frame.second = fmod(time, 60.0);
+}
+
+//ファイル末尾のフレーム番号を調べる（スライダーの終端になる）
 bool decode_thread::get_last_frame_pts() {
     avcodec_flush_buffers(vd[0].codec_ctx);
 
@@ -201,16 +317,19 @@ bool decode_thread::get_last_frame_pts() {
                 }
             }
         }
+        // ★ 毎周解放する。ここは最後のキーフレームから EOF まで読むので、
+        //   取りこぼすとファイルを開くたびにその区間ぶん漏れる。
+        av_packet_unref(packet);
     }
 
-    //packet解放
     av_packet_unref(packet);
 
     if (frame_received) {
         AVRational tb = fmt_ctx->streams[vd[0].stream_index]->time_base;
         double time = last_pts * av_q2d(tb);
         qDebug() << "Last PTS:" << last_pts << " (" << time << "sec)";
-        VideoInfo.max_framesNo = last_pts/VideoInfo.pts_per_frame;
+        VideoInfo.max_framesNo =
+            (VideoInfo.pts_per_frame > 0) ? (int)(last_pts / VideoInfo.pts_per_frame) : 0;
         VideoInfo.start_range_framesNo = 0;
         VideoInfo.end_range_framesNo = VideoInfo.max_framesNo;
         Frame.FrameNo = VideoInfo.max_framesNo;
@@ -225,6 +344,36 @@ bool decode_thread::get_last_frame_pts() {
     }
 
     return true;
+}
+
+// =============================================================================
+// ★ 音を出してよいのは「順方向の通常再生中」だけ
+//
+//   シーク中もデコード経路はそのまま動くので、スライダーを動かすと
+//   その位置の音声パケットが次々に鳴ってブツブツ聞こえる。逆再生と
+//   コマ送りも同じ（1 コマ進むたびに数十 ms だけ鳴る）。
+//
+//   デコード自体は止めない。保存用に Frame.audio_pcm へ積む必要があり、
+//   エンコード経路（send_audio）も同じ関数を通るため。
+//   止めるのは audioOutput への書き込みだけ。
+// =============================================================================
+bool decode_thread::audio_playable() const
+{
+    return video_play_flag
+           && !video_reverse_flag
+           && !seek_flag
+           && !high_res_slider_flag
+           && !back1frame_flag.load()
+           && !go1frame_flag;
+}
+
+// ★ デコーダを flush しても、QAudioSink には再生待ちの PCM が
+//   既に積まれているので、黙らせるにはこちらも捨てる必要がある。
+void decode_thread::reset_audio_sink()
+{
+    if (!audioSink) return;
+    audioSink->reset();                 // 積んである PCM を破棄
+    audioOutput = audioSink->start();   // reset で停止するので張り直す
 }
 
 //オーディオ
@@ -280,7 +429,16 @@ void decode_thread::get_decode_audio()
 
         //低遅延音声再生
         if (encode_state == STATE_NOT_ENCODE) {
-            if (g_AppSettings.audio_low_laytency_flag && audioOutput) {
+            // ★ シーク中などは鳴らさない。消音へ入った最初の 1 回だけ、
+            //   既に積まれている PCM を捨てる（毎回 reset するとドラッグ中
+            //   ずっとデバイスを開き直すことになる）。
+            if (!audio_playable()) {
+                if (!audio_muted_) { audio_muted_ = true; reset_audio_sink(); }
+            } else {
+                audio_muted_ = false;
+            }
+
+            if (!audio_muted_ && g_AppSettings.audio_low_laytency_flag && audioOutput) {
                 if (audioSink->bytesFree() >= pcm.size()) {
 
                     float volume = g_AppSettings.audio_volume / 100.0f;
@@ -361,6 +519,9 @@ void decode_thread::stopProcessing() {
 
 void decode_thread::sliderPlayback(int value){
     pausePlayback();
+    // ★ 他のスロットと同じくロックの中で書く。slider_No はデコードスレッドが
+    //   毎フレーム読む（get_*decode_image の先頭のシーク判定）。
+    QMutexLocker locker(&mutex);
     slider_No=value;
     video_play_flag = false;
     video_reverse_flag = false;
@@ -408,7 +569,6 @@ void decode_thread::back1frame(){
 //1フレーム送り
 void decode_thread::go1frame(){
     QMutexLocker locker(&mutex);
-    go1FrameNo = Frame.FrameNo;
     go1frame_flag = true;
     video_play_flag = false;
     video_reverse_flag = false;
@@ -430,7 +590,11 @@ void decode_thread::processFrame() {
     //1フレーム戻し
     if(back1frame_flag){
         if(Frame.FrameNo-1 < VideoInfo.start_range_framesNo){
-            high_res_seek_frame(Frame.FrameNo-1,true);
+            // ★ 先頭での 1 コマ戻しは終端へ回す（1 コマ送りと対称）。
+            //   high_res_seek_frame() に範囲外の番号を渡すと、停止中は
+            //   「始端で待機」に丸められてその場から動かない。あの丸めは
+            //   3/10/30 秒戻しのためのもので、1 コマ戻しには合わない。
+            high_res_seek_frame(VideoInfo.end_range_framesNo,true);
         }else{
             high_res_seek_frame(back1FrameNo,true);
         }
@@ -448,7 +612,11 @@ void decode_thread::processFrame() {
     //1フレーム送り
     if(go1frame_flag){
         if(Frame.FrameNo+1 > VideoInfo.end_range_framesNo){
-            high_res_seek_frame(Frame.FrameNo+1,true);
+            // ★ 終端での 1 コマ送りは先頭へ回す。
+            //   high_res_seek_frame() に範囲外の番号を渡すと、停止中は
+            //   「終端で待機」に丸められてその場から動かない。あの丸めは
+            //   3/10/30 秒送りのためのもので、1 コマ送りには合わない。
+            high_res_seek_frame(VideoInfo.start_range_framesNo,true);
         }else{
             get_decode_image();
         }
@@ -462,10 +630,6 @@ void decode_thread::processFrame() {
             decode_state=STATE_DECODING;
 
             // ★ この経路は画像を書き換えないので slot は進めない
-            //    （エンコード中にここを通っていないかの確認用ログ）
-            if (encode_state == STATE_ENCODING)
-                qWarning() << "[PAUSE EMIT during encode] FrameNo:" << Frame.FrameNo;
-
             emit send_decode_image(Frame,true,video_reverse_flag);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
