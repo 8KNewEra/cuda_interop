@@ -269,22 +269,6 @@ bool nvgpudecode::initialized_ffmpeg()
     //   出口: NV12変換カーネルが FBO を texture object 経由で直読みする
     //   16K RGBA 1面 = 約531MB。入口4面 + 出口1面 = 約2.6GB の削減。
 
-    // CUDA Stream
-    cudaError_t err = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaStream failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
-    // CUDA Event
-    err = cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaEvent failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
     // ==========================================================
     // ★ NVDEC 転送完了イベントの用意
     //
@@ -323,6 +307,44 @@ bool nvgpudecode::initialized_ffmpeg()
             qDebug() << "[nvgpudecode] NVDEC 完了待ち: イベント方式";
         } else {
             decode_ready_ev.clear();
+
+            // ======================================================
+            // ★ ここに来たら NVDEC の転送完了を待てていない。
+            //   症状はタイルの途中に水平の継ぎ目が出る形の破綻で、
+            //   pts は正しいので TILE PTS MISMATCH には引っかからない。
+            //
+            //  【ctx_shared = false】上に primary_ctx / current_ctx の
+            //   失敗行が出ているはず。ffmpeg がオプション名を変えた。
+            //   libavutil/hwcontext_cuda.c の cuda_flags_from_opts を見て
+            //   現在の名前に合わせる（従来は primary_ctx / current_ctx）。
+            //
+            //  【rec_ok = false】ffmpeg のエラーは無いのに記録できない。
+            //   hwctx->stream が Runtime API から触れない値になった。
+            //   cuda_context_init を見る（従来は常に NULL = 既定ストリーム）。
+            //
+            //  【警告は出ないのに割れる】イベントの記録先と cuvid の
+            //   コピー先がズレている。Driver API の NULL は常にレガシー
+            //   既定ストリームだが、Runtime API の 0 は
+            //   --default-stream per-thread 付きでビルドするとスレッド毎の
+            //   既定ストリームになる。その構成にするなら dec_stream へ
+            //   cudaStreamLegacy を明示すること。
+            //   また interop_stream は cudaStreamCreate（blocking）のままに
+            //   しておくこと。レガシー既定ストリームとの暗黙同期が保険になる。
+            //
+            //  【コンテキストをどうしても共有できない場合】
+            //   確実に待つには Driver API を使う（cuda.h / cuda.lib が必要、
+            //   CPU は止まる）:
+            //       CUcontext prev;
+            //       cuCtxPushCurrent(cu->cuda_ctx);
+            //       cuStreamSynchronize(cu->stream);
+            //       cuCtxPopCurrent(&prev);
+            //   ※ publish_decode_frame のフォールバックにある
+            //      cudaDeviceSynchronize() はカレントコンテキストしか
+            //      待たないので、この状況では役に立たない。
+            //
+            //  【再現手順】16K タイル動画の再生中に裏で YouTube を流す。
+            //   NVDEC を取り合わせるのが最も出やすい。
+            // ======================================================
             qWarning() << "[nvgpudecode] NVDEC 完了待ちを確立できません"
                        << "ctx_shared =" << ctx_shared << "rec_ok =" << rec_ok
                        << "- 映像が割れる可能性があります";
@@ -420,111 +442,15 @@ const char*nvgpudecode::selectDecoder(const char* codec_name) {
     const char*codec{};
     if (strcmp(codec_name, "h264") == 0) {
         codec="h264_cuvid";
-        qDebug()<<codec;
     } else if (strcmp(codec_name, "hevc") == 0) {
         codec="hevc_cuvid";
-        qDebug()<<codec;
     }else if (strcmp(codec_name, "av1") == 0){
         codec="av1_cuvid";
-        qDebug()<<codec;
     }else{
         codec=nullptr;
     }
     VideoInfo.Codec=codec;
     return codec;
-}
-
-//フレームレートを取得する関数
-double nvgpudecode::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index) {
-    if (video_stream_index < 0 || video_stream_index >= fmt_ctx->nb_streams) {
-        qDebug() << "Invalid video stream index";
-        return 0.0;
-    }
-
-    //映像ストリームの取得
-    AVStream* video_stream = fmt_ctx->streams[video_stream_index];
-
-    //avg_frame_rateを取得
-    AVRational frame_rate = video_stream->avg_frame_rate;
-    if (frame_rate.num == 0 || frame_rate.den == 0) {
-        // avg_frame_rate が0の時は r_frame_rate を使用
-        frame_rate = video_stream->r_frame_rate;
-    }
-
-    //フレームレートを計算
-    double frame_rate_value = static_cast<double>(frame_rate.num) / static_cast<double>(frame_rate.den);
-
-    return frame_rate_value;
-}
-
-//テストでコード、最終フレームpts取得
-bool nvgpudecode::get_last_frame_pts() {
-    avcodec_flush_buffers(vd[0].codec_ctx);
-
-    int64_t duration_pts = fmt_ctx->streams[vd[0].stream_index]->duration;
-    if (duration_pts <= 0) {
-        // durationが不明な場合はファイル末尾にシーク
-        duration_pts = INT64_MAX;
-    }
-
-    // 後方シーク（できるだけ終端に近づく）
-    if (av_seek_frame(fmt_ctx, vd[0].stream_index, duration_pts, AVSEEK_FLAG_BACKWARD) < 0) {
-        Error_String = "seek failed";
-        return false;
-    }
-
-    avcodec_flush_buffers(vd[0].codec_ctx);
-
-    int64_t last_pts = AV_NOPTS_VALUE;
-    bool frame_received = false;
-
-    while (true) {
-        int ret = av_read_frame(fmt_ctx, packet);
-        if (ret < 0) {
-            // EOFに到達：デコーダに残りを流す
-            avcodec_send_packet(vd[0].codec_ctx, nullptr);
-            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[0]) == 0) {
-                last_pts = vd[0].hw_frames[0]->best_effort_timestamp;
-                VideoInfo.width = vd[0].hw_frames[0]->width;
-                VideoInfo.height = vd[0].hw_frames[0]->height;
-                frame_received = true;
-            }
-            break;
-        }
-
-        if (packet->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
-                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[0]) == 0) {
-                    last_pts = vd[0].hw_frames[0]->best_effort_timestamp;
-                    VideoInfo.width = vd[0].hw_frames[0]->width;
-                    VideoInfo.height = vd[0].hw_frames[0]->height;
-                    frame_received = true;
-                }
-            }
-        }
-    }
-
-    av_packet_unref(packet);
-
-    if (frame_received) {
-        AVRational tb = fmt_ctx->streams[vd[0].stream_index]->time_base;
-        double time = last_pts * av_q2d(tb);
-        qDebug() << "Last PTS:" << last_pts << " (" << time << "sec)";
-        VideoInfo.max_framesNo = last_pts/VideoInfo.pts_per_frame;;
-        VideoInfo.start_range_framesNo = 0;
-        VideoInfo.end_range_framesNo = VideoInfo.max_framesNo;
-        Frame.FrameNo = VideoInfo.max_framesNo;
-
-        //最大時間を計算 時:分:秒
-        VideoInfo.max_hour = time / 3600;
-        VideoInfo.max_minute = (int(time) % 3600) / 60;
-        VideoInfo.max_second = fmod(time, 60.0);
-    } else {
-        Error_String = "No frame found at end.";
-        return false;
-    }
-
-    return true;
 }
 
 //映像取得
@@ -1055,87 +981,6 @@ void nvgpudecode::get_multidecode_image() {
     }
 
     publish_decode_frame(&got_frame);
-}
-
-//オーディオ
-void nvgpudecode::get_decode_audio()
-{
-    if (avcodec_send_packet(audio_ctx, packet) < 0)
-        return;
-
-    while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
-
-        const int out_channels = out_ch_layout.nb_channels;
-        const int bps = av_get_bytes_per_sample(VideoInfo.out_format);
-
-        int in_rate = audio_frame->sample_rate > 0
-                          ? audio_frame->sample_rate
-                          : audio_ctx->sample_rate;
-
-        int max_out_samples = av_rescale_rnd(
-            swr_get_delay(swr, in_rate) + audio_frame->nb_samples,
-            VideoInfo.out_sample_rate,
-            in_rate,
-            AV_ROUND_UP
-            );
-
-
-        QByteArray pcm_tmp;
-        pcm_tmp.resize(max_out_samples * out_channels * bps);
-
-        uint8_t* out_planes[] = {
-            reinterpret_cast<uint8_t*>(pcm_tmp.data())
-        };
-
-        int out_samples = swr_convert(
-            swr,
-            out_planes,
-            max_out_samples,
-            (const uint8_t**)audio_frame->extended_data,
-            audio_frame->nb_samples
-            );
-
-        if (out_samples <= 0)
-            continue;
-
-        pcm_tmp.resize(out_samples * out_channels * bps);
-        VideoInfo.audio_channels = out_channels;
-
-        // ★ここで確定コピーを作る
-        QByteArray pcm=pcm_tmp;
-
-        // 低遅延再生（同一スレッド）
-        Frame.audio_pcm.push_back(QByteArray(pcm));
-        Frame.audio_pts.push_back(audio_frame->pts);
-
-        //低遅延音声再生
-        if (encode_state == STATE_NOT_ENCODE) {
-            if (g_AppSettings.audio_low_laytency_flag && audioOutput) {
-                if (audioSink->bytesFree() >= pcm.size()) {
-
-                    float volume = g_AppSettings.audio_volume / 100.0f;
-
-                    int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
-                    int sampleCount = pcm.size() / sizeof(int16_t);
-
-                    for (int i = 0; i < sampleCount; i++) {
-                        int32_t v = samples[i] * volume;
-
-                        // クリップ防止
-                        if (v > 32767) v = 32767;
-                        if (v < -32768) v = -32768;
-
-                        samples[i] = static_cast<int16_t>(v);
-                    }
-
-                    audioOutput->write(pcm);
-                }
-            }
-        }
-
-        // エンコードスレッドへ（別スレッド）
-        emit send_audio(pcm);
-    }
 }
 
 // ==============================================================

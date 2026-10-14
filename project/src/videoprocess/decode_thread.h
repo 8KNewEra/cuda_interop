@@ -34,9 +34,6 @@ struct VideoDecorder {
     //   仕様なので、hw_frames を直接渡すと EAGAIN で失敗しただけで
     //   取得済みのコマが消える。必ずここへ受け、成功時だけ move_ref する。
     AVFrame* tmp_frame = nullptr;
-
-    cudaStream_t st = nullptr;
-    cudaEvent_t ev = nullptr;
 };
 
 class decode_thread : public QObject {
@@ -87,7 +84,6 @@ protected:
     virtual bool initialized_ffmpeg()=0;
     virtual void get_decode_image()=0;
     virtual void high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)=0;
-    const char* selectDecoder(const char* codec_name);
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     bool get_last_frame_pts();
     void get_decode_audio();
@@ -126,9 +122,7 @@ protected:
 
     //CUDA
     //  ★ 画像変換はすべてGUIスレッド(glwidget)へ移ったので、
-    //    デコードスレッド側は CUDA_ImageProcess を持たない。
-    cudaStream_t stream=nullptr;
-    cudaEvent_t events=nullptr;
+    //    デコードスレッド側は CUDA_ImageProcess も専用ストリームも持たない。
     VideoFrame Frame{};
 
     //音声
@@ -142,7 +136,6 @@ protected:
     AVChannelLayout out_ch_layout = {};
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
-    AVFrame* audio_Frame=nullptr;
 
     // AVFrame リング（vd[].hw_frames の面数）
     //   ★ デコード結果のRGBA面はもう持たない。

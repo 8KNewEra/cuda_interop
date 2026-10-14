@@ -15,7 +15,10 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/frame.h>
 #include <libavutil/error.h>
+#include <libavutil/mathematics.h>
 }
+
+#include <cmath>
 
 decode_thread::decode_thread(QString FilePath,QObject *parent)
     : QObject(parent), video_play_flag(true){
@@ -103,16 +106,6 @@ decode_thread::~decode_thread() {
         qWarning() << "Exception during FFmpeg cleanup (ignored)";
     }
 
-    if(stream){
-        cudaStreamDestroy(stream);
-        stream=nullptr;
-    }
-
-    if (events) {
-        cudaEventDestroy(events);
-        events = nullptr;
-    }
-
     // ★ NVDEC 転送完了イベントの破棄
     for (auto& e : decode_ready_ev) {
         if (e) { cudaEventDestroy(e); e = nullptr; }
@@ -132,6 +125,187 @@ QString decode_thread::ffmpegErrStr(int errnum) {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
     av_strerror(errnum, buf, sizeof(buf));
     return QString::fromUtf8(buf);
+}
+
+// ==============================================================
+// ★ 以下の3つは全派生クラス(nvgpudecode / cpudecode / avidecode)で
+//   同一実装だったものを基底へ集約したもの。
+//   派生固有のメンバには触れないので、ここに置いて差し支えない。
+// ==============================================================
+
+//フレームレートを取得する関数
+double decode_thread::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index) {
+    if (video_stream_index < 0 || video_stream_index >= fmt_ctx->nb_streams) {
+        qDebug() << "Invalid video stream index";
+        return 0.0;
+    }
+
+    //映像ストリームの取得
+    AVStream* video_stream = fmt_ctx->streams[video_stream_index];
+
+    //avg_frame_rateを取得
+    AVRational frame_rate = video_stream->avg_frame_rate;
+    if (frame_rate.num == 0 || frame_rate.den == 0) {
+        // avg_frame_rate が0の時は r_frame_rate を使用
+        frame_rate = video_stream->r_frame_rate;
+    }
+
+    //フレームレートを計算
+    double frame_rate_value = static_cast<double>(frame_rate.num) / static_cast<double>(frame_rate.den);
+
+    return frame_rate_value;
+}
+
+//テストでコード、最終フレームpts取得
+bool decode_thread::get_last_frame_pts() {
+    avcodec_flush_buffers(vd[0].codec_ctx);
+
+    int64_t duration_pts = fmt_ctx->streams[vd[0].stream_index]->duration;
+    if (duration_pts <= 0) {
+        // durationが不明な場合はファイル末尾にシーク
+        duration_pts = INT64_MAX;
+    }
+
+    // 後方シーク（できるだけ終端に近づく）
+    if (av_seek_frame(fmt_ctx, vd[0].stream_index, duration_pts, AVSEEK_FLAG_BACKWARD) < 0) {
+        Error_String = "seek failed";
+        return false;
+    }
+
+    avcodec_flush_buffers(vd[0].codec_ctx);
+
+    int64_t last_pts = AV_NOPTS_VALUE;
+    bool frame_received = false;
+
+    while (true) {
+        int ret = av_read_frame(fmt_ctx, packet);
+        if (ret < 0) {
+            // EOFに到達：デコーダに残りを流す
+            avcodec_send_packet(vd[0].codec_ctx, nullptr);
+            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[0]) == 0) {
+                last_pts = vd[0].hw_frames[0]->best_effort_timestamp;
+                VideoInfo.width = vd[0].hw_frames[0]->width;
+                VideoInfo.height = vd[0].hw_frames[0]->height;
+                frame_received = true;
+            }
+            break;
+        }
+
+        if (packet->stream_index == vd[0].stream_index) {
+            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
+                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[0]) == 0) {
+                    last_pts = vd[0].hw_frames[0]->best_effort_timestamp;
+                    VideoInfo.width = vd[0].hw_frames[0]->width;
+                    VideoInfo.height = vd[0].hw_frames[0]->height;
+                    frame_received = true;
+                }
+            }
+        }
+    }
+
+    //packet解放
+    av_packet_unref(packet);
+
+    if (frame_received) {
+        AVRational tb = fmt_ctx->streams[vd[0].stream_index]->time_base;
+        double time = last_pts * av_q2d(tb);
+        qDebug() << "Last PTS:" << last_pts << " (" << time << "sec)";
+        VideoInfo.max_framesNo = last_pts/VideoInfo.pts_per_frame;
+        VideoInfo.start_range_framesNo = 0;
+        VideoInfo.end_range_framesNo = VideoInfo.max_framesNo;
+        Frame.FrameNo = VideoInfo.max_framesNo;
+
+        //最大時間を計算 時:分:秒
+        VideoInfo.max_hour = time / 3600;
+        VideoInfo.max_minute = (int(time) % 3600) / 60;
+        VideoInfo.max_second = fmod(time, 60.0);
+    } else {
+        Error_String = "No frame found at end.";
+        return false;
+    }
+
+    return true;
+}
+
+//オーディオ
+void decode_thread::get_decode_audio()
+{
+    if (avcodec_send_packet(audio_ctx, packet) < 0)
+        return;
+
+    while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
+
+        const int out_channels = out_ch_layout.nb_channels;
+        const int bps = av_get_bytes_per_sample(VideoInfo.out_format);
+
+        int in_rate = audio_frame->sample_rate > 0
+                          ? audio_frame->sample_rate
+                          : audio_ctx->sample_rate;
+
+        int max_out_samples = av_rescale_rnd(
+            swr_get_delay(swr, in_rate) + audio_frame->nb_samples,
+            VideoInfo.out_sample_rate,
+            in_rate,
+            AV_ROUND_UP
+            );
+
+
+        QByteArray pcm_tmp;
+        pcm_tmp.resize(max_out_samples * out_channels * bps);
+
+        uint8_t* out_planes[] = {
+            reinterpret_cast<uint8_t*>(pcm_tmp.data())
+        };
+
+        int out_samples = swr_convert(
+            swr,
+            out_planes,
+            max_out_samples,
+            (const uint8_t**)audio_frame->extended_data,
+            audio_frame->nb_samples
+            );
+
+        if (out_samples <= 0)
+            continue;
+
+        pcm_tmp.resize(out_samples * out_channels * bps);
+        VideoInfo.audio_channels = out_channels;
+
+        // ★ここで確定コピーを作る
+        QByteArray pcm=pcm_tmp;
+
+        // 低遅延再生（同一スレッド）
+        Frame.audio_pcm.push_back(QByteArray(pcm));
+        Frame.audio_pts.push_back(audio_frame->pts);
+
+        //低遅延音声再生
+        if (encode_state == STATE_NOT_ENCODE) {
+            if (g_AppSettings.audio_low_laytency_flag && audioOutput) {
+                if (audioSink->bytesFree() >= pcm.size()) {
+
+                    float volume = g_AppSettings.audio_volume / 100.0f;
+
+                    int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
+                    int sampleCount = pcm.size() / sizeof(int16_t);
+
+                    for (int i = 0; i < sampleCount; i++) {
+                        int32_t v = samples[i] * volume;
+
+                        // クリップ防止
+                        if (v > 32767) v = 32767;
+                        if (v < -32768) v = -32768;
+
+                        samples[i] = static_cast<int16_t>(v);
+                    }
+
+                    audioOutput->write(pcm);
+                }
+            }
+        }
+
+        // エンコードスレッドへ（別スレッド）
+        emit send_audio(pcm);
+    }
 }
 
 // ==============================================================
