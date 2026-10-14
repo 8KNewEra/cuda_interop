@@ -69,14 +69,16 @@ bool avidecode::initialized_ffmpeg()
         dec.stream_index = video_stream_index;
         AVCodecParameters* codecpar = fmt_ctx->streams[video_stream_index]->codecpar;
 
-        qDebug()<<codecpar->codec_id;
-
         // ★ decoder を必ず取得する
         dec.decoder = avcodec_find_decoder(codecpar->codec_id);
         if (!dec.decoder) {
             Error_String = "rawvideo decoder not found";
             return false;
         }
+
+        // ★ 情報オーバーレイの「Decorder:」表示用。
+        //   設定しないと前に開いたファイルの値が残ったままになる。
+        VideoInfo.Codec = dec.decoder->name;
 
         dec.codec_ctx = avcodec_alloc_context3(dec.decoder);
         if (!dec.codec_ctx) {
@@ -91,10 +93,7 @@ bool avidecode::initialized_ffmpeg()
             return false;
         }
 
-        // ---- rawvideo は上書きしすぎない ----
-        // pix_fmt は container の値を尊重する
-        // dec.codec_ctx->pix_fmt = (AVPixelFormat)codecpar->format;
-
+        // ★ rawvideo は pix_fmt を上書きせず container の値を尊重する
         dec.codec_ctx->thread_count = 0;          // auto
         dec.codec_ctx->thread_type  = FF_THREAD_FRAME;
         dec.codec_ctx->pkt_timebase =fmt_ctx->streams[video_stream_index]->time_base;
@@ -123,6 +122,9 @@ bool avidecode::initialized_ffmpeg()
 
     qDebug() << "1フレームのPTS数:" << VideoInfo.pts_per_frame;
 
+    // ★ 欠番の多いファイルでは avg_frame_rate が下振れする。実測で補正する。
+    fix_frame_grid(vd[0].stream_index, time_base_d);
+
     if (!get_last_frame_pts()) {
         Error_String = "get_last_frame_pts failed";
         return false;
@@ -136,95 +138,81 @@ bool avidecode::initialized_ffmpeg()
     VideoInfo.height_scale = 1;
 
     // ------------------------
-    // CUDA メモリ確保（CPU decode + GPU upload）
+    // YUVプレーンのGPU面を確保
+    //   ★ RGBA 化は GUIスレッドが GLテクスチャへ直接書く（ゼロコピー）。
+    //     消費者が別スレッドなので、上書き事故を防ぐため多面化する。
     // ------------------------
-    cudaError_t err;
-    size_t y_size{},uv_size{};
+    size_t planeWidthBytes[3] = {};
+    int    planeHeights[3]    = {};
+    int    nplanes            = 0;
 
     AVCodecParameters* par = fmt_ctx->streams[video_stream_index]->codecpar;
+
     if(par->format==AV_PIX_FMT_UYVY422){
         VideoInfo.bitdepth = 8;
-        cudaMallocPitch(&d_yuv, &pitch_yuv, VideoInfo.width * 2, VideoInfo.height);
-        y_size  = VideoInfo.width * VideoInfo.height * 2;
-        uv_size = (VideoInfo.width) * (VideoInfo.height) * 2;
+        Frame.plane_format = YUVFMT_UYVY422_8;
+        nplanes = 1;                                  // packed
+        planeWidthBytes[0] = (size_t)VideoInfo.width * 2;
+        planeHeights[0]    = VideoInfo.height;
     }else if(par->format==AV_PIX_FMT_YUV420P){
         VideoInfo.bitdepth = 8;
-        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width, VideoInfo.height);
-        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2), VideoInfo.height / 2);
-        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2), VideoInfo.height / 2);
-        y_size  = VideoInfo.width * VideoInfo.height;
-        uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2);
+        Frame.plane_format = YUVFMT_YUV420P_8;
+        nplanes = 3;
+        planeWidthBytes[0] = (size_t)VideoInfo.width;
+        planeWidthBytes[1] = (size_t)VideoInfo.width / 2;
+        planeWidthBytes[2] = (size_t)VideoInfo.width / 2;
+        planeHeights[0]    = VideoInfo.height;
+        planeHeights[1]    = VideoInfo.height / 2;
+        planeHeights[2]    = VideoInfo.height / 2;
     }
     else if(par->format==AV_PIX_FMT_YUV420P10){
         VideoInfo.bitdepth = 10;
-        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width * 2, VideoInfo.height);
-        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2) * 2, VideoInfo.height / 2);
-        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2) * 2, VideoInfo.height / 2);
-        y_size  = VideoInfo.width * VideoInfo.height * 2;
-        uv_size = (VideoInfo.width / 2) * (VideoInfo.height / 2) * 2;
+        Frame.plane_format = YUVFMT_YUV420P_10;
+        nplanes = 3;
+        planeWidthBytes[0] = (size_t)VideoInfo.width * 2;
+        planeWidthBytes[1] = (size_t)(VideoInfo.width / 2) * 2;
+        planeWidthBytes[2] = (size_t)(VideoInfo.width / 2) * 2;
+        planeHeights[0]    = VideoInfo.height;
+        planeHeights[1]    = VideoInfo.height / 2;
+        planeHeights[2]    = VideoInfo.height / 2;
     }else if(par->format==AV_PIX_FMT_YUV422P){
         VideoInfo.bitdepth = 8;
-        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width, VideoInfo.height);
-        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2), VideoInfo.height);
-        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2), VideoInfo.height);
-        y_size  = VideoInfo.width * VideoInfo.height;
-        uv_size = (VideoInfo.width / 2) * VideoInfo.height;
+        Frame.plane_format = YUVFMT_YUV422P_8;
+        nplanes = 3;
+        planeWidthBytes[0] = (size_t)VideoInfo.width;
+        planeWidthBytes[1] = (size_t)VideoInfo.width / 2;
+        planeWidthBytes[2] = (size_t)VideoInfo.width / 2;
+        planeHeights[0]    = VideoInfo.height;
+        planeHeights[1]    = VideoInfo.height;
+        planeHeights[2]    = VideoInfo.height;
     }else if(par->format==AV_PIX_FMT_YUV422P10){
         VideoInfo.bitdepth = 10;
-        cudaMallocPitch(&d_y, &pitch_y, VideoInfo.width * 2, VideoInfo.height);
-        cudaMallocPitch(&d_u, &pitch_u, (VideoInfo.width / 2) * 2, VideoInfo.height);
-        cudaMallocPitch(&d_v, &pitch_v, (VideoInfo.width / 2) * 2, VideoInfo.height);
-        y_size  = VideoInfo.width * VideoInfo.height * 2;
-        uv_size = (VideoInfo.width / 2) * VideoInfo.height * 2;
+        Frame.plane_format = YUVFMT_YUV422P_10;
+        nplanes = 3;
+        planeWidthBytes[0] = (size_t)VideoInfo.width * 2;
+        planeWidthBytes[1] = (size_t)(VideoInfo.width / 2) * 2;
+        planeWidthBytes[2] = (size_t)(VideoInfo.width / 2) * 2;
+        planeHeights[0]    = VideoInfo.height;
+        planeHeights[1]    = VideoInfo.height;
+        planeHeights[2]    = VideoInfo.height;
     }else if(par->format==AV_PIX_FMT_GBRP10){
         VideoInfo.bitdepth = 10;
-        cudaMallocPitch(&d_r, &pitch_r, VideoInfo.width * 2, VideoInfo.height); // G
-        cudaMallocPitch(&d_g, &pitch_g, VideoInfo.width * 2, VideoInfo.height); // B
-        cudaMallocPitch(&d_b, &pitch_b, VideoInfo.width * 2, VideoInfo.height); // R
-        y_size  = VideoInfo.width * VideoInfo.height * 2;
-        uv_size = VideoInfo.width * VideoInfo.height * 2;
+        Frame.plane_format = YUVFMT_GBRP_10;
+        nplanes = 3;                                  // plane[0]=G, [1]=B, [2]=R
+        for (int p = 0; p < 3; p++) {
+            planeWidthBytes[p] = (size_t)VideoInfo.width * 2;
+            planeHeights[p]    = VideoInfo.height;
+        }
     }else{
         Error_String="非対応フォーマット";
         return false;
     }
 
-    // pinned 登録
-    // cudaHostRegister(vd[0].Frame->data[0], y_size,  cudaHostRegisterDefault);
-    // cudaHostRegister(vd[0].Frame->data[1], uv_size, cudaHostRegisterDefault);
-    // cudaHostRegister(vd[0].Frame->data[2], uv_size, cudaHostRegisterDefault);
+    if (!planeRing.alloc(planeWidthBytes, planeHeights, nplanes, Error_String))
+        return false;
 
-    err = cudaMallocPitch(&Frame.d_decode_rgba, &Frame.decode_pitch,
-                          VideoInfo.width * 4,
-                          VideoInfo.height);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch(d_rgba) failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-    err = cudaMallocPitch(&Frame.d_encode_rgba,&Frame.encode_pitch,
-        VideoInfo.width * VideoInfo.width_scale * 4,
-        VideoInfo.height * VideoInfo.height_scale);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaMallocPitch failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
-    // CUDA Stream
-    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaStream failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
-
-    // CUDA Event
-    cudaEventCreateWithFlags(&events, cudaEventDisableTiming);
-    if (err != cudaSuccess) {
-        Error_String = QString("cudaEvent failed: %1")
-        .arg(QString::fromUtf8(cudaGetErrorString(err)));
-        return false;
-    }
+    Frame.src_mode    = SRC_YUV_PLANE;
+    Frame.plane_is_be = 0;
 
     // ------------------------
     // 音声ストリーム探索
@@ -314,118 +302,8 @@ bool avidecode::initialized_ffmpeg()
     return true;
 }
 
-//デコーダ設定
-const char* avidecode::selectDecoder(const char* codec_name)
-{
-    if (strcmp(codec_name, "rawvideo") == 0) {
-        VideoInfo.Codec = "rawvideo";
-        qDebug() << "decoder: rawvideo";
-        return "rawvideo";
-    }
-
-    VideoInfo.Codec.clear();
-    qDebug() << "decoder: unsupported";
-    return nullptr;   // ★重要
-}
-
-
-//フレームレートを取得する関数
-double avidecode::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index) {
-    if (video_stream_index < 0 || video_stream_index >= fmt_ctx->nb_streams) {
-        qDebug() << "Invalid video stream index";
-        return 0.0;
-    }
-
-    //映像ストリームの取得
-    AVStream* video_stream = fmt_ctx->streams[video_stream_index];
-
-    //avg_frame_rateを取得
-    AVRational frame_rate = video_stream->avg_frame_rate;
-    if (frame_rate.num == 0 || frame_rate.den == 0) {
-        // avg_frame_rate が0の時は r_frame_rate を使用
-        frame_rate = video_stream->r_frame_rate;
-    }
-
-    //フレームレートを計算
-    double frame_rate_value = static_cast<double>(frame_rate.num) / static_cast<double>(frame_rate.den);
-
-    return frame_rate_value;
-}
-
-//テストでコード、最終フレームpts取得
-bool avidecode::get_last_frame_pts() {
-    avcodec_flush_buffers(vd[0].codec_ctx);
-
-    int64_t duration_pts = fmt_ctx->streams[vd[0].stream_index]->duration;
-    if (duration_pts <= 0) {
-        // durationが不明な場合はファイル末尾にシーク
-        duration_pts = INT64_MAX;
-    }
-
-    // 後方シーク（できるだけ終端に近づく）
-    if (av_seek_frame(fmt_ctx, vd[0].stream_index, duration_pts, AVSEEK_FLAG_BACKWARD) < 0) {
-        Error_String = "seek failed";
-        return false;
-    }
-
-    avcodec_flush_buffers(vd[0].codec_ctx);
-
-    int64_t last_pts = AV_NOPTS_VALUE;
-    bool frame_received = false;
-
-    while (true) {
-        int ret = av_read_frame(fmt_ctx, packet);
-        if (ret < 0) {
-            // EOFに到達：デコーダに残りを流す
-            avcodec_send_packet(vd[0].codec_ctx, nullptr);
-            while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[0]) == 0) {
-                last_pts = vd[0].hw_frames[0]->best_effort_timestamp;
-                VideoInfo.width = vd[0].hw_frames[0]->width;
-                VideoInfo.height = vd[0].hw_frames[0]->height;
-                frame_received = true;
-            }
-            break;
-        }
-
-        if (packet->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
-                while (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[0]) == 0) {
-                    last_pts = vd[0].hw_frames[0]->best_effort_timestamp;
-                    VideoInfo.width = vd[0].hw_frames[0]->width;
-                    VideoInfo.height = vd[0].hw_frames[0]->height;
-                    frame_received = true;
-                }
-            }
-        }
-    }
-
-    //packet解放
-    av_packet_unref(packet);
-
-    if (frame_received) {
-        AVRational tb = fmt_ctx->streams[vd[0].stream_index]->time_base;
-        double time = last_pts * av_q2d(tb);
-        qDebug() << "Last PTS:" << last_pts << " (" << time << "sec)";
-        VideoInfo.max_framesNo = last_pts/VideoInfo.pts_per_frame;
-        VideoInfo.start_range_framesNo = 0;
-        VideoInfo.end_range_framesNo = VideoInfo.max_framesNo;
-        Frame.FrameNo = VideoInfo.max_framesNo;
-
-        //最大時間を計算 時:分:秒
-        VideoInfo.max_hour = time / 3600;
-        VideoInfo.max_minute = (int(time) % 3600) / 60;
-        VideoInfo.max_second = fmod(time, 60.0);
-    } else {
-        Error_String = "No frame found at end.";
-        return false;
-    }
-
-    return true;
-}
-
 //映像ストリーム取得
 void avidecode::get_decode_image(){
-    //qDebug()<<"1フレーム読み込み"<<Frame.FrameNo;
     //----------- シーク処理 -----------
     if (slider_No != Frame.FrameNo || video_reverse_flag) {
         // ----------- 逆再生、通常シーク処理 -----------
@@ -482,6 +360,10 @@ void avidecode::get_decode_image(){
             } else {
                 emit decode_end();
                 high_res_seek_frame(VideoInfo.start_range_framesNo,false);
+                // ★ high_res_seek_frame の中で既に1フレーム emit しているので、
+                //   ここでループを抜けて二重 emit を避ける
+                av_packet_unref(packet);
+                return;
             }
 
             av_packet_unref(packet);
@@ -511,157 +393,128 @@ void avidecode::get_decode_image(){
     av_packet_unref(packet);
 }
 
-//オーディオ
-void avidecode::get_decode_audio()
-{
-    if (avcodec_send_packet(audio_ctx, packet) < 0)
-        return;
-
-    while (avcodec_receive_frame(audio_ctx, audio_frame) >= 0) {
-
-        const int out_channels = out_ch_layout.nb_channels;
-        const int bps = av_get_bytes_per_sample(VideoInfo.out_format);
-
-        int in_rate = audio_frame->sample_rate > 0
-                          ? audio_frame->sample_rate
-                          : audio_ctx->sample_rate;
-
-        int max_out_samples = av_rescale_rnd(
-            swr_get_delay(swr, in_rate) + audio_frame->nb_samples,
-            VideoInfo.out_sample_rate,
-            in_rate,
-            AV_ROUND_UP
-            );
-
-
-        QByteArray pcm_tmp;
-        pcm_tmp.resize(max_out_samples * out_channels * bps);
-
-        uint8_t* out_planes[] = {
-            reinterpret_cast<uint8_t*>(pcm_tmp.data())
-        };
-
-        int out_samples = swr_convert(
-            swr,
-            out_planes,
-            max_out_samples,
-            (const uint8_t**)audio_frame->extended_data,
-            audio_frame->nb_samples
-            );
-
-        if (out_samples <= 0)
-            continue;
-
-        pcm_tmp.resize(out_samples * out_channels * bps);
-        VideoInfo.audio_channels = out_channels;
-
-        // ★ここで確定コピーを作る
-        QByteArray pcm=pcm_tmp;
-
-        // 低遅延再生（同一スレッド）
-        Frame.audio_pcm.push_back(QByteArray(pcm));
-        Frame.audio_pts.push_back(audio_frame->pts);
-
-        //低遅延音声再生
-        if (encode_state == STATE_NOT_ENCODE) {
-            if (g_AppSettings.audio_low_laytency_flag && audioOutput) {
-                if (audioSink->bytesFree() >= pcm.size()) {
-
-                    float volume = g_AppSettings.audio_volume / 100.0f;
-
-                    int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
-                    int sampleCount = pcm.size() / sizeof(int16_t);
-
-                    for (int i = 0; i < sampleCount; i++) {
-                        int32_t v = samples[i] * volume;
-
-                        // クリップ防止
-                        if (v > 32767) v = 32767;
-                        if (v < -32768) v = -32768;
-
-                        samples[i] = static_cast<int16_t>(v);
-                    }
-
-                    audioOutput->write(pcm);
-                }
-            }
-        }
-
-        // エンコードスレッドへ（別スレッド）
-        emit send_audio(pcm);
-    }
-}
-
-//GPUへアップロード
+//GPUへアップロード（★ゼロコピー：RGBA化はGUIスレッドで行う）
 void avidecode::gpu_upload(){
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    AVFrame* f = vd[0].hw_frames[ringNo];
 
+    // ★ 書き込む前にリングのslotを確定させる。
+    //   emit 済みの前フレームは別の面を指しているので上書きされない。
+    planeRing.select(Frame);
 
-    //CUDAカーネル同期
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
-    if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_UYVY422){
-        cudaMemcpy2D(d_yuv, pitch_yuv,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->uyvy422_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_yuv, pitch_yuv,VideoInfo.width, VideoInfo.height,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV420P){
-        cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2), VideoInfo.height/2,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2),VideoInfo.height/2,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV420P10){
-        int is_be = (vd[0].hw_frames[ringNo]->format == AV_PIX_FMT_YUV420P10BE);
-        cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height/2,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height/2,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv420p_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV422P){
-        cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2), VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2),VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv422p_to_RGBA_8bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_YUV422P10){
-        int is_be = (vd[0].hw_frames[ringNo]->format == AV_PIX_FMT_YUV422P10BE);
-        cudaMemcpy2D(d_y, pitch_y,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_u, pitch_u,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width/2) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_v, pitch_v,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width/2) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->yuv422p_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_y, pitch_y,d_u,pitch_u, d_v,pitch_v,VideoInfo.width, VideoInfo.height,is_be,stream);
-    }else if(vd[0].hw_frames[ringNo]->format==AV_PIX_FMT_GBRP10){
-        cudaMemcpy2D(d_g, pitch_g,vd[0].hw_frames[ringNo]->data[0], vd[0].hw_frames[ringNo]->linesize[0],VideoInfo.width * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_b, pitch_b,vd[0].hw_frames[ringNo]->data[1], vd[0].hw_frames[ringNo]->linesize[1],(VideoInfo.width) * 2, VideoInfo.height,cudaMemcpyHostToDevice);
-        cudaMemcpy2D(d_r, pitch_r,vd[0].hw_frames[ringNo]->data[2], vd[0].hw_frames[ringNo]->linesize[2], (VideoInfo.width) * 2,VideoInfo.height,cudaMemcpyHostToDevice);
-        CUDA_IMG_Proc->rgb_to_RGBA_10bit(Frame.d_decode_rgba,Frame.decode_pitch,d_r, pitch_r,d_g,pitch_g, d_b,pitch_b,VideoInfo.width, VideoInfo.height,stream);
+    // GPUアップロード
+    //   cudaMemcpy2D(同期版) はホストに対して同期なので、
+    //   戻った時点でデータはデバイス上にある。
+    //   → GUIスレッドが後から起動するカーネルからは必ず見える。
+    //   従来あったダミーカーネル + イベント同期は不要なので削除した。
+    //
+    //   ★ GBRP10 は data[0]=G, data[1]=B, data[2]=R の順で入っている。
+    //      プレーンもその並びのまま格納し、順序の入れ替えは
+    //      呼び出し側(glwidget)で行う。
+    const int W = VideoInfo.width;
+    const int H = VideoInfo.height;
+
+    switch (f->format) {
+    case AV_PIX_FMT_UYVY422:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0],
+                     W * 2, H, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_UYVY422_8;
+        Frame.plane_is_be  = 0;
+        break;
+
+    case AV_PIX_FMT_YUV420P:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W,     H,     cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], W / 2, H / 2, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], W / 2, H / 2, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_YUV420P_8;
+        Frame.plane_is_be  = 0;
+        break;
+
+    case AV_PIX_FMT_YUV420P10:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W * 2,       H,     cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], (W / 2) * 2, H / 2, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], (W / 2) * 2, H / 2, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_YUV420P_10;
+        Frame.plane_is_be  = 0;   // case ラベルが LE なので常に LE
+        break;
+
+    case AV_PIX_FMT_YUV422P:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W,     H, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], W / 2, H, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], W / 2, H, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_YUV422P_8;
+        Frame.plane_is_be  = 0;
+        break;
+
+    case AV_PIX_FMT_YUV422P10:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W * 2,       H, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], (W / 2) * 2, H, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], (W / 2) * 2, H, cudaMemcpyHostToDevice);
+        Frame.plane_format = YUVFMT_YUV422P_10;
+        Frame.plane_is_be  = 0;   // case ラベルが LE なので常に LE
+        break;
+
+    case AV_PIX_FMT_GBRP10:
+        cudaMemcpy2D(Frame.d_plane[0], Frame.plane_pitch[0],
+                     f->data[0], f->linesize[0], W * 2, H, cudaMemcpyHostToDevice);  // G
+        cudaMemcpy2D(Frame.d_plane[1], Frame.plane_pitch[1],
+                     f->data[1], f->linesize[1], W * 2, H, cudaMemcpyHostToDevice);  // B
+        cudaMemcpy2D(Frame.d_plane[2], Frame.plane_pitch[2],
+                     f->data[2], f->linesize[2], W * 2, H, cudaMemcpyHostToDevice);  // R
+        Frame.plane_format = YUVFMT_GBRP_10;
+        Frame.plane_is_be  = 0;
+        break;
+
+    default:
+        // ★ ここで何も出さずに返すと emit が飛ばず、GUI からの
+        //   receve_decode_flag が返ってこないので再生が止まったままになる。
+        //   前のコマを送り直してハンドシェイクだけ回す。
+        qWarning() << "[avidecode] unsupported pixel format:" << f->format;
+        if (Frame.d_plane[0] != nullptr) {
+            ++inflight_frames;
+            emit send_decode_image(Frame, true, video_reverse_flag);
+        }
+        return;
     }
 
-    //ダミーカーネルで完全な同期
-    CUDA_IMG_Proc->Dummy(stream);
-    cudaEventRecord(events, stream);
-    cudaEventSynchronize(events);
+    Frame.src_mode = SRC_YUV_PLANE;
 
-    //フレーム番号取得
-    if(seek_flag){
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-        back1FrameNo = Frame.FrameNo-1;
-    }else if(back1frame_flag||high_res_slider_flag){
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
-    }else{
-        back1FrameNo = Frame.FrameNo;
-        Frame.FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
-        slider_No = Frame.FrameNo;
+    // フレーム番号と時刻（基底で共通化。0 除算と NOPTS もそこでふさいでいる）
+    advance_frame_no(vd[0].hw_frames[ringNo]->best_effort_timestamp);
+
+    //リングを回す
+    ringNo++;
+    if(ringNo>=ringSize) ringNo = 0;
+
+    // ★ 追い越し検出：GUIが消費する前に YuvPlaneRing を一周していないか
+    //   （こちらの実効段数は planeRing の RING_SIZE）
+    {
+        const int n = ++inflight_frames;
+        if (n >= YuvPlaneRing::RING_SIZE) {
+            qWarning() << "[avidecode] PLANE RING OVERRUN inflight =" << n
+                       << "/" << YuvPlaneRing::RING_SIZE
+                       << " FrameNo =" << Frame.FrameNo;
+        }
     }
-    seek_flag = false;
-
-    //時刻を算出
-    double time = Frame.FrameNo/VideoInfo.fps;
-    Frame.hour = time / 3600;
-    Frame.minute = (int(time) % 3600) / 60;
-    Frame.second = fmod(time, 60.0);
 
     emit send_decode_image(Frame,false,video_reverse_flag);
+
+    // ★ emit の後に次の面へ。
+    //   GUIスレッドは今 emit した面を読むので、ここで進めておかないと
+    //   次フレームが同じ面を踏む。
+    planeRing.advance();
 }
 
 //高精度シーク
@@ -705,8 +558,15 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
     if(FrameNo<0){
         FrameNo = 0;
     }
+    // ★ 終端に当たってデコーダも空、という状態を何回見たか。
+    //   目標が実在しない位置だと、読み直し -> 終端 を永久に繰り返す。
+    //   ここは processFrame のミューテックスの中なので、回り続けると
+    //   GUI スレッドまで巻き込んで固まる。
+    int eof_rounds = 0;
+
     while(!thread_stop_flag){
-        while (true) {
+        // ★ 内側にも停止要求を見せる（長いスキャン中にクローズされても抜ける）
+        while (!thread_stop_flag) {
             int ret = av_read_frame(fmt_ctx, packet);
 
             // ---------- EOF ----------
@@ -715,6 +575,14 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
                     av_packet_unref(packet);
                     break;
+                }
+
+                // ★ デコーダも空。1 回だけ読み直しを許し、それでも届かなければ
+                //   取れている最後のコマを出して諦める。
+                if (++eof_rounds >= 2) {
+                    av_packet_unref(packet);
+                    gpu_upload();
+                    return;
                 }
 
                 // 終端→先頭に戻ってループ
@@ -728,7 +596,7 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
                     avcodec_flush_buffers(audio_ctx);
 
                 av_seek_frame(fmt_ctx, vd[0].stream_index,
-                              seek_frame * VideoInfo.pts_per_frame,
+                              (int64_t)seek_frame * VideoInfo.pts_per_frame,
                               AVSEEK_FLAG_ANY);
 
                 av_packet_unref(packet);
@@ -744,11 +612,17 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
                     }
                 }
             }
+            // ★ 映像以外のパケットもここで解放する。シークは目標まで
+            //   読み続けるので、取りこぼすとその区間ぶん丸ごと漏れる。
+            av_packet_unref(packet);
         }
 
-        //ターゲットフレームの番号かどうか判定
+        //1 つ手前のコマを覚えてから、今のコマの番号を出す
         back1FrameNo = FrameNo;
-        FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
+        FrameNo = (VideoInfo.pts_per_frame > 0)
+                      ? (int)(vd[0].hw_frames[ringNo]->best_effort_timestamp
+                              / VideoInfo.pts_per_frame)
+                      : FrameNo;
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){

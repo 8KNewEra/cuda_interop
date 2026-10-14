@@ -127,6 +127,10 @@ private:
     //fpsスレッド
     void start_fps_thread(double target_fps);
     void stop_fps_thread();
+    // ★ fps_thread → decode_thread::processFrame の駆動を切り替える。
+    //   エンコード中はタイマー駆動を切り離し、
+    //   「GUIが1枚消費 → 1枚デコード」のハンドシェイク駆動に一本化する。
+    void set_fps_driving(bool on);
     QThread *fps_view_thread=nullptr;
     fps_thread *fpsstream=nullptr;
 
@@ -144,6 +148,8 @@ private:
     void encode_set();
     void start_encode();
     void finished_encode();
+    // ★ エンコーダ生成失敗（VRAM不足など）の受け口
+    void encode_error_handler(const QString &error);
     bool wasCanceled=false;
     encode_setting *encodeSetting;
     int encode_state=STATE_NOT_ENCODE;

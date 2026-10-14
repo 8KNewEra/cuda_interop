@@ -110,9 +110,9 @@ private:
 
 // エンコード設定の構造体
 struct DecodeInfo {
-    bool video_open_flag = false;
     std::string Path = "D:/test2.mp4";
     std::string Name = "";
+    bool video_open_flag = false;
 
     //映像メタデータ
     std::string Codec = "av1";
@@ -184,14 +184,68 @@ private:
     DecodeInfo m_settings;
 };
 
+// ==============================================================
+// デコード結果の受け渡し形式
+//   どちらもデコード結果を直接指すゼロコピー。中間バッファは持たない。
+//
+//   SRC_NV12_TILE : NVDEC が出した NV12 タイル（nvgpudecode）
+//   SRC_YUV_PLANE : CPUデコードをGPUへ上げた YUV プレーン（cpudecode/avidecode）
+//
+//   いずれも GUIスレッドが surface object でGLテクスチャへ直接書く。
+// ==============================================================
+enum VideoFrameSrc {
+    SRC_NONE      = 0,   // 未設定（デコーダが埋め忘れている）
+    SRC_NV12_TILE = 1,
+    SRC_YUV_PLANE = 2
+};
+
+// SRC_YUV_PLANE のときの画素フォーマット
+//   AVPixelFormat を直接持たせると glwidget が ffmpeg に依存するので、
+//   必要な種類だけを自前の enum に落としている。
+enum YuvPlaneFormat {
+    YUVFMT_NONE = 0,
+    YUVFMT_YUV420P_8,
+    YUVFMT_YUV420P_10,
+    YUVFMT_YUV422P_8,
+    YUVFMT_YUV422P_10,
+    YUVFMT_UYVY422_8,    // packed。plane[0] のみ使用
+    YUVFMT_GBRP_10       // plane[0]=G, plane[1]=B, plane[2]=R
+};
+
 //デコードフレーム
 struct VideoFrame {
-    //映像
-    uint8_t* d_decode_rgba=nullptr;
-    size_t decode_pitch=0;
-    uint8_t* d_encode_rgba=nullptr;
-    size_t encode_pitch=0;
+    static const int MAX_TILES = 8;
+
+    //映像の受け渡し形式
+    int src_mode = SRC_NONE;
+
+    // --- SRC_NV12_TILE のとき使用 ---
+    //   NVDEC が出力した NV12 タイルを直接指す（コピーしない）
+    //   有効期間はデコード側のリング（vd[i].hw_frames）が一周するまで
+    int      tile_count = 0;                  // 1 / 2 / 4 / 8
+    int      tile_w     = 0;                  // 1タイルの幅  (= VideoInfo.width)
+    int      tile_h     = 0;                  // 1タイルの高さ(= VideoInfo.height)
+    uint8_t* d_y     [MAX_TILES] = {};
+    size_t   y_pitch [MAX_TILES] = {};
+    uint8_t* d_uv    [MAX_TILES] = {};
+    size_t   uv_pitch[MAX_TILES] = {};
+
+    // --- SRC_YUV_PLANE のとき使用 ---
+    //   CPUデコード結果をGPUへ上げただけのプレーンを直接指す（RGBA化しない）
+    //   有効期間はデコード側のプレーンリングが一周するまで
+    int      plane_format = YUVFMT_NONE;
+    int      plane_is_be  = 0;          // 10bit BE のときのみ 1
+    uint8_t* d_plane    [3] = {};
+    size_t   plane_pitch[3] = {};
+
     int FrameNo=0;
+
+    // ★ NV12 の GPU 転送完了イベント。
+    //   cuvid は出力を cuMemcpy2DAsync で積むだけで同期せずに戻るため
+    //   (libavcodec/cuviddec.c)、受け取った直後の d_y/d_uv はまだ転送中。
+    //   GUI 側は結合カーネルの前に cudaStreamWaitEvent で待つこと。
+    //   nullptr なら待ち不要（CPUデコード経路）。
+    cudaEvent_t decode_ready = nullptr;
 
     //時間
     int hour = 0;
@@ -261,7 +315,5 @@ struct GPUInfo {
 extern AppSettings g_AppSettings;
 extern std::vector<GPUInfo> g_GPUInfo;
 extern int g_openglDeviceID;
-extern int g_EncodeRingNo;
-extern int g_EncodeRingSize;
 
 #endif // __GLOBAL___H

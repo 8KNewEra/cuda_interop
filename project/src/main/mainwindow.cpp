@@ -220,6 +220,14 @@ void MainWindow::GLwidgetInitialized(){
         QObject::connect(encodeSetting, &encode_setting::signal_encode_start,this, &MainWindow::start_encode,Qt::QueuedConnection);
         QObject::connect(encodeSetting, &encode_setting::signal_encode_finished,this, &MainWindow::finished_encode,Qt::QueuedConnection);
 
+        // ★ エンコーダ生成失敗の通知。
+        //   QueuedConnection にしておくこと。encode_mode() は start_encode() の
+        //   途中から呼ばれるので、Direct だとその内部でモーダルダイアログが開き
+        //   再入する。Queued なら start_encode のイベントループで処理される。
+        QObject::connect(glWidget, &GLWidget::encode_error,
+                         this, &MainWindow::encode_error_handler,
+                         Qt::QueuedConnection);
+
 
         /* 音量調整ボタン */
         audioVolume = new audio_volume(this);
@@ -974,60 +982,32 @@ void MainWindow::toggleFullScreen()
 //ファイルを開く
 void MainWindow::Open_Video_File()
 {
-    QString startDir =
-        QFileInfo(g_AppSettings.decode_path).absolutePath();
+    QString startDir = QFileInfo(g_AppSettings.decode_path).absolutePath();
 
-    if (startDir.isEmpty() || !QDir(startDir).exists())
-    {
+    if (startDir.isEmpty() || !QDir(startDir).exists()) {
         startDir = QDir::homePath();
     }
 
-    QFileDialog* dlg = new QFileDialog(this);
-
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-
-    dlg->setWindowTitle(tr("動画ファイルを開く"));
-
-    dlg->setDirectory(startDir);
-
-    dlg->setFileMode(QFileDialog::ExistingFile);
-
-    dlg->setNameFilter(
-        tr("動画ファイル (*.mp4 *.avi)")
+    QString filePath = QFileDialog::getOpenFileName(
+        this,
+        tr("動画ファイルを開く"),
+        startDir,
+        tr("動画ファイル (*.mp4 *.avi *.mkv *.mov)")
         );
 
-    connect(
-        dlg,
-        &QFileDialog::fileSelected,
-        this,
-        [this](const QString& filePath)
-        {
-            qDebug()
-            << "選択されたファイル:"
-            << filePath;
+    // ファイルが選択されたかどうかを確認
+    if (!filePath.isEmpty()) {
+        qDebug() << "選択されたファイル:" << filePath;
+        g_AppSettings.decode_path = filePath;
 
-            g_AppSettings.decode_path =
-                filePath;
+        Close_Video_File();
+        ui->info->setEnabled(false);
+        ui->actionOpenFile->setEnabled(false);
 
-            Close_Video_File();
-
-            ui->info->setEnabled(false);
-            ui->actionOpenFile->setEnabled(false);
-
-            start_decode_thread(filePath);
-        });
-
-    connect(
-        dlg,
-        &QFileDialog::rejected,
-        this,
-        []
-        {
-            qDebug()
-            << "ファイル選択がキャンセルされました";
-        });
-
-    dlg->open(); // ← 非同期表示
+        start_decode_thread(g_AppSettings.decode_path);
+    } else {
+        qDebug() << "ファイル選択がキャンセルされました";
+    }
 }
 
 //ファイルを閉じる
@@ -1408,11 +1388,13 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
 
     if(run_decode_thread){
         //シグナルセット
+        // ★ 1表示フレームにつき「1本だけ」接続する。
+        //   以前はエンコード中に processFrame も直結していたため、
+        //   1回の decode_please で receve_decode_flag（→内部で再投入）と
+        //   processFrame の2回デコードが走り、hw_frames リングを
+        //   追い越して GUI が変換中の面を上書きしていた。
+        //   エンコード中の自己駆動は receve_decode_flag 側へ統合済み。
         QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
-        //エンコード時はそのままデコードスレッドにシグナルを出して最速でデコードする
-        if(encode_state==STATE_ENCODING&&g_EncodeRingNo<=g_EncodeRingSize-3){
-            QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::processFrame,Qt::SingleShotConnection);
-        }
 
         //再生時間表示
         if (VideoInfo.max_hour > 0) {
@@ -1427,19 +1409,22 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
         }
 
         //UIの制御
-        if (encode_state==STATE_NOT_ENCODE) {
-            //ui->Live_horizontalSlider->setValue(Frame.FrameNo);
-        }
         rangeSlider->setPlayValue(Frame.FrameNo);
         slider_No=Frame.FrameNo;
 
         //描画を開始
+        //コンテキストを作成
+        glWidget->makeCurrent();
+
         //OpenGLへ画像を渡して描画、一時停止の場合は情報描画のみ
         if(!pause_flag&&encode_state!=STATE_ENCODE_READY){
             glWidget->uploadToGLTexture(Frame);
-        }else if(pause_flag&&encode_state==STATE_NOT_ENCODE){
+        }else if(encode_state==STATE_NOT_ENCODE){
             glWidget->FBO_Rendering(Frame);
         }
+
+        //コンテキストを破棄
+        glWidget->doneCurrent();
 
         //デコードスレッドシグナル
         if(encode_state!=STATE_ENCODE_READY)
@@ -1609,9 +1594,31 @@ void MainWindow::start_fps_thread(double target_fps){
         fpsstream->moveToThread(fps_view_thread);
 
         QObject::connect(fpsstream, &fps_thread::fps_signal,
-                         decodestream, &decode_thread::processFrame);
+                         decodestream, &decode_thread::processFrame,
+                         Qt::UniqueConnection);
 
         fpsstream->start();
+    }
+}
+
+// ==============================================================
+// ★ fps_thread → decode_thread::processFrame の駆動 ON/OFF
+//
+//   エンコード中はタイマー駆動(60Hz)とハンドシェイク駆動が二重になり、
+//   GUIの実描画(数fps)に対してデコードだけが先行してリングを追い越す。
+//   エンコード中は OFF にして、receve_decode_flag の自己駆動に任せる。
+// ==============================================================
+void MainWindow::set_fps_driving(bool on)
+{
+    if(!fpsstream || !decodestream) return;
+
+    if(on){
+        QObject::connect(fpsstream, &fps_thread::fps_signal,
+                         decodestream, &decode_thread::processFrame,
+                         Qt::UniqueConnection);
+    }else{
+        QObject::disconnect(fpsstream, &fps_thread::fps_signal,
+                            decodestream, &decode_thread::processFrame);
     }
 }
 
@@ -1662,6 +1669,9 @@ void MainWindow::encode_set(){
     glWidget->encode_mode(encode_state);
     decodestream->encode_state = encode_state;
 
+    // ★ ここから先はタイマー駆動を切り離す（二重駆動の防止）
+    set_fps_driving(false);
+
     //停止/再生速度を最大に、エンコードは最速でやるため
     emit send_manual_pause();
 
@@ -1691,16 +1701,21 @@ void MainWindow::start_encode(){
 
         //エンコード開始
         encode_state = STATE_ENCODING;
-        fpsstream->change_speed(VideoInfo.fps);
+        // ★ タイマー駆動は使わない（receve_decode_flag の自己駆動に一本化）
+        set_fps_driving(false);
         decodestream->encode_state = encode_state;
         glWidget->encode_mode(encode_state);
         glWidget->MinFrame = VideoInfo.start_range_framesNo;
         glWidget->MaxFrame = VideoInfo.end_range_framesNo;
-        emit decode_please();
 
         //FrameNoが0なことを確認
         emit send_manual_high_res_slider(VideoInfo.start_range_framesNo);
         emit send_manual_resumeplayback();
+
+        // ★ 起動キックは「再生状態にしてから」1回だけ。
+        //   先に投げると receve_decode_flag が video_play_flag=false を見て
+        //   自己駆動せず、エンコードが始まらない。
+        emit decode_please();
 
         //修了処理
         connect(glWidget, &GLWidget::encode_finished, this, [=]() {
@@ -1716,7 +1731,9 @@ void MainWindow::start_encode(){
             QString encode_time = QString::number(seconds, 'f', 3)+"秒";
             encodeSetting->encode_end(encode_time);
         }, Qt::SingleShotConnection);
-        QObject::connect(this, &MainWindow::decode_please, decodestream, &decode_thread::receve_decode_flag,Qt::SingleShotConnection);
+        // ★ ここにあった2本目の receve_decode_flag 接続は削除した。
+        //   decode_view 側の接続と重なり、1回の decode_please で
+        //   receve_decode_flag が2回呼ばれて processFrame が2本走っていた。
 
         // 処理ループ内で更新
         while(true) {
@@ -1736,12 +1753,56 @@ void MainWindow::start_encode(){
     }
 }
 
+// ==============================================================
+// ★ エンコーダ生成失敗の受け口
+//
+//   save_encode のコンストラクタが投げた例外を GLWidget が受けて
+//   encode_error で上げてくる。ここで
+//     ・start_encode の待ちループを抜けさせる
+//     ・再生/エンコード状態を安全側へ戻す
+//     ・ユーザーへ通知する
+//   を行う。save_encoder は nullptr のままなので、
+//   エンコード経路には一切入らない。
+// ==============================================================
+void MainWindow::encode_error_handler(const QString &error)
+{
+    // start_encode の while ループを抜けさせる
+    wasCanceled = true;
+
+    // 状態を戻す（エンコード設定ウィンドウは開いたまま。
+    // ユーザーが閉じれば finished_encode() で通常再生に復帰する）
+    emit send_manual_pause();
+
+    encode_state = STATE_ENCODE_READY;
+    if (decodestream)
+        decodestream->encode_state = encode_state;
+
+    if (glWidget) {
+        glWidget->encode_mode(encode_state);
+        glWidget->encode_FrameCount = 0;
+    }
+
+    qWarning() << "[MainWindow] encode error:" << error;
+
+    QMessageBox::warning(
+        this,
+        tr("エンコード開始エラー"),
+        tr("エンコーダの初期化に失敗しました。\n\n%1\n\n"
+           "解像度・分割数・B-frame 数を下げると改善する場合があります。")
+            .arg(error),
+        QMessageBox::Ok);
+}
+
 //エンコードウィンドウを閉じる
 void MainWindow::finished_encode(){
     encode_state = STATE_NOT_ENCODE;
     fpsstream->change_speed(g_AppSettings.video_speed_ratio*VideoInfo.fps);
     glWidget->encode_mode(encode_state);
     decodestream->encode_state = encode_state;
-    emit decode_please();
+
+    // ★ 通常再生に戻すのでタイマー駆動を復帰させる
+    set_fps_driving(true);
+
     emit send_manual_resumeplayback();
+    emit decode_please();
 }
