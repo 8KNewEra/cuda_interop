@@ -94,9 +94,7 @@ protected:
     //   3 派生クラス共通。0 除算と AV_NOPTS_VALUE もここでふさいでいる。
     void advance_frame_no(int64_t ts);
 
-    // ★ スピーカーへ流してよい状況か。
-    //   順方向の通常再生中だけ true。シーク・逆再生・コマ送りの最中は
-    //   その位置の音声パケットが短く鳴ってブツブツ聞こえる。
+    // ★ スピーカーへ流してよい状況か。順方向の通常再生中だけ true。
     bool audio_playable() const;
     // 出力デバイスに積んである再生待ちの PCM を捨てる。
     void reset_audio_sink();
@@ -147,10 +145,23 @@ protected:
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
 
-    // ★ 消音中かどうか。消音へ入った最初の 1 回だけ出力デバイスを捨てる。
-    //   毎回 reset すると、スライダーをドラッグしている間ずっと
-    //   オーディオデバイスを開き直すことになる。
+    // ★ 消音中かどうか。消音へ入る最初の 1 回だけ出力デバイスを捨てる
+    //   （毎回 reset するとドラッグ中ずっとデバイスを開き直すことになる）。
     bool audio_muted_ = false;
+
+    // ★ high_res_seek_frame() の実行中だけ true。この経路は目標まで
+    //   パケットを読み進めるので、通り道の音声が鳴ってしまう。
+    //   デコードスレッド専用なので atomic は不要。
+    bool in_seek_scan_ = false;
+
+    // in_seek_scan_ の RAII（high_res_seek_frame() は return が多い）
+    struct SeekScanScope {
+        decode_thread* t;
+        explicit SeekScanScope(decode_thread* p) : t(p) { t->in_seek_scan_ = true; }
+        ~SeekScanScope() { t->in_seek_scan_ = false; }
+        SeekScanScope(const SeekScanScope&)            = delete;
+        SeekScanScope& operator=(const SeekScanScope&) = delete;
+    };
 
     // AVFrame リング（vd[].hw_frames の面数）
     //   ★ デコード結果のRGBA面はもう持たない。

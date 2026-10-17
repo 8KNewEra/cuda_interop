@@ -346,25 +346,22 @@ bool decode_thread::get_last_frame_pts() {
     return true;
 }
 
-// =============================================================================
-// ★ 音を出してよいのは「順方向の通常再生中」だけ
-//
-//   シーク中もデコード経路はそのまま動くので、スライダーを動かすと
-//   その位置の音声パケットが次々に鳴ってブツブツ聞こえる。逆再生と
-//   コマ送りも同じ（1 コマ進むたびに数十 ms だけ鳴る）。
-//
-//   デコード自体は止めない。保存用に Frame.audio_pcm へ積む必要があり、
-//   エンコード経路（send_audio）も同じ関数を通るため。
-//   止めるのは audioOutput への書き込みだけ。
-// =============================================================================
+// ★ 音を出してよいのは「順方向の通常再生中」だけ。
+//   シーク・逆再生・コマ送りの最中もデコードは動くので、その位置の
+//   音声パケットが短く鳴ってブツブツ聞こえる。デコード自体は止めない
+//   （エンコード経路が同じ関数を通る）。止めるのは出力だけ。
 bool decode_thread::audio_playable() const
 {
-    return video_play_flag
-           && !video_reverse_flag
-           && !seek_flag
-           && !high_res_slider_flag
-           && !back1frame_flag.load()
-           && !go1frame_flag;
+    // 高精度シークの走査中。UI フラグが立たない経路（範囲外補正・EOF
+    // 折り返し・3/10/30 秒送り）もあるので、ここで一括して落とす。
+    if (in_seek_scan_) return false;
+
+    // 各デコーダが「このラウンドはシークする」と判断している式そのもの
+    // （get_*decode_image の先頭）。UI フラグの立ち遅れに影響されない。
+    if (slider_No != Frame.FrameNo) return false;
+
+    return video_play_flag && !video_reverse_flag && !seek_flag
+           && !high_res_slider_flag && !back1frame_flag.load() && !go1frame_flag;
 }
 
 // ★ デコーダを flush しても、QAudioSink には再生待ちの PCM が
@@ -399,11 +396,11 @@ void decode_thread::get_decode_audio()
             );
 
 
-        QByteArray pcm_tmp;
-        pcm_tmp.resize(max_out_samples * out_channels * bps);
+        QByteArray pcm;
+        pcm.resize(max_out_samples * out_channels * bps);
 
         uint8_t* out_planes[] = {
-            reinterpret_cast<uint8_t*>(pcm_tmp.data())
+            reinterpret_cast<uint8_t*>(pcm.data())
         };
 
         int out_samples = swr_convert(
@@ -417,52 +414,68 @@ void decode_thread::get_decode_audio()
         if (out_samples <= 0)
             continue;
 
-        pcm_tmp.resize(out_samples * out_channels * bps);
+        pcm.resize(out_samples * out_channels * bps);
         VideoInfo.audio_channels = out_channels;
 
-        // ★ここで確定コピーを作る
-        QByteArray pcm=pcm_tmp;
+        // ★ 音が出る経路は 3 本（① audioOutput->write / ② Frame.audio_pcm /
+        //   ③ emit send_audio）。①だけ止めても②③の先から鳴るので、
+        //   判定は 1 回だけ行って 3 本すべてに掛ける。
+        //   エンコード中は無条件に渡す（1 サンプル落とすと音がずれる）。
+        const bool encoding = (encode_state != STATE_NOT_ENCODE);
 
-        // 低遅延再生（同一スレッド）
-        Frame.audio_pcm.push_back(QByteArray(pcm));
-        Frame.audio_pts.push_back(audio_frame->pts);
-
-        //低遅延音声再生
-        if (encode_state == STATE_NOT_ENCODE) {
-            // ★ シーク中などは鳴らさない。消音へ入った最初の 1 回だけ、
-            //   既に積まれている PCM を捨てる（毎回 reset するとドラッグ中
-            //   ずっとデバイスを開き直すことになる）。
-            if (!audio_playable()) {
+        if (!encoding) {
+            const bool playable = audio_playable();
+            if (playable == audio_muted_) {   // 消音の出入りだけ出す
+                // qDebug().noquote()
+                //     << QString("[audio] %1  slider=%2/%3 play=%4 rev=%5 seek=%6 "
+                //                "hres=%7 back1=%8 go1=%9 scan=%10")
+                //            .arg(playable ? QStringLiteral("再生") : QStringLiteral("消音"))
+                //            .arg(slider_No).arg(Frame.FrameNo)
+                //            .arg((int)video_play_flag).arg((int)video_reverse_flag)
+                //            .arg((int)seek_flag).arg((int)high_res_slider_flag)
+                //            .arg((int)back1frame_flag.load()).arg((int)go1frame_flag)
+                //            .arg((int)in_seek_scan_);
+            }
+            if (!playable) {
                 if (!audio_muted_) { audio_muted_ = true; reset_audio_sink(); }
             } else {
                 audio_muted_ = false;
             }
+        }
 
-            if (!audio_muted_ && g_AppSettings.audio_low_laytency_flag && audioOutput) {
-                if (audioSink->bytesFree() >= pcm.size()) {
+        const bool deliver = encoding || !audio_muted_;
 
-                    float volume = g_AppSettings.audio_volume / 100.0f;
+        // ② GUI へ。①の音量処理より前に積むので素のデータが渡る。
+        if (deliver) {
+            Frame.audio_pcm.push_back(QByteArray(pcm));
+            Frame.audio_pts.push_back(audio_frame->pts);
+        }
 
-                    int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
-                    int sampleCount = pcm.size() / sizeof(int16_t);
+        // ① 低遅延再生
+        if (deliver && !encoding && g_AppSettings.audio_low_laytency_flag && audioOutput) {
+            if (audioSink->bytesFree() >= pcm.size()) {
 
-                    for (int i = 0; i < sampleCount; i++) {
-                        int32_t v = samples[i] * volume;
+                const float volume = g_AppSettings.audio_volume / 100.0f;
 
-                        // クリップ防止
-                        if (v > 32767) v = 32767;
-                        if (v < -32768) v = -32768;
+                int16_t* samples   = reinterpret_cast<int16_t*>(pcm.data());
+                const int sampleCount = pcm.size() / sizeof(int16_t);
 
-                        samples[i] = static_cast<int16_t>(v);
-                    }
+                for (int i = 0; i < sampleCount; i++) {
+                    int32_t v = (int32_t)(samples[i] * volume);
 
-                    audioOutput->write(pcm);
+                    // クリップ防止
+                    if (v >  32767) v =  32767;
+                    if (v < -32768) v = -32768;
+
+                    samples[i] = static_cast<int16_t>(v);
                 }
+
+                audioOutput->write(pcm);
             }
         }
 
-        // エンコードスレッドへ（別スレッド）
-        emit send_audio(pcm);
+        // ③ 別スレッドへ
+        if (deliver) emit send_audio(pcm);
     }
 }
 

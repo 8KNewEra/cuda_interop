@@ -518,7 +518,10 @@ void avidecode::gpu_upload(){
 }
 
 //高精度シーク
-void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag){
+void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
+{
+    SeekScanScope scan(this);   // ★ 走査中は消音（get_decode_audio() が見る）
+
     //0より低い、最大フレーム数より多い数値が来た場合は修正
     if(targetFrameNo<VideoInfo.start_range_framesNo){
         if(video_play_flag){
