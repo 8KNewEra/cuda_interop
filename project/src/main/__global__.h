@@ -31,6 +31,9 @@ struct AppSettings
     int jumpValueSecond = 1;
     int jumpValueFrame = 1;
     int jumpValueFrameNo = 0;
+    // ★ 未使用。低遅延モードは廃止した（再生経路は 1 本）。
+    //   ini の互換のために残してあるだけ。
+    bool audio_low_laytency_flag = false;
 
     // Filter
     bool sobelfilterEnabled = false;
