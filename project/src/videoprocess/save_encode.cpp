@@ -1152,15 +1152,38 @@ void save_encode::encode_audio(AudioJob Frame)
     if (!audio_enc_ctx || !audio_fifo || !swr_enc) return;
 
     const int ch     = audio_enc_ctx->ch_layout.nb_channels;
-    const int in_bps = av_get_bytes_per_sample(VideoInfo.out_format);// S16
+    // 入力形式はデコード側が決める（現在はインターリーブ float）
+    const int in_bps = av_get_bytes_per_sample(VideoInfo.out_format);
 
     for (const QByteArray& pcm : Frame.audio_pcm) {
         int in_samples = pcm.size() / (ch * in_bps);
         if (in_samples <= 0) continue;
 
-        const uint8_t* in_data[1] = {
-            reinterpret_cast<const uint8_t*>(pcm.constData())
-        };
+        // ★ AAC へ渡す前に ±1.0 へ収める。
+        //
+        //   デコード側が float のまま配るようになったので、0dBFS を超える
+        //   素材（PCM 32bit float など）の値がそのまま届く。AAC は 0dBFS
+        //   超えを持てず、再生側で必ず潰れるうえ、範囲外を入れると
+        //   エンコーダの量子化が乱れる。
+        //   以前は S16 へ落とす段で飽和していたぶんを、ここで肩代わりする。
+        //
+        //   ★ 再生の音量とは別物。こちらは音量を掛けない（掛けると
+        //     スライダーの位置が録画結果に焼き付く）。
+        QByteArray clamped;
+        const uint8_t* src = reinterpret_cast<const uint8_t*>(pcm.constData());
+
+        if (VideoInfo.out_format == AV_SAMPLE_FMT_FLT) {
+            clamped = pcm;                       // 暗黙共有。data() で複製される
+            float*    q = reinterpret_cast<float*>(clamped.data());
+            const int n = clamped.size() / (int)sizeof(float);
+            for (int k = 0; k < n; k++) {
+                if      (q[k] >  1.0f) q[k] =  1.0f;
+                else if (q[k] < -1.0f) q[k] = -1.0f;
+            }
+            src = reinterpret_cast<const uint8_t*>(clamped.constData());
+        }
+
+        const uint8_t* in_data[1] = { src };
 
         // ★ 正しい delay 計算
         int max_out_samples = av_rescale_rnd(

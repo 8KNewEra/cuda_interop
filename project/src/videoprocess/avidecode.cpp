@@ -254,7 +254,9 @@ bool avidecode::initialized_ffmpeg()
         av_channel_layout_copy(&in_ch_layout, &audio_ctx->ch_layout);
 
         VideoInfo.out_sample_rate = audio_ctx->sample_rate;
-        VideoInfo.out_format      = AV_SAMPLE_FMT_S16;
+        // ★ float のまま配る。S16 へ先に落とすと 0dBFS 超えがここで潰れ、
+        //   音量を下げても歪みが残る（decode_thread::apply_volume 参照）。
+        VideoInfo.out_format      = AV_SAMPLE_FMT_FLT;
         av_channel_layout_default(&out_ch_layout, 2);
 
         if (swr) {
@@ -278,13 +280,7 @@ bool avidecode::initialized_ffmpeg()
             return false;
         }
 
-        QAudioFormat fmt;
-        fmt.setSampleRate(VideoInfo.out_sample_rate);
-        fmt.setChannelCount(2);
-        fmt.setSampleFormat(QAudioFormat::Int16);
-
-        audioSink   = new QAudioSink(fmt);
-        audioOutput = audioSink->start();
+        open_audio_output();   // float 優先・バッファ明示（基底で共通化）
 
         VideoInfo.audio = true;
     }

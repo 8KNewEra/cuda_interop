@@ -141,19 +141,9 @@ MainWindow::MainWindow(QWidget *parent)
         }
         glWidget->filter_change_flag=true;
     }, Qt::QueuedConnection);
-    QObject::connect(ui->action_audio_low_laytency, &QAction::triggered,this, [&](bool flag) {
-        if(run_decode_thread){
-            if(flag){
-                g_AppSettings.audio_low_laytency_flag=true;
-            }else{
-                g_AppSettings.audio_low_laytency_flag=false;
-            }
-        }
-    }, Qt::QueuedConnection);
     ui->action_filter_sobel->setChecked(g_AppSettings.sobelfilterEnabled);
     ui->action_filter_gausian->setChecked(g_AppSettings.gaussianfilterEnabled);
     ui->action_filter_averaging->setChecked(g_AppSettings.averagingfilterEnabled);
-    ui->action_audio_low_laytency->setChecked(g_AppSettings.audio_low_laytency_flag);
 
     //音量ボタンアイコン設定
     ui->actionOpenFile->setIcon(makeWhiteIcon(QIcon::fromTheme("document-open")));
@@ -1051,34 +1041,6 @@ void MainWindow::Close_Video_File()
     glWidget->doneCurrent();
 }
 
-//非同期オーディオ再生
-void MainWindow::play_audio(QByteArray pcm)
-{
-    if (encode_state == STATE_NOT_ENCODE && !g_AppSettings.audio_low_laytency_flag) {
-        if (audioOutput && audioSink) {
-            if (audioSink->bytesFree() >= pcm.size()) {
-
-                float volume = g_AppSettings.audio_volume / 100.0f;
-
-                int16_t* samples = reinterpret_cast<int16_t*>(pcm.data());
-                int sampleCount = pcm.size() / sizeof(int16_t);
-
-                for (int i = 0; i < sampleCount; i++) {
-                    int32_t v = samples[i] * volume;
-
-                    // クリップ防止
-                    if (v > 32767) v = 32767;
-                    if (v < -32768) v = -32768;
-
-                    samples[i] = static_cast<int16_t>(v);
-                }
-
-                audioOutput->write(pcm);
-            }
-        }
-    }
-}
-
 //現在のフレームを始端
 void MainWindow::cutstart_pushbutton_control(){
     emit send_manual_pause();
@@ -1302,7 +1264,6 @@ void MainWindow::heavy_process_UI_control(bool flag){
     ui->action_filter_sobel->setEnabled(flag);
     ui->action_filter_gausian->setEnabled(flag);
     ui->action_filter_averaging->setEnabled(flag);
-    ui->action_audio_low_laytency->setEnabled(flag);
     rangeSlider->setEnabled(flag);
 }
 
@@ -1348,9 +1309,6 @@ bool MainWindow::canUseGpuDecode(QString filename)
 
 //動画の範囲に合わせてスライダーの範囲を変更
 void MainWindow::init_decodethread_complete(){
-    if(VideoInfo.audio)
-        ui->action_audio_low_laytency->setEnabled(true);
-
     //一通りUIのセットを行う
     ui->actionOpenFile->setEnabled(true);
     ui->info->setEnabled(true);
@@ -1403,7 +1361,6 @@ void MainWindow::init_decodethread_complete(){
     qDebug() << "Framerate:" << VideoInfo.fps;
     qDebug()<<"MaxFrames:" <<VideoInfo.max_framesNo;
     start_fps_thread(VideoInfo.fps*g_AppSettings.video_speed_ratio);
-    init_async_audio();
     glWidget->GLresize();
 }
 
@@ -1485,7 +1442,6 @@ void MainWindow::start_decode_thread(QString filePath) {
 
         decodestream->moveToThread(decode__thread);
         QObject::connect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view,Qt::QueuedConnection);
-        QObject::connect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio, Qt::QueuedConnection);
 
         QObject::connect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::init_decodethread_complete);
         QObject::connect(decodestream, &decode_thread::heavy_process_signal, this, &MainWindow::heavy_process_UI_control);
@@ -1572,7 +1528,6 @@ void MainWindow::stop_decode_thread(){
 
         //Disconnect
         QObject::disconnect(decodestream, &decode_thread::send_decode_image, this, &MainWindow::decode_view);
-        QObject::disconnect(decodestream, &decode_thread::send_audio, this, &MainWindow::play_audio);
 
         QObject::disconnect(decodestream, &decode_thread::send_slider_info, this, &MainWindow::init_decodethread_complete);
         QObject::disconnect(decodestream, &decode_thread::heavy_process_signal, this, &MainWindow::heavy_process_UI_control);
@@ -1606,10 +1561,6 @@ void MainWindow::stop_decode_thread(){
         decode__thread->wait();
 
         stop_fps_thread();
-
-        //
-        delete audioSink;
-        audioSink=nullptr;
     }
 }
 
@@ -1675,19 +1626,6 @@ void MainWindow::start_info_thread(){
     info_view_thread = new QThread;
     infostream->moveToThread(info_view_thread);
     infostream->start();
-}
-
-//非同期オーディオ初期化
-void MainWindow::init_async_audio(){
-    // ---------- QAudioSink ----------
-    QAudioFormat fmt;
-    fmt.setSampleRate(VideoInfo.out_sample_rate);
-    fmt.setChannelCount(2);
-    fmt.setSampleFormat(QAudioFormat::Int16);
-
-    audioSink = new QAudioSink(fmt);
-    audioSink->setBufferSize(200 * 1024);  // ← 200KB (約200ms)
-    audioOutput = audioSink->start();
 }
 
 //エンコードウィンドウ起動時

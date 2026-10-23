@@ -419,15 +419,8 @@
     <addaction name="action_filter_gausian"/>
     <addaction name="action_filter_averaging"/>
    </widget>
-   <widget class="QMenu" name="menu_3">
-    <property name="title">
-     <string>オーディオ</string>
-    </property>
-    <addaction name="action_audio_low_laytency"/>
-   </widget>
    <addaction name="menu"/>
    <addaction name="menu_2"/>
-   <addaction name="menu_3"/>
   </widget>
   <action name="actionOpenFile">
    <property name="enabled">
@@ -545,23 +538,6 @@
    </property>
    <property name="toolTip">
     <string>averaging</string>
-   </property>
-  </action>
-  <action name="action_audio_low_laytency">
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="enabled">
-    <bool>false</bool>
-   </property>
-   <property name="text">
-    <string>低遅延モード</string>
-   </property>
-   <property name="toolTip">
-    <string>audio_low_laytency</string>
-   </property>
-   <property name="shortcut">
-    <string>Ctrl+L</string>
    </property>
   </action>
  </widget>

@@ -31,7 +31,6 @@ struct AppSettings
     int jumpValueSecond = 1;
     int jumpValueFrame = 1;
     int jumpValueFrameNo = 0;
-    bool audio_low_laytency_flag = false;
 
     // Filter
     bool sobelfilterEnabled = false;
@@ -139,7 +138,12 @@ struct DecodeInfo {
     int in_sample_rate  = 0;
     int out_sample_rate = 0;
     AVSampleFormat in_format  = AV_SAMPLE_FMT_NONE;
-    AVSampleFormat out_format = AV_SAMPLE_FMT_S16;  // S16 にリサンプルする
+
+    // ★ デコード後に配る PCM の形式（再生とエンコード入力の両方）。
+    //   float のまま配ること。S16 へ先に落とすと、0dBFS を超える素材
+    //   （PCM 32bit float など）がその時点で飽和し、後から音量を下げても
+    //   歪みが残る。音量は各出口が float のうちに掛ける。
+    AVSampleFormat out_format = AV_SAMPLE_FMT_FLT;  // インターリーブ float
 };
 
 // ★書き込みを許可したいクラスをここで「前方宣言」

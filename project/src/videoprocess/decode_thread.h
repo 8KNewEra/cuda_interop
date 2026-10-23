@@ -48,7 +48,6 @@ public:
 
 signals:
     void send_decode_image(VideoFrame Frame,bool pause,bool reverse);
-    void send_audio(QByteArray pcm);
     void send_slider_info();
     void finished();
     void decode_end();
@@ -99,6 +98,37 @@ protected:
     // 出力デバイスに積んである再生待ちの PCM を捨てる。
     void reset_audio_sink();
 
+    // ★ 出力デバイスを開いて再生を始める（audioSink / audioOutput /
+    //   audio_sink_float_ を用意する）。3 つのデコーダが同じ初期化を
+    //   書いていたので基底へ集約した。
+    void open_audio_output();
+
+    // ★ 再生用に音量を掛ける。入力は常にインターリーブ float(±1.0 基準)。
+    //
+    //   ここが音割れの分かれ目。S16 へ落としてから音量を掛けると、
+    //   0dBFS を超えた素材は変換の時点で潰れていて、音量を下げても
+    //   歪んだままになる。必ず float のうちに掛けること。
+    //   sink が float なら頭打ちもしない（下げれば歪みが消える）。
+    static QByteArray apply_volume(const QByteArray& f32, float volume,
+                                   bool sink_is_float);
+
+    // -------------------------------------------------------------------------
+    // ★ 出力バッファの深さ（ms）
+    //
+    //   ここが「低遅延モード」の正体だった。以前は
+    //     ・ON  : バッファ指定なし（Qt 既定。数十 ms）-> 揺れを吸収できず途切れる
+    //     ・OFF : 200KB 固定（S16 だと約 1 秒）       -> 途切れないが映像から遅れる
+    //   という 2 つのモードに分かれていたが、違いはこの数値だけだった。
+    //   どちらも「書ける空きがなければそのパケットを捨てる」点は同じ。
+    //
+    //   深くすると途切れにくくなり、浅くすると映像とのズレが減る。
+    //   そのまま再生の遅れになるので、必要最小限にすること。
+    //   ★ ここを増やしても直らない途切れ方（時間が経つほど悪化する）は、
+    //     ファイルの音声クロックと fps_thread の速度が食い違っている。
+    //     バッファの問題ではないので、増やして誤魔化さないこと。
+    // -------------------------------------------------------------------------
+    static const int kAudioBufferMs = 200;
+
     //エラー処理
     QString Error_String="";
     QString ffmpegErrStr(int errnum);
@@ -144,6 +174,8 @@ protected:
     AVChannelLayout out_ch_layout = {};
     QAudioSink* audioSink = nullptr;
     QIODevice* audioOutput = nullptr;
+    // audioSink を float で開けたか（false なら Int16）
+    bool audio_sink_float_ = false;
 
     // ★ 消音中かどうか。消音へ入る最初の 1 回だけ出力デバイスを捨てる
     //   （毎回 reset するとドラッグ中ずっとデバイスを開き直すことになる）。

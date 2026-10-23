@@ -25,7 +25,6 @@ void logfile_control::load_inifile()
     g_AppSettings.jumpValueSecond = settings.value("Playback/jumpValueSecond").toInt();
     g_AppSettings.jumpValueFrame = settings.value("Playback/jumpValueFrame").toInt();
     g_AppSettings.jumpValueFrameNo = settings.value("Playback/jumpValueFrameNo").toInt();
-    g_AppSettings.audio_low_laytency_flag = settings.value("Playback/audio_low_laytency_flag").toBool();
     g_AppSettings.sobelfilterEnabled = settings.value("Filter/sobelfilterEnabled").toBool();
     g_AppSettings.gaussianfilterEnabled = settings.value("Filter/gaussianfilterEnabled").toBool();
     g_AppSettings.averagingfilterEnabled = settings.value("Filter/averagingfilterEnabled").toBool();
@@ -84,7 +83,6 @@ void logfile_control::save_inifile(){
     settings.setValue("Playback/jumpValueSecond", g_AppSettings.jumpValueSecond);
     settings.setValue("Playback/jumpValueFrame", g_AppSettings.jumpValueFrame);
     settings.setValue("Playback/jumpValueFrameNo", g_AppSettings.jumpValueFrameNo);
-    settings.setValue("Playback/audio_low_laytency_flag", g_AppSettings.audio_low_laytency_flag);
     settings.setValue("Filter/sobelfilterEnabled", g_AppSettings.sobelfilterEnabled);
     settings.setValue("Filter/gaussianfilterEnabled", g_AppSettings.gaussianfilterEnabled);
     settings.setValue("Filter/averagingfilterEnabled", g_AppSettings.averagingfilterEnabled);

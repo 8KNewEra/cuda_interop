@@ -155,11 +155,8 @@ private:
     int encode_state=STATE_NOT_ENCODE;
 
     //オーディオ
-    void init_async_audio();
-    void play_audio(QByteArray pcm);
-    QAudioSink* audioSink = nullptr;
-    QIODevice* audioOutput = nullptr;
-
+    //   ★ 再生用の QAudioSink は decode_thread が 1 つだけ持つ。
+    //     以前はここにもう 1 つあり、「低遅延モード」で切り替えていた。
     audio_volume *audioVolume;
     bool audio_slider = false;
 

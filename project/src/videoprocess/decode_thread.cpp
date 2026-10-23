@@ -1,6 +1,9 @@
 #include "src/videoprocess/decode_thread.h"
 #include "qfileinfo.h"
 #include <QDebug>
+#include <QAudioDevice>
+#include <QMediaDevices>
+#include <cmath>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -364,6 +367,80 @@ bool decode_thread::audio_playable() const
            && !high_res_slider_flag && !back1frame_flag.load() && !go1frame_flag;
 }
 
+// =============================================================================
+// ★ 出力デバイスを開いて再生を始める
+//
+//   まず float を試す。Windows の WASAPI 共有モードは内部が float なので、
+//   そのまま渡せば変換が 1 段減る。通らない構成では Int16 へ落とす。
+//
+//   ★ バッファは必ず明示すること。Qt 既定は数十 ms しかなく、
+//     デコードの揺れを吸収できずに音が途切れる（kAudioBufferMs 参照）。
+// =============================================================================
+void decode_thread::open_audio_output()
+{
+    const int channels = 2;
+
+    QAudioFormat fmt;
+    fmt.setSampleRate(VideoInfo.out_sample_rate);
+    fmt.setChannelCount(channels);
+    fmt.setSampleFormat(QAudioFormat::Float);
+
+    const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
+
+    audio_sink_float_ = dev.isFormatSupported(fmt);
+    if (!audio_sink_float_) {
+        fmt.setSampleFormat(QAudioFormat::Int16);
+        qWarning() << "[audio] float 出力が使えないので Int16 で開きます";
+    }
+
+    audioSink = new QAudioSink(dev, fmt);
+
+    const int bps = audio_sink_float_ ? 4 : 2;
+    audioSink->setBufferSize(
+        VideoInfo.out_sample_rate * channels * bps * kAudioBufferMs / 1000);
+
+    audioOutput = audioSink->start();
+}
+
+// =============================================================================
+// ★ 再生用に音量を掛ける（音割れの分かれ目）
+//
+//   入力は常にインターリーブ float(±1.0 基準)。
+//
+//   以前は swr で S16 へ落としてから音量を掛けていた。この順番だと、
+//   0dBFS を超える素材（PCM 32bit float など）は swr の変換時点で
+//   ±32767 に飽和して波形の頭が潰れる。そのあと音量を下げても、
+//   潰れた波形が小さくなるだけで歪みは消えない。
+//   （他のプレーヤーで音量を下げると歪みが取れるのはこの順番が逆だから）
+//
+//   float のうちに掛ければ、下げた結果が ±1.0 に収まった時点で歪みは消える。
+//   sink が float ならここで頭打ちもしない。超えたぶんはデバイス側が処理する。
+// =============================================================================
+QByteArray decode_thread::apply_volume(const QByteArray& f32, float volume,
+                                       bool sink_is_float)
+{
+    const int    n   = f32.size() / (int)sizeof(float);
+    const float* src = reinterpret_cast<const float*>(f32.constData());
+
+    if (sink_is_float) {
+        QByteArray out(f32.size(), Qt::Uninitialized);
+        float* dst = reinterpret_cast<float*>(out.data());
+        for (int i = 0; i < n; i++) dst[i] = src[i] * volume;
+        return out;
+    }
+
+    // Int16 デバイス。音量を掛けた「後」に飽和させるのが肝心。
+    QByteArray out(n * (int)sizeof(int16_t), Qt::Uninitialized);
+    int16_t* dst = reinterpret_cast<int16_t*>(out.data());
+    for (int i = 0; i < n; i++) {
+        float v = src[i] * volume * 32767.0f;
+        if (v >  32767.0f) v =  32767.0f;
+        if (v < -32768.0f) v = -32768.0f;
+        dst[i] = (int16_t)lrintf(v);
+    }
+    return out;
+}
+
 // ★ デコーダを flush しても、QAudioSink には再生待ちの PCM が
 //   既に積まれているので、黙らせるにはこちらも捨てる必要がある。
 void decode_thread::reset_audio_sink()
@@ -417,10 +494,9 @@ void decode_thread::get_decode_audio()
         pcm.resize(out_samples * out_channels * bps);
         VideoInfo.audio_channels = out_channels;
 
-        // ★ 音が出る経路は 3 本（① audioOutput->write / ② Frame.audio_pcm /
-        //   ③ emit send_audio）。①だけ止めても②③の先から鳴るので、
-        //   判定は 1 回だけ行って 3 本すべてに掛ける。
-        //   エンコード中は無条件に渡す（1 サンプル落とすと音がずれる）。
+        // ★ 消音の判定は 1 回だけ行い、スピーカーとエンコード入力の
+        //   両方に掛ける。エンコード中は無条件に渡す
+        //   （1 サンプル落とすと音がずれる）。
         const bool encoding = (encode_state != STATE_NOT_ENCODE);
 
         if (!encoding) {
@@ -445,37 +521,25 @@ void decode_thread::get_decode_audio()
 
         const bool deliver = encoding || !audio_muted_;
 
-        // ② GUI へ。①の音量処理より前に積むので素のデータが渡る。
-        if (deliver) {
-            Frame.audio_pcm.push_back(QByteArray(pcm));
-            Frame.audio_pts.push_back(audio_frame->pts);
+        if (!deliver) continue;
+
+        // ★ pcm は素のまま（float）。音量はスピーカーへ出す時だけ掛ける。
+        //   ここで in-place に掛けると、エンコードへも音量が焼き付く。
+
+        // ① エンコード入力（音量は掛けない）
+        Frame.audio_pcm.push_back(pcm);
+        Frame.audio_pts.push_back(audio_frame->pts);
+
+        // ② スピーカー
+        //   ★ 再生はこの 1 本だけ。以前は「低遅延 ON ならここ、OFF なら
+        //     send_audio で GUI スレッドへ」と 2 経路あったが、違いは
+        //     出力バッファの深さだけで、sink を 2 つ開く必要は無かった。
+        if (!encoding && audioOutput) {
+            const QByteArray out = apply_volume(
+                pcm, g_AppSettings.audio_volume / 100.0f, audio_sink_float_);
+            if (audioSink->bytesFree() >= out.size())
+                audioOutput->write(out);
         }
-
-        // ① 低遅延再生
-        if (deliver && !encoding && g_AppSettings.audio_low_laytency_flag && audioOutput) {
-            if (audioSink->bytesFree() >= pcm.size()) {
-
-                const float volume = g_AppSettings.audio_volume / 100.0f;
-
-                int16_t* samples   = reinterpret_cast<int16_t*>(pcm.data());
-                const int sampleCount = pcm.size() / sizeof(int16_t);
-
-                for (int i = 0; i < sampleCount; i++) {
-                    int32_t v = (int32_t)(samples[i] * volume);
-
-                    // クリップ防止
-                    if (v >  32767) v =  32767;
-                    if (v < -32768) v = -32768;
-
-                    samples[i] = static_cast<int16_t>(v);
-                }
-
-                audioOutput->write(pcm);
-            }
-        }
-
-        // ③ 別スレッドへ
-        if (deliver) emit send_audio(pcm);
     }
 }
 
