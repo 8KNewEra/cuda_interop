@@ -1,8 +1,8 @@
 #include "src/videoprocess/decode_thread.h"
+#include "src/videoprocess/audio_player.h"
 #include "qfileinfo.h"
 #include <QDebug>
-#include <QAudioDevice>
-#include <QMediaDevices>
+#include <QThread>
 #include <cmath>
 
 extern "C" {
@@ -29,6 +29,10 @@ decode_thread::decode_thread(QString FilePath,QObject *parent)
 }
 
 decode_thread::~decode_thread() {
+    // ★ 音声スレッドを先に畳む。向こうは自前の AVFormatContext しか
+    //   触らないので、こちらの解放順とは独立している。
+    stop_audio_player();
+
     // ★ デコードスレッドが最後の 1 周を抜けるのを待つ。
     //   stopProcessing() で thread_stop_flag は立っている前提。
     QThread::msleep(10);
@@ -94,40 +98,9 @@ decode_thread::~decode_thread() {
     };
 
     // ★ 音声側。ここが丸ごと抜けていて、ファイルを開き直すたびに
-    //   SwrContext / AVCodecContext / QAudioSink が漏れていた。
+    //   SwrContext / AVCodecContext が漏れていた。
+    //   （再生用の QAudioSink は audio_player が持つのでここには無い）
     auto safe_free_audio = [&]() {
-        // ★ 途切れの原因を切り分けるための 2 つ。
-        //   持ち越し最大が大きい  -> 音声がまとめて出てきている（正常。吸収できている）
-        //   溢れ回数が増え続ける  -> 再生が本当に追いついていない。
-        //                            バッファではなく映像側の詰まりを疑うこと。
-        if (audio_bytes_total_ > 0 || audio_overflow_ > 0) {
-            const double bps_sec =
-                (double)audio_frame_bytes_ *
-                (VideoInfo.out_sample_rate > 0 ? VideoInfo.out_sample_rate : 48000);
-
-            const double made_s = audio_bytes_total_ / bps_sec;
-            const double real_s = audio_clock_.isValid()
-                                      ? audio_clock_.elapsed() / 1000.0 : 0.0;
-            const double ratio  = (real_s > 0.0) ? (made_s / real_s * 100.0) : 0.0;
-
-            qDebug().noquote()
-                << QString("[audio] 生成 %1 秒 / 経過 %2 秒 (%3%)"
-                           "  枯渇 %4 回  持ち越し最大 %5 ms  溢れ %6 回"
-                           "  (sink %7 ms, 持ち越し上限 %8 ms)")
-                       .arg(made_s, 0, 'f', 1).arg(real_s, 0, 'f', 1)
-                       .arg(ratio, 0, 'f', 0)
-                       .arg((qulonglong)audio_underrun_)
-                       .arg((double)audio_pending_max_ / bps_sec * 1000.0, 0, 'f', 0)
-                       .arg((qulonglong)audio_overflow_)
-                       .arg(kAudioBufferMs).arg(kAudioPendingMs);
-        }
-
-        if (audioSink) {
-            audioSink->stop();
-            delete audioSink;          // audioOutput は audioSink の子
-            audioSink  = nullptr;
-            audioOutput = nullptr;
-        }
         if (swr)       swr_free(&swr);
         if (audio_ctx) avcodec_free_context(&audio_ctx);
         av_channel_layout_uninit(&in_ch_layout);
@@ -295,6 +268,9 @@ void decode_thread::advance_frame_no(int64_t ts)
     slider_No     = no;
     seek_flag     = false;
 
+    // ★ audio_player が読む。別スレッドなので atomic 経由で渡す。
+    play_frame_no_.store(no, std::memory_order_release);
+
     const double time = (VideoInfo.fps > 0.0) ? Frame.FrameNo / VideoInfo.fps : 0.0;
     Frame.hour   = time / 3600;
     Frame.minute = (int(time) % 3600) / 60;
@@ -375,195 +351,70 @@ bool decode_thread::get_last_frame_pts() {
     return true;
 }
 
+// =============================================================================
+// ★ 再生用の音声スレッド
+//
+//   自前の AVFormatContext で読むので、こちらの映像デコードとは無関係に
+//   動く。生成ペースも状態変化も向こうが自分で面倒を見る。
+//   （経緯と設計理由は audio_player.h の先頭）
+// =============================================================================
+void decode_thread::start_audio_player()
+{
+    if (audio_player_ || !VideoInfo.audio) return;
+
+    audio_thread_ = new QThread;
+    audio_player_ = new audio_player(QString::fromStdString(VideoInfo.Path),
+                                     &play_frame_no_);
+    audio_player_->moveToThread(audio_thread_);
+
+    connect(audio_thread_, &QThread::started, audio_player_, &audio_player::start);
+    connect(audio_player_, &audio_player::finished, audio_thread_, &QThread::quit);
+
+    // ★ 優先度を上げる。デコードスレッドが 16K を回している間に
+    //   10ms ごとの pump が遅れると、そのぶんそのまま音が切れる。
+    audio_thread_->start(QThread::HighPriority);
+    sync_audio_state();
+}
+
+void decode_thread::stop_audio_player()
+{
+    if (!audio_thread_) return;
+
+    if (audio_player_) {
+        audio_player_->setPlaying(false);
+        // ★ 所有スレッドで閉じさせる。こちらから delete してはいけない
+        //   （QAudioSink はそのスレッドのものなので）。
+        QMetaObject::invokeMethod(audio_player_, "shutdown", Qt::BlockingQueuedConnection);
+    }
+
+    audio_thread_->quit();
+    audio_thread_->wait();
+
+    delete audio_player_;  audio_player_ = nullptr;
+    delete audio_thread_;  audio_thread_ = nullptr;
+}
+
 // ★ 音を出してよいのは「順方向の通常再生中」だけ。
-//   シーク・逆再生・コマ送りの最中もデコードは動くので、その位置の
-//   音声パケットが短く鳴ってブツブツ聞こえる。デコード自体は止めない
-//   （エンコード経路が同じ関数を通る）。止めるのは出力だけ。
-bool decode_thread::audio_playable() const
+//   逆再生・コマ送り・シーク中・エンコード中は止める。
+//   位置の飛びは audio_player 側が映像との差で気づいて合わせ直すので、
+//   経路ごとにフックを置く必要は無い。
+void decode_thread::sync_audio_state()
 {
-    // 高精度シークの走査中。UI フラグが立たない経路（範囲外補正・EOF
-    // 折り返し・3/10/30 秒送り）もあるので、ここで一括して落とす。
-    if (in_seek_scan_) return false;
-
-    // 各デコーダが「このラウンドはシークする」と判断している式そのもの
-    // （get_*decode_image の先頭）。UI フラグの立ち遅れに影響されない。
-    if (slider_No != Frame.FrameNo) return false;
-
-    return video_play_flag && !video_reverse_flag && !seek_flag
-           && !high_res_slider_flag && !back1frame_flag.load() && !go1frame_flag;
+    if (!audio_player_) return;
+    // ★ 高精度スライダーのドラッグ中も止める。ここを入れないと
+    //   ドラッグのたびに位置が飛び、合わせ直しが連発して音が暴れる。
+    audio_player_->setPlaying(video_play_flag && !video_reverse_flag &&
+                              !high_res_slider_flag &&
+                              encode_state.load() == STATE_NOT_ENCODE);
 }
 
-// =============================================================================
-// ★ 出力デバイスを開いて再生を始める
-//
-//   まず float を試す。Windows の WASAPI 共有モードは内部が float なので、
-//   そのまま渡せば変換が 1 段減る。通らない構成では Int16 へ落とす。
-//
-//   ★ バッファは必ず明示すること。Qt 既定は数十 ms しかなく、
-//     デコードの揺れを吸収できずに音が途切れる（kAudioBufferMs 参照）。
-// =============================================================================
-void decode_thread::open_audio_output()
-{
-    const int channels = 2;
-
-    QAudioFormat fmt;
-    fmt.setSampleRate(VideoInfo.out_sample_rate);
-    fmt.setChannelCount(channels);
-    fmt.setSampleFormat(QAudioFormat::Float);
-
-    const QAudioDevice dev = QMediaDevices::defaultAudioOutput();
-
-    audio_sink_float_ = dev.isFormatSupported(fmt);
-    if (!audio_sink_float_) {
-        fmt.setSampleFormat(QAudioFormat::Int16);
-        qWarning() << "[audio] float 出力が使えないので Int16 で開きます";
-    }
-
-    audioSink = new QAudioSink(dev, fmt);
-
-    const int bps = audio_sink_float_ ? 4 : 2;
-    const int byte_per_sec = VideoInfo.out_sample_rate * channels * bps;
-
-    audioSink->setBufferSize(byte_per_sec * kAudioBufferMs / 1000);
-
-    // 持ち越しの寸法。frame_bytes はステレオ 1 サンプル枠で、
-    // ここで切らないと左右が入れ替わる。
-    audio_frame_bytes_ = channels * bps;
-    audio_pending_cap_ = byte_per_sec * kAudioPendingMs / 1000;
-    audio_pending_.clear();
-
-    audioOutput = audioSink->start();
-}
-
-// =============================================================================
-// ★ 再生デバイスへ送る（入りきらなければ持ち越す）
-//
-//   以前は空きが足りなければそのパケットを丸ごと捨てていた。音声は
-//   「映像を 1 枚作るついで」に取り出す作りなので、GUI が詰まった直後は
-//   まとめて出てくる。その塊が入らずに捨てられ、無音の穴になっていた。
-//
-//   捨てずに持ち越せば、次に呼ばれたときに空いたぶんだけ流せる。
-//   sink を深くする必要が無いので、映像とのズレも増えない。
-// =============================================================================
-// ★ 新しい音声が無くても持ち越しを押し出す。
-//   音声がまとまって届くファイルでは塊と塊の間に push_audio が呼ばれず、
-//   抱えたまま sink が空になって音が切れる。デコードの毎周期ここを通す。
-void decode_thread::drain_audio()
-{
-    if (!audio_pending_.isEmpty()) push_audio(QByteArray());
-}
-
-void decode_thread::push_audio(const QByteArray& out)
-{
-    if (!audioOutput || !audioSink) return;
-
-    // ---- 診断（上の「★ 診断」のコメント参照）----
-    //   drain_audio() からの空呼び出しは数えない（生成率が狂う）
-    if (!out.isEmpty()) {
-        if (!audio_clock_.isValid()) audio_clock_.start();
-        audio_bytes_total_ += out.size();
-        // 渡す前に空だった = その直前まで音が出ていない時間があった
-        if (audioSink->bytesFree() >= audioSink->bufferSize()) audio_underrun_++;
-        audio_pending_.append(out);
-    }
-
-    // ★ 書けるのはサンプル枠の倍数まで。途中で切ると左右が入れ替わる。
-    const int free_bytes = (int)std::min<qint64>(audioSink->bytesFree(),
-                                                 audio_pending_.size());
-    const int n = free_bytes - (free_bytes % audio_frame_bytes_);
-
-    if (n > 0) {
-        audioOutput->write(audio_pending_.constData(), n);
-        audio_pending_.remove(0, n);
-    }
-
-    if (audio_pending_.size() > audio_pending_max_)
-        audio_pending_max_ = audio_pending_.size();
-
-    // ★ ここを超えるのは再生が追いついていない証拠。溜め続けると
-    //   遅延が際限なく伸びるので、古い方から落として現在位置に付き直す。
-    if (audio_pending_cap_ > 0 && audio_pending_.size() > audio_pending_cap_) {
-        audio_pending_.remove(0, audio_pending_.size() - audio_pending_cap_);
-        audio_overflow_++;
-    }
-}
-
-// =============================================================================
-// ★ 再生用に音量を掛ける（音割れの分かれ目）
-//
-//   入力は常にインターリーブ float(±1.0 基準)。
-//
-//   以前は swr で S16 へ落としてから音量を掛けていた。この順番だと、
-//   0dBFS を超える素材（PCM 32bit float など）は swr の変換時点で
-//   ±32767 に飽和して波形の頭が潰れる。そのあと音量を下げても、
-//   潰れた波形が小さくなるだけで歪みは消えない。
-//   （他のプレーヤーで音量を下げると歪みが取れるのはこの順番が逆だから）
-//
-//   float のうちに掛ければ、下げた結果が ±1.0 に収まった時点で歪みは消える。
-//   sink が float ならここで頭打ちもしない。超えたぶんはデバイス側が処理する。
-// =============================================================================
-QByteArray decode_thread::apply_volume(const QByteArray& f32, float volume,
-                                       bool sink_is_float)
-{
-    const int    n   = f32.size() / (int)sizeof(float);
-    const float* src = reinterpret_cast<const float*>(f32.constData());
-
-    if (sink_is_float) {
-        QByteArray out(f32.size(), Qt::Uninitialized);
-        float* dst = reinterpret_cast<float*>(out.data());
-        for (int i = 0; i < n; i++) dst[i] = src[i] * volume;
-        return out;
-    }
-
-    // Int16 デバイス。音量を掛けた「後」に飽和させるのが肝心。
-    QByteArray out(n * (int)sizeof(int16_t), Qt::Uninitialized);
-    int16_t* dst = reinterpret_cast<int16_t*>(out.data());
-    for (int i = 0; i < n; i++) {
-        float v = src[i] * volume * 32767.0f;
-        if (v >  32767.0f) v =  32767.0f;
-        if (v < -32768.0f) v = -32768.0f;
-        dst[i] = (int16_t)lrintf(v);
-    }
-    return out;
-}
-
-// ★ 消音状態を見直す。消音へ入る瞬間だけ、積んである音を捨てる。
-//
-//   ★ processFrame() からも通すこと。停止中は get_decode_image() を
-//     通らないので音声パケットがデコードされず、get_decode_audio() の
-//     中だけで判定していると一度も走らない。すると sink と持ち越しに
-//     積んである数百 ms がそのまま鳴り切ってしまい、
-//     「止めたのに音だけ遅れて止まる」になる。
-bool decode_thread::update_audio_mute()
-{
-    // エンコード中は落とさない（1 サンプル落とすと音がずれる）
-    if (encode_state != STATE_NOT_ENCODE) return true;
-
-    if (!audio_playable()) {
-        if (!audio_muted_) { audio_muted_ = true; reset_audio_sink(); }
-        return false;
-    }
-    audio_muted_ = false;
-    return true;
-}
-
-// ★ デコーダを flush しても、QAudioSink には再生待ちの PCM が
-//   既に積まれているので、黙らせるにはこちらも捨てる必要がある。
-void decode_thread::reset_audio_sink()
-{
-    if (!audioSink) return;
-    // ★ 持ち越しも捨てる（これも鳴る）。シーク/消音の切れ目は
-    //   意図した無音なので、生成率の計測もここで仕切り直す。
-    audio_pending_.clear();
-    audio_clock_.invalidate();
-    audio_bytes_total_ = 0;
-    audioSink->reset();                 // 積んである PCM を破棄
-    audioOutput = audioSink->start();   // reset で停止するので張り直す
-}
-
-//オーディオ
+// ★ エンコード入力の音声を作る（再生は audio_player が別に行う）。
+//   エンコード中以外は呼ばれても何もしない。Frame.audio_pcm を使うのは
+//   save_encode だけなので、再生中にデコードする意味が無い。
 void decode_thread::get_decode_audio()
 {
+    if (encode_state.load() == STATE_NOT_ENCODE) return;
+
     if (avcodec_send_packet(audio_ctx, packet) < 0)
         return;
 
@@ -605,29 +456,10 @@ void decode_thread::get_decode_audio()
         pcm.resize(out_samples * out_channels * bps);
         VideoInfo.audio_channels = out_channels;
 
-        // ★ 消音の判定は 1 回だけ行い、スピーカーとエンコード入力の
-        //   両方に掛ける。エンコード中は無条件に渡す
-        //   （1 サンプル落とすと音がずれる）。
-        const bool encoding = (encode_state != STATE_NOT_ENCODE);
-        const bool deliver  = update_audio_mute();
-
-        if (!deliver) continue;
-
-        // ★ pcm は素のまま（float）。音量はスピーカーへ出す時だけ掛ける。
-        //   ここで in-place に掛けると、エンコードへも音量が焼き付く。
-
-        // ① エンコード入力（音量は掛けない）
+        // ★ ここで作るのはエンコード入力だけ。再生は audio_player が
+        //   自前で読んでいるので、音量も掛けないし出力もしない。
         Frame.audio_pcm.push_back(pcm);
         Frame.audio_pts.push_back(audio_frame->pts);
-
-        // ② スピーカー
-        //   ★ 再生はこの 1 本だけ。以前は「低遅延 ON ならここ、OFF なら
-        //     send_audio で GUI スレッドへ」と 2 経路あったが、違いは
-        //     出力バッファの深さだけで、sink を 2 つ開く必要は無かった。
-        if (!encoding) {
-            push_audio(apply_volume(
-                pcm, g_AppSettings.audio_volume / 100.0f, audio_sink_float_));
-        }
     }
 }
 
@@ -670,6 +502,7 @@ void decode_thread::startProcessing() {
     if(initialized_ffmpeg()){
         Error_String="";
         VideoInfo.video_open_flag = true;
+        start_audio_player();
         qDebug() << "Live Thread: Start Processing";
     }else{
         emit decode_error(Error_String);
@@ -679,6 +512,7 @@ void decode_thread::startProcessing() {
 
 void decode_thread::stopProcessing() {
     thread_stop_flag = true;
+    if (audio_player_) audio_player_->setPlaying(false);   // 先に黙らせる
     qDebug() << "decode_thread: stopProcessing called";
 }
 
@@ -690,6 +524,7 @@ void decode_thread::sliderPlayback(int value){
     slider_No=value;
     video_play_flag = false;
     video_reverse_flag = false;
+    sync_audio_state();
 }
 
 void decode_thread::slider_range_end(int value){
@@ -710,17 +545,20 @@ void decode_thread::resumePlayback() {
     QMutexLocker locker(&mutex);
     video_play_flag = true;
     video_reverse_flag = false;
+    sync_audio_state();
 }
 
 void decode_thread::pausePlayback() {
     QMutexLocker locker(&mutex);
     video_play_flag = false;
+    sync_audio_state();
 }
 
 void decode_thread::reversePlayback(){
     QMutexLocker locker(&mutex);
     video_play_flag = true;
     video_reverse_flag = true;
+    sync_audio_state();   // 逆再生では鳴らさない
 }
 
 //1フレーム戻し
@@ -729,6 +567,7 @@ void decode_thread::back1frame(){
     back1frame_flag = true;
     video_play_flag = false;
     video_reverse_flag = false;
+    sync_audio_state();
 }
 
 //1フレーム送り
@@ -737,6 +576,7 @@ void decode_thread::go1frame(){
     go1frame_flag = true;
     video_play_flag = false;
     video_reverse_flag = false;
+    sync_audio_state();
 }
 
 //高精度スライダー
@@ -744,17 +584,15 @@ void decode_thread::high_res_sliderPlayback(int value){
     QMutexLocker locker(&mutex);
     high_res_sliderNo = value;
     high_res_slider_flag = true;
+    sync_audio_state();
 }
 
 //デコードループ
 void decode_thread::processFrame() {
     QMutexLocker locker(&mutex);
 
-    // ★ 毎周期、鳴らしてよいかを見直してから押し出す。
-    //   デコードする/しないに関わらず通すこと。停止・コマ送り中は
-    //   この下の早期 return で get_decode_image() まで届かないので、
-    //   ここで止めないと積んである音がそのまま鳴り切ってしまう。
-    if (update_audio_mute()) drain_audio();
+    // ★ エンコードの開始/終了はスロットを通らないので、ここでも見る。
+    sync_audio_state();
 
     Frame.audio_pcm.clear();
     Frame.audio_pts.clear();

@@ -234,7 +234,7 @@ bool cpudecode::initialized_ffmpeg()
 
         VideoInfo.out_sample_rate = audio_ctx->sample_rate;
         // ★ float のまま配る。S16 へ先に落とすと 0dBFS 超えがここで潰れ、
-        //   音量を下げても歪みが残る（decode_thread::apply_volume 参照）。
+        //   音量を下げても歪みが残る（audio_player::apply_volume 参照）。
         VideoInfo.out_format      = AV_SAMPLE_FMT_FLT;
         av_channel_layout_default(&out_ch_layout, 2);
 
@@ -259,7 +259,6 @@ bool cpudecode::initialized_ffmpeg()
             return false;
         }
 
-        open_audio_output();   // float 優先・バッファ明示（基底で共通化）
 
         VideoInfo.audio = true;
     }
@@ -454,8 +453,6 @@ void cpudecode::gpu_upload(){
 //高精度シーク
 void cpudecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
 {
-    SeekScanScope scan(this);   // ★ 走査中は消音（get_decode_audio() が見る）
-
     //0より低い、最大フレーム数より多い数値が来た場合は修正
     if(targetFrameNo<VideoInfo.start_range_framesNo){
         if(video_play_flag){

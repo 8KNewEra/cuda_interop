@@ -4,14 +4,14 @@
 #include <QThread>
 #include <QObject>
 #include <QMutex>
-#include <QElapsedTimer>
+
 #include <atomic>
 #include <algorithm>
 #include <vector>
 #include <cuda_runtime.h>
 #include <QDebug>
 #include "src/main/__global__.h"
-#include "qaudiosink.h"
+class audio_player;
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -94,81 +94,32 @@ protected:
     //   3 派生クラス共通。0 除算と AV_NOPTS_VALUE もここでふさいでいる。
     void advance_frame_no(int64_t ts);
 
-    // ★ スピーカーへ流してよい状況か。順方向の通常再生中だけ true。
-    bool audio_playable() const;
-
-    // ★ 消音状態を見直す。消音へ入る瞬間だけ、積んである音を捨てる。
-    //   戻り値 = 鳴らしてよいか。
-    //
-    //   ★ get_decode_audio() だけでなく processFrame() からも通すこと。
-    //     停止中は get_decode_image() を通らないので音声パケットが
-    //     デコードされず、あちらだけだと判定が一度も走らない。
-    //     結果、積んである音がそのまま鳴り続けて
-    //     「止めたのに音だけ遅れて止まる」になる。
-    bool update_audio_mute();
-    // 出力デバイスに積んである再生待ちの PCM を捨てる。
-    void reset_audio_sink();
-
-    // ★ 出力デバイスを開いて再生を始める（audioSink / audioOutput /
-    //   audio_sink_float_ を用意する）。3 つのデコーダが同じ初期化を
-    //   書いていたので基底へ集約した。
-    void open_audio_output();
-
-    // ★ 再生デバイスへ送る。入りきらなければ捨てずに持ち越す。
-    void push_audio(const QByteArray& out);
-
-    // ★ 新しい音声が来ていなくても、持ち越しを送り出す。
-    //   音声がまとまって届くファイルでは、塊と塊の間に push_audio が
-    //   一度も呼ばれない。その間にデバイスが空になって音が切れるので、
-    //   デコードの毎周期ここから押し出す。
-    void drain_audio();
-
-    // ★ 再生用に音量を掛ける。入力は常にインターリーブ float(±1.0 基準)。
-    //
-    //   ここが音割れの分かれ目。S16 へ落としてから音量を掛けると、
-    //   0dBFS を超えた素材は変換の時点で潰れていて、音量を下げても
-    //   歪んだままになる。必ず float のうちに掛けること。
-    //   sink が float なら頭打ちもしない（下げれば歪みが消える）。
-    static QByteArray apply_volume(const QByteArray& f32, float volume,
-                                   bool sink_is_float);
-
     // -------------------------------------------------------------------------
-    // ★ 出力バッファの深さ（ms）
+    // ★ 再生用の音声は audio_player（別スレッド）が担当する
     //
-    //   ここが「低遅延モード」の正体だった。以前は
-    //     ・ON  : バッファ指定なし（Qt 既定。数十 ms）-> 揺れを吸収できず途切れる
-    //     ・OFF : 200KB 固定（S16 だと約 1 秒）       -> 途切れないが映像から遅れる
-    //   という 2 つのモードに分かれていたが、違いはこの数値だけだった。
-    //   どちらも「書ける空きがなければそのパケットを捨てる」点は同じ。
+    //   ここ（decode_thread）が作るのはエンコード入力の音声だけ。
+    //   get_decode_audio() はエンコード中しか呼ばない。
     //
-    //   深くすると途切れにくくなり、浅くすると映像とのズレが減る。
-    //   そのまま再生の遅れになるので、必要最小限にすること。
-    //   ★ ここを増やしても直らない途切れ方（時間が経つほど悪化する）は、
-    //     ファイルの音声クロックと fps_thread の速度が食い違っている。
-    //     バッファの問題ではないので、増やして誤魔化さないこと。
+    //   以前は再生もここでやっていたが、音声を「映像を 1 枚作るついで」に
+    //   取り出す形になるため、ファイルの交互配置の粗さがそのまま音の
+    //   途切れになり、停止も通知で受け取れずポーリングが要った。
+    //   理由は audio_player.h の先頭を参照。
     // -------------------------------------------------------------------------
-    static const int kAudioBufferMs = 200;
+    void start_audio_player();
+    void stop_audio_player();
 
-    // -------------------------------------------------------------------------
-    // ★ 持ち越しの上限（ms）
-    //
-    //   ファイルによって音声と映像の交互配置（インターリーブ）の粒度が
-    //   違う。自前の 16K 録画は 1 フレームごとに交互だが、スマホの動画は
-    //   音声が 1 秒ぶん近くまとまって置かれていることがある。
-    //   その場合 get_decode_image() が 1 回で 1 秒ぶんの音声を取り出す。
-    //
-    //   ★ これは「遅れ」ではなく「先回り」。その音声は次の 1 秒ぶんの
-    //     映像に対応しているので、抱えておくのが正しい。捨てると穴になる。
-    //     実測（129 秒）で上限 400ms だと 3835 回も溢れていた。
-    //
-    //   ★ 遅延を決めるのは sink の深さ(kAudioBufferMs)であって、こちらでは
-    //     ない。ここを広げても映像とのズレは増えないので、けちらないこと。
-    //     float ステレオ 48kHz で 1 秒 ≒ 384KB。
-    //
-    //   この上限を超えるのは、再生が本当に追いついていないとき。
-    //   際限なく溜めると遅延が伸びるので、古い方から捨てる。
-    // -------------------------------------------------------------------------
-    static const int kAudioPendingMs = 3000;
+    // ★ 再生してよい状態かを audio_player へ伝える。
+    //   状態を変えるスロットと processFrame() の両方から通すこと
+    //   （スロットは即応のため、processFrame はエンコード開始/終了を拾うため）。
+    void sync_audio_state();
+
+    QThread*      audio_thread_ = nullptr;
+    audio_player* audio_player_ = nullptr;
+
+    // ★ audio_player が映像の位置を読むための窓口。
+    //   別スレッドから読まれるので atomic。advance_frame_no() で更新する。
+    std::atomic<int> play_frame_no_{0};
+
 
     //エラー処理
     QString Error_String="";
@@ -213,53 +164,8 @@ protected:
     SwrContext* swr = nullptr;
     AVChannelLayout in_ch_layout = {};
     AVChannelLayout out_ch_layout = {};
-    QAudioSink* audioSink = nullptr;
-    QIODevice* audioOutput = nullptr;
-    // audioSink を float で開けたか（false なら Int16）
-    bool audio_sink_float_ = false;
-
-    // ★ sink へ渡しきれなかった PCM。捨てるとそこが無音の穴になる。
-    QByteArray audio_pending_;
-    int  audio_frame_bytes_ = 4;     // 1 サンプル枠 = ch * bps（途中で切らない）
-    int  audio_pending_cap_ = 0;     // kAudioPendingMs 相当のバイト数
-
-    // -------------------------------------------------------------------------
-    // ★ 診断。停止時に 1 行出す。
-    //
-    //   途切れの原因は 2 つしかなく、打ち手が正反対なので必ず先に切り分ける。
-    //
-    //     (a) 音声がまとめて出てくる（持ち越しが大きい / 溢れる）
-    //         -> 器の問題。持ち越しで吸収できる。
-    //
-    //     (b) 実時間ぶんの音声を作れていない（生成率 < 100% / 枯渇が多い）
-    //         -> 器をいくら増やしても遅延が伸びるだけで直らない。
-    //            音声は「映像を 1 枚作るついで」に取り出す作りなので、
-    //            GUI が詰まって processFrame() が空振りするとその間ぶん
-    //            丸ごと作られない。映像側の詰まりを見ること。
-    // -------------------------------------------------------------------------
-    quint64 audio_overflow_    = 0;  // 上限を超えて捨てた回数
-    int     audio_pending_max_ = 0;  // 持ち越した最大バイト数
-    QElapsedTimer audio_clock_;      // 最初の push から
-    qint64  audio_bytes_total_ = 0;  // デバイスへ渡そうとした総バイト数
-    quint64 audio_underrun_    = 0;  // push 時点で sink が空だった回数
-
-    // ★ 消音中かどうか。消音へ入る最初の 1 回だけ出力デバイスを捨てる
-    //   （毎回 reset するとドラッグ中ずっとデバイスを開き直すことになる）。
-    bool audio_muted_ = false;
-
-    // ★ high_res_seek_frame() の実行中だけ true。この経路は目標まで
-    //   パケットを読み進めるので、通り道の音声が鳴ってしまう。
-    //   デコードスレッド専用なので atomic は不要。
-    bool in_seek_scan_ = false;
-
-    // in_seek_scan_ の RAII（high_res_seek_frame() は return が多い）
-    struct SeekScanScope {
-        decode_thread* t;
-        explicit SeekScanScope(decode_thread* p) : t(p) { t->in_seek_scan_ = true; }
-        ~SeekScanScope() { t->in_seek_scan_ = false; }
-        SeekScanScope(const SeekScanScope&)            = delete;
-        SeekScanScope& operator=(const SeekScanScope&) = delete;
-    };
+    // ★ 再生用の QAudioSink はここには無い（audio_player が持つ）。
+    //   ここに残っているのはエンコード入力を作るためのデコーダ一式だけ。
 
     // AVFrame リング（vd[].hw_frames の面数）
     //   ★ デコード結果のRGBA面はもう持たない。
