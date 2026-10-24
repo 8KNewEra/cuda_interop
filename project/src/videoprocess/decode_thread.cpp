@@ -1,5 +1,5 @@
 #include "src/videoprocess/decode_thread.h"
-#include "src/videoprocess/audio_player.h"
+#include "src/videoprocess/audio_decode.h"
 #include "qfileinfo.h"
 #include <QDebug>
 #include <QThread>
@@ -29,9 +29,9 @@ decode_thread::decode_thread(QString FilePath,QObject *parent)
 }
 
 decode_thread::~decode_thread() {
-    // ★ 音声スレッドを先に畳む。向こうは自前の AVFormatContext しか
-    //   触らないので、こちらの解放順とは独立している。
-    stop_audio_player();
+    // ★ 音声スレッドを先に畳む（自前の AVFormatContext しか触らないので
+    //   こちらの解放順とは独立）。
+    stop_audio_decode();
 
     // ★ デコードスレッドが最後の 1 周を抜けるのを待つ。
     //   stopProcessing() で thread_stop_flag は立っている前提。
@@ -97,9 +97,7 @@ decode_thread::~decode_thread() {
         }
     };
 
-    // ★ 音声側。ここが丸ごと抜けていて、ファイルを開き直すたびに
-    //   SwrContext / AVCodecContext が漏れていた。
-    //   （再生用の QAudioSink は audio_player が持つのでここには無い）
+    // 音声側（エンコード入力用）。再生の QAudioSink は audio_decode が持つ。
     auto safe_free_audio = [&]() {
         if (swr)       swr_free(&swr);
         if (audio_ctx) avcodec_free_context(&audio_ctx);
@@ -170,34 +168,22 @@ double decode_thread::getFrameRate(AVFormatContext* fmt_ctx, int video_stream_in
 }
 
 // =============================================================================
-// ★ フレーム間隔（pts_per_frame）を実測で補正する
+// ★ フレーム間隔を実測で補正する
 //
-//   MP4 / MOV には fps の宣言欄が無く、avg_frame_rate は読み出すときに
-//   「実フレーム数 ÷ 尺」で計算される。コマ落ちが多いファイルではこれが
-//   下振れし、pts_per_frame が本来の何倍にもなる。
-//   （実測: 4 枚に 1 枚だけ残したファイルで avg_frame_rate が 60 -> 15、
-//     time_base 1/15360 で pts_per_frame が 256 -> 1024）
-//
-//   そうなるとフレーム番号も、シーク先として渡す pts も全部ずれる。
-//   とくに max_framesNo が実際の最終フレームより後ろを指すので、
-//   スライダーを末尾まで送っても届かず、画が変わらなくなる。
-//
-//   インデックスに並んだタイムスタンプの最小間隔を本来の 1 フレームとみなす。
-//   欠番の無いファイルでは宣言値と一致するので、そこでは何も変わらない。
+//   MP4/MOV に fps の宣言欄は無く、avg_frame_rate は「実フレーム数 ÷ 尺」で
+//   出る。コマ落ちの多いファイルでは下振れし、pts_per_frame が何倍にもなって
+//   番号もシーク先の pts も全部ずれる（実測: 60 -> 15 / 256 -> 1024）。
+//   インデックスのタイムスタンプの最小間隔を本来の 1 コマとみなす。
 // =============================================================================
 int decode_thread::detect_pts_per_frame(int stream_index)
 {
     AVStream* st = fmt_ctx->streams[stream_index];
 
-    // ★ パケットは読まない。インデックスだけ見る。
-    //   MP4 / MOV は全サンプルぶんのインデックスをファイルを開いた時点で
-    //   持っているので、ここでの I/O はゼロ。先頭を数百パケット読む作りに
-    //   すると、16K では 1 パケットが MB 単位なのでファイルを開くだけで
-    //   数百 MB を読むことになり、起動が体感できるほど遅くなる。
-    //
-    //   MKV のインデックスはキーフレームだけなので、ここで出てくるのは
-    //   GOP 間隔になる。その場合は下の fix_frame_grid() 側の条件
-    //   （宣言値のほうが大きいときだけ寄せる）で弾かれる。
+    // ★ パケットは読まずインデックスだけ見る（I/O ゼロ）。
+    //   16K は 1 パケットが MB 単位なので、先頭を数百パケット読む作りだと
+    //   ファイルを開くだけで数百 MB 読むことになる。
+    //   MKV のインデックスはキーフレームだけなので GOP 間隔が出るが、
+    //   それは fix_frame_grid() 側の条件で弾かれる。
     const int n = avformat_index_get_entries_count(st);
     if (n < 8) return 0;
 
@@ -218,45 +204,44 @@ int decode_thread::detect_pts_per_frame(int stream_index)
 
 void decode_thread::fix_frame_grid(int stream_index, double time_base_d)
 {
+    // audio_decode へ渡す位置を pts から作るのに使う（play_pos_us_ 参照）
+    video_time_base_ = time_base_d;
+
     const int observed = detect_pts_per_frame(stream_index);
-    if (observed <= 0 || time_base_d <= 0.0) return;
 
     // ★ 寄せるのは「宣言値のほうが明らかに大きい」ときだけ。
     //   MKV は time_base 1/1000 で 60fps が割り切れず（16.67 -> 16）、
     //   宣言値と実測値が 1 だけ食い違う。そこで差し替えると逆に悪化する。
-    if (VideoInfo.pts_per_frame < observed * 3 / 2) return;
+    if (observed > 0 && time_base_d > 0.0 &&
+        VideoInfo.pts_per_frame >= observed * 3 / 2) {
 
-    const double fixed_fps = 1.0 / (observed * time_base_d);
-    qWarning().noquote()
-        << QString("[decode] フレーム間隔が宣言値と食い違うので実測値を使います"
-                   " pts_per_frame %1 -> %2 / fps %3 -> %4")
-               .arg(VideoInfo.pts_per_frame).arg(observed)
-               .arg(VideoInfo.fps).arg(fixed_fps);
+        const double fixed_fps = 1.0 / (observed * time_base_d);
+        qWarning().noquote()
+            << QString("[decode] フレーム間隔が宣言値と食い違うので実測値を使います"
+                       " pts_per_frame %1 -> %2 / fps %3 -> %4")
+                   .arg(VideoInfo.pts_per_frame).arg(observed)
+                   .arg(VideoInfo.fps).arg(fixed_fps);
 
-    VideoInfo.pts_per_frame = observed;
-    VideoInfo.fps           = fixed_fps;
+        VideoInfo.pts_per_frame = observed;
+        VideoInfo.fps           = fixed_fps;
+    }
 }
 
 // =============================================================================
-// ★ デコードできたコマの pts から、表示用のフレーム番号と時刻を決める
+// ★ デコードできたコマの pts から、表示用の番号と時刻を決める（3 派生共通）
 //
-//   3 つの派生クラスに同じものが書かれていたので基底へ出した。
-//   ついでに 2 つの穴をふさいである。
-//     ・pts_per_frame は int。1.0/(fps*time_base) の切り捨てなので 0 になりうる
-//     ・best_effort_timestamp は AV_NOPTS_VALUE (INT64_MIN) になりうる
-//   どちらも、そのまま割って int に落とすと番号が不定になる。
+//   pts_per_frame が 0、pts が AV_NOPTS_VALUE のどちらもありうる。
 //   決められないときは番号を動かさない（前のコマの位置を保つ）。
 //
-//   ★ back1FrameNo（1 コマ戻しの行き先）の決め方だけ経路で違う。
-//     ・シーク直後  : 着地点の 1 つ前
-//     ・戻し/スライダー : 呼び出し側が既に決めているので触らない
-//     ・通常再生    : 直前に出したコマ（欠番があっても実在する番号になる）
+//   back1FrameNo（1 コマ戻しの行き先）だけ経路で違う。
+//     シーク直後 : 着地点の 1 つ前
+//     戻し/スライダー : 呼び出し側が決めているので触らない
+//     通常再生   : 直前に出したコマ（欠番があっても実在する番号になる）
 // =============================================================================
 void decode_thread::advance_frame_no(int64_t ts)
 {
-    const int  ppf = VideoInfo.pts_per_frame;
-    const bool ok  = (ppf > 0 && ts != AV_NOPTS_VALUE);
-    const int  no  = ok ? (int)(ts / ppf) : Frame.FrameNo;
+    const bool ok = (VideoInfo.pts_per_frame > 0.0 && ts != AV_NOPTS_VALUE);
+    const int  no = ok ? pts_to_frame(ts) : Frame.FrameNo;
 
     if (seek_flag) {
         back1FrameNo = no - 1;
@@ -268,8 +253,12 @@ void decode_thread::advance_frame_no(int64_t ts)
     slider_No     = no;
     seek_flag     = false;
 
-    // ★ audio_player が読む。別スレッドなので atomic 経由で渡す。
-    play_frame_no_.store(no, std::memory_order_release);
+    // ★ audio_decode が読む。渡すのは番号ではなく pts を秒へ直したもの
+    //   （no / fps で作り直すと丸めが毎コマ積もる。play_pos_us_ 参照）。
+    if (ok && video_time_base_ > 0.0) {
+        play_pos_us_.store((qint64)llround((double)ts * video_time_base_ * 1e6),
+                           std::memory_order_release);
+    }
 
     const double time = (VideoInfo.fps > 0.0) ? Frame.FrameNo / VideoInfo.fps : 0.0;
     Frame.hour   = time / 3600;
@@ -334,7 +323,7 @@ bool decode_thread::get_last_frame_pts() {
         double time = last_pts * av_q2d(tb);
         qDebug() << "Last PTS:" << last_pts << " (" << time << "sec)";
         VideoInfo.max_framesNo =
-            (VideoInfo.pts_per_frame > 0) ? (int)(last_pts / VideoInfo.pts_per_frame) : 0;
+            (VideoInfo.pts_per_frame > 0.0) ? pts_to_frame(last_pts) : 0;
         VideoInfo.start_range_framesNo = 0;
         VideoInfo.end_range_framesNo = VideoInfo.max_framesNo;
         Frame.FrameNo = VideoInfo.max_framesNo;
@@ -351,66 +340,55 @@ bool decode_thread::get_last_frame_pts() {
     return true;
 }
 
-// =============================================================================
-// ★ 再生用の音声スレッド
-//
-//   自前の AVFormatContext で読むので、こちらの映像デコードとは無関係に
-//   動く。生成ペースも状態変化も向こうが自分で面倒を見る。
-//   （経緯と設計理由は audio_player.h の先頭）
-// =============================================================================
-void decode_thread::start_audio_player()
+// 再生用の音声スレッド（設計理由は audio_decode.h の先頭）
+void decode_thread::start_audio_decode()
 {
-    if (audio_player_ || !VideoInfo.audio) return;
+    if (audio_decode_ || !VideoInfo.audio) return;
 
     audio_thread_ = new QThread;
-    audio_player_ = new audio_player(QString::fromStdString(VideoInfo.Path),
-                                     &play_frame_no_);
-    audio_player_->moveToThread(audio_thread_);
+    audio_decode_ = new audio_decode(QString::fromStdString(VideoInfo.Path),
+                                     &play_pos_us_);
+    audio_decode_->moveToThread(audio_thread_);
 
-    connect(audio_thread_, &QThread::started, audio_player_, &audio_player::start);
-    connect(audio_player_, &audio_player::finished, audio_thread_, &QThread::quit);
+    connect(audio_thread_, &QThread::started, audio_decode_, &audio_decode::start);
+    connect(audio_decode_, &audio_decode::finished, audio_thread_, &QThread::quit);
 
-    // ★ 優先度を上げる。デコードスレッドが 16K を回している間に
-    //   10ms ごとの pump が遅れると、そのぶんそのまま音が切れる。
+    // ★ 16K のデコード中に 10ms ごとの pump が遅れると、そのまま音が切れる
     audio_thread_->start(QThread::HighPriority);
     sync_audio_state();
 }
 
-void decode_thread::stop_audio_player()
+void decode_thread::stop_audio_decode()
 {
     if (!audio_thread_) return;
 
-    if (audio_player_) {
-        audio_player_->setPlaying(false);
-        // ★ 所有スレッドで閉じさせる。こちらから delete してはいけない
-        //   （QAudioSink はそのスレッドのものなので）。
-        QMetaObject::invokeMethod(audio_player_, "shutdown", Qt::BlockingQueuedConnection);
+    if (audio_decode_) {
+        audio_decode_->setPlaying(false);
+        // ★ 所有スレッドで閉じさせる（QAudioSink はそのスレッドのもの）
+        QMetaObject::invokeMethod(audio_decode_, "shutdown", Qt::BlockingQueuedConnection);
     }
 
     audio_thread_->quit();
     audio_thread_->wait();
 
-    delete audio_player_;  audio_player_ = nullptr;
+    delete audio_decode_;  audio_decode_ = nullptr;
     delete audio_thread_;  audio_thread_ = nullptr;
 }
 
 // ★ 音を出してよいのは「順方向の通常再生中」だけ。
-//   逆再生・コマ送り・シーク中・エンコード中は止める。
-//   位置の飛びは audio_player 側が映像との差で気づいて合わせ直すので、
-//   経路ごとにフックを置く必要は無い。
+//   逆再生・コマ送り・スライダーのドラッグ中・エンコード中は止める。
+//   位置の飛びは audio_decode 側が映像との差で気づいて合わせ直す。
 void decode_thread::sync_audio_state()
 {
-    if (!audio_player_) return;
-    // ★ 高精度スライダーのドラッグ中も止める。ここを入れないと
-    //   ドラッグのたびに位置が飛び、合わせ直しが連発して音が暴れる。
-    audio_player_->setPlaying(video_play_flag && !video_reverse_flag &&
+    if (!audio_decode_) return;
+    audio_decode_->setPlaying(video_play_flag && !video_reverse_flag &&
                               !high_res_slider_flag &&
                               encode_state.load() == STATE_NOT_ENCODE);
 }
 
-// ★ エンコード入力の音声を作る（再生は audio_player が別に行う）。
-//   エンコード中以外は呼ばれても何もしない。Frame.audio_pcm を使うのは
-//   save_encode だけなので、再生中にデコードする意味が無い。
+// ★ エンコード入力の音声を作る（再生は audio_decode が別に行う）。
+//   Frame.audio_pcm を使うのは save_encode だけなので、エンコード中以外は
+//   呼ばれても何もしない。
 void decode_thread::get_decode_audio()
 {
     if (encode_state.load() == STATE_NOT_ENCODE) return;
@@ -456,25 +434,21 @@ void decode_thread::get_decode_audio()
         pcm.resize(out_samples * out_channels * bps);
         VideoInfo.audio_channels = out_channels;
 
-        // ★ ここで作るのはエンコード入力だけ。再生は audio_player が
-        //   自前で読んでいるので、音量も掛けないし出力もしない。
+        // ★ エンコード入力なので音量は掛けない（掛けるとスライダーの位置が
+        //   録画結果に焼き付く）。
         Frame.audio_pcm.push_back(pcm);
-        Frame.audio_pts.push_back(audio_frame->pts);
     }
 }
 
 // ==============================================================
 // GUIが1フレーム消費したことの通知（★デコード駆動の唯一の入口）
 //
-//   以前は「エンコード中は decode_view が processFrame を直結でも
-//   叩く」構成だったため、1表示フレームにつき最大2回デコードが走り、
-//   hw_frames リングを追い越して GUI が変換中の面を上書きしていた。
-//   （= エンコード結果がたまに帯状にズレる原因）
+//   通常再生     : fps_thread が駆動。取りこぼし時のみ再投入
+//   エンコード中 : fps_thread を切り離し「1枚消費 -> 1枚生成」
 //
-//   ここで
-//     ・通常再生 : fps_thread が駆動。取りこぼし時のみ再投入
-//     ・エンコード中 : fps_thread を切り離し、「1枚消費 → 1枚生成」
-//   に統一する。
+//   ★ ここ以外から processFrame を叩かないこと。1 表示フレームに 2 回
+//     デコードが走ると hw_frames リングを追い越し、GUI が変換中の面を
+//     上書きする（エンコード結果が帯状にズレる）。
 // ==============================================================
 void decode_thread::receve_decode_flag(){
     QMutexLocker locker(&mutex);
@@ -502,7 +476,7 @@ void decode_thread::startProcessing() {
     if(initialized_ffmpeg()){
         Error_String="";
         VideoInfo.video_open_flag = true;
-        start_audio_player();
+        start_audio_decode();
         qDebug() << "Live Thread: Start Processing";
     }else{
         emit decode_error(Error_String);
@@ -512,7 +486,7 @@ void decode_thread::startProcessing() {
 
 void decode_thread::stopProcessing() {
     thread_stop_flag = true;
-    if (audio_player_) audio_player_->setPlaying(false);   // 先に黙らせる
+    if (audio_decode_) audio_decode_->setPlaying(false);   // 先に黙らせる
     qDebug() << "decode_thread: stopProcessing called";
 }
 
@@ -595,7 +569,6 @@ void decode_thread::processFrame() {
     sync_audio_state();
 
     Frame.audio_pcm.clear();
-    Frame.audio_pts.clear();
 
     //1フレーム戻し
     if(back1frame_flag){

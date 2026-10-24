@@ -86,7 +86,6 @@ struct VideoEncoder {
 struct AudioJob
 {
     QVector<QByteArray> audio_pcm;
-    QVector<int> audio_pts;
 };
 
 

@@ -255,7 +255,7 @@ bool avidecode::initialized_ffmpeg()
 
         VideoInfo.out_sample_rate = audio_ctx->sample_rate;
         // ★ float のまま配る。S16 へ先に落とすと 0dBFS 超えがここで潰れ、
-        //   音量を下げても歪みが残る（audio_player::apply_volume 参照）。
+        //   音量を下げても歪みが残る（audio_decode::apply_volume 参照）。
         VideoInfo.out_format      = AV_SAMPLE_FMT_FLT;
         av_channel_layout_default(&out_ch_layout, 2);
 
@@ -315,7 +315,7 @@ void avidecode::get_decode_image(){
             avcodec_flush_buffers(audio_ctx);
 
         av_seek_frame(fmt_ctx, vd[0].stream_index,
-                      slider_No * VideoInfo.pts_per_frame,
+                      frame_to_pts(slider_No),
                       AVSEEK_FLAG_BACKWARD);
 
         Frame.FrameNo = slider_No;
@@ -350,7 +350,7 @@ void avidecode::get_decode_image(){
                     avcodec_flush_buffers(audio_ctx);
 
                 av_seek_frame(fmt_ctx, vd[0].stream_index,
-                              (Frame.FrameNo + 1) * VideoInfo.pts_per_frame,
+                              frame_to_pts(Frame.FrameNo + 1),
                               AVSEEK_FLAG_ANY);
             } else {
                 emit decode_end();
@@ -545,7 +545,7 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
         avcodec_flush_buffers(audio_ctx);
 
     av_seek_frame(fmt_ctx, vd[0].stream_index,
-                  targetFrameNo * VideoInfo.pts_per_frame,
+                  frame_to_pts(targetFrameNo),
                   AVSEEK_FLAG_BACKWARD);
 
     // ----------- パケット読み込みループ -----------
@@ -592,7 +592,7 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
                     avcodec_flush_buffers(audio_ctx);
 
                 av_seek_frame(fmt_ctx, vd[0].stream_index,
-                              (int64_t)seek_frame * VideoInfo.pts_per_frame,
+                              frame_to_pts((int64_t)seek_frame),
                               AVSEEK_FLAG_ANY);
 
                 av_packet_unref(packet);
@@ -615,9 +615,8 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
 
         //1 つ手前のコマを覚えてから、今のコマの番号を出す
         back1FrameNo = FrameNo;
-        FrameNo = (VideoInfo.pts_per_frame > 0)
-                      ? (int)(vd[0].hw_frames[ringNo]->best_effort_timestamp
-                              / VideoInfo.pts_per_frame)
+        FrameNo = (VideoInfo.pts_per_frame > 0.0)
+                      ? pts_to_frame(vd[0].hw_frames[ringNo]->best_effort_timestamp)
                       : FrameNo;
 
         //ターゲットフレームの番号かどうか判定

@@ -697,9 +697,6 @@ void save_encode::encode(VideoFrame Frame, cudaTextureObject_t srcTex,
         job.audio_pcm =
             Frame.audio_pcm;
 
-        job.audio_pts =
-            Frame.audio_pts;
-
         {
             std::lock_guard<std::mutex>
                 lock(audioMutex);

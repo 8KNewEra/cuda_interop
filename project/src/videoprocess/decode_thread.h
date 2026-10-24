@@ -6,12 +6,13 @@
 #include <QMutex>
 
 #include <atomic>
+#include <cmath>
 #include <algorithm>
 #include <vector>
 #include <cuda_runtime.h>
 #include <QDebug>
 #include "src/main/__global__.h"
-class audio_player;
+class audio_decode;
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -26,12 +27,10 @@ struct VideoDecorder {
     const AVCodec* decoder;
     std::vector<AVFrame*> hw_frames;
 
-    // ★ 受信用スクラッチ（NVDEC 経路のみ使用）。
-    //   avcodec_receive_frame() は「何をするより先に必ず av_frame_unref する」
-    //   仕様なので、hw_frames を直接渡すと EAGAIN で失敗しただけで
-    //   取得済みのコマが消える。タイルを並べる NVDEC 経路では致命的なので、
-    //   必ずここへ受けて成功時だけ move_ref する（receive_into_slot）。
-    //   CPU デコード経路は 1 枚ずつ同期的に使い切るので直接受けている。
+    // ★ 受信用スクラッチ（NVDEC 経路のみ）。
+    //   avcodec_receive_frame() は失敗時も必ず先に av_frame_unref する。
+    //   hw_frames を直接渡すと EAGAIN だけで取得済みのコマが消えるので、
+    //   ここへ受けて成功時だけ move_ref する（receive_into_slot）。
     AVFrame* tmp_frame = nullptr;
 };
 
@@ -53,7 +52,6 @@ signals:
     void finished();
     void decode_end();
     void decode_error(QString error);
-    void drop_decode();
     void heavy_process_signal(bool flag);
 
 public slots:
@@ -95,30 +93,47 @@ protected:
     void advance_frame_no(int64_t ts);
 
     // -------------------------------------------------------------------------
-    // ★ 再生用の音声は audio_player（別スレッド）が担当する
+    // ★ フレーム番号 <-> pts の変換はこの 2 つだけを使う
     //
-    //   ここ（decode_thread）が作るのはエンコード入力の音声だけ。
-    //   get_decode_audio() はエンコード中しか呼ばない。
-    //
-    //   以前は再生もここでやっていたが、音声を「映像を 1 枚作るついで」に
-    //   取り出す形になるため、ファイルの交互配置の粗さがそのまま音の
-    //   途切れになり、停止も通知で受け取れずポーリングが要った。
-    //   理由は audio_player.h の先頭を参照。
+    //   pts_per_frame は double（time_base 1/1000 の 60fps で 16.6667）。
+    //   各所で直接掛けたり割ったりすると、整数除算の切り捨てで 1 コマずれる
+    //   箇所が必ず出る（400 / 16.6667 = 23.99… を (int) すると 23）。
+    //   丸めをここ 1 箇所に閉じ込めること。
     // -------------------------------------------------------------------------
-    void start_audio_player();
-    void stop_audio_player();
+    int64_t frame_to_pts(double frame_no) const
+    {
+        return (int64_t)llround(frame_no * VideoInfo.pts_per_frame);
+    }
+    int pts_to_frame(int64_t ts) const
+    {
+        return (VideoInfo.pts_per_frame > 0.0 && ts != AV_NOPTS_VALUE)
+                   ? (int)llround((double)ts / VideoInfo.pts_per_frame)
+                   : 0;
+    }
 
-    // ★ 再生してよい状態かを audio_player へ伝える。
+    // ★ 再生用の音声は audio_decode（別スレッド）が持つ。
+    //   ここが作るのはエンコード入力だけで、get_decode_audio() は
+    //   エンコード中しか呼ばない。経緯は audio_decode.h の先頭。
+    void start_audio_decode();
+    void stop_audio_decode();
+
+    // ★ 再生してよい状態かを audio_decode へ伝える。
     //   状態を変えるスロットと processFrame() の両方から通すこと
-    //   （スロットは即応のため、processFrame はエンコード開始/終了を拾うため）。
+    //   （スロットは即応のため、processFrame はエンコード開始/終了のため）。
     void sync_audio_state();
 
     QThread*      audio_thread_ = nullptr;
-    audio_player* audio_player_ = nullptr;
+    audio_decode* audio_decode_ = nullptr;
 
-    // ★ audio_player が映像の位置を読むための窓口。
-    //   別スレッドから読まれるので atomic。advance_frame_no() で更新する。
-    std::atomic<int> play_frame_no_{0};
+    // ★ audio_decode が映像の位置を読む窓口（別スレッドなので atomic）。
+    //   ★ フレーム番号ではなく pts を秒にしたものを渡すこと。
+    //     番号を fps で割り戻すと、pts_per_frame の丸めぶんが毎コマ積もる。
+    //     音声は水増しされた位置へ合わせに行くので先行するのに、音声側から
+    //     見た誤差は 0 のままで、合わせ直しにも引っかからない。
+    std::atomic<qint64> play_pos_us_{0};
+
+    // 映像ストリームの time_base。上の µs を作るのに使う。
+    double video_time_base_ = 0.0;
 
 
     //エラー処理
@@ -164,7 +179,7 @@ protected:
     SwrContext* swr = nullptr;
     AVChannelLayout in_ch_layout = {};
     AVChannelLayout out_ch_layout = {};
-    // ★ 再生用の QAudioSink はここには無い（audio_player が持つ）。
+    // ★ 再生用の QAudioSink はここには無い（audio_decode が持つ）。
     //   ここに残っているのはエンコード入力を作るためのデコーダ一式だけ。
 
     // AVFrame リング（vd[].hw_frames の面数）

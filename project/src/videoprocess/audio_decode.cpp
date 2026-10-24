@@ -1,4 +1,4 @@
-#include "src/videoprocess/audio_player.h"
+#include "src/videoprocess/audio_decode.h"
 
 #include <QTimer>
 #include <QDebug>
@@ -7,14 +7,14 @@
 #include <algorithm>
 #include <cmath>
 
-audio_player::audio_player(const QString& path,
-                           const std::atomic<int>* video_frame_no,
+audio_decode::audio_decode(const QString& path,
+                           const std::atomic<qint64>* video_pos_us,
                            QObject* parent)
-    : QObject(parent), path_(path), video_frame_no_(video_frame_no)
+    : QObject(parent), path_(path), video_pos_us_(video_pos_us)
 {
 }
 
-audio_player::~audio_player()
+audio_decode::~audio_decode()
 {
     shutdown();
 }
@@ -22,12 +22,11 @@ audio_player::~audio_player()
 // =============================================================================
 // ★ 音量（音割れの分かれ目）
 //
-//   S16 へ落としてから掛けると、0dBFS を超えた素材は変換の時点で ±32767 に
-//   飽和して波形の頭が潰れる。その後で音量を下げても、潰れた波形が小さく
-//   なるだけで歪みは消えない。float のうちに掛ければ、下げた結果が ±1.0 に
-//   収まった時点で歪みが消える。sink が float ならここで頭打ちもしない。
+//   S16 へ落としてから掛けると 0dBFS 超えが変換の時点で ±32767 に飽和し、
+//   後から下げても潰れた波形が小さくなるだけ。float のうちに掛ければ、
+//   下げた結果が ±1.0 に収まった時点で歪みが消える。
 // =============================================================================
-QByteArray audio_player::apply_volume(const QByteArray& f32, float volume,
+QByteArray audio_decode::apply_volume(const QByteArray& f32, float volume,
                                       bool sink_is_float)
 {
     const int    n   = f32.size() / (int)sizeof(float);
@@ -55,7 +54,7 @@ QByteArray audio_player::apply_volume(const QByteArray& f32, float volume,
 // =============================================================================
 // 起動 / 終了
 // =============================================================================
-void audio_player::start()
+void audio_decode::start()
 {
     if (!openFile()) {
         emit finished();
@@ -64,21 +63,24 @@ void audio_player::start()
 
     timer_ = new QTimer(this);
     timer_->setTimerType(Qt::PreciseTimer);
-    connect(timer_, &QTimer::timeout, this, &audio_player::pump);
+    connect(timer_, &QTimer::timeout, this, &audio_decode::pump);
     timer_->start(kPumpMs);
 }
 
-void audio_player::shutdown()
+void audio_decode::shutdown()
 {
     if (timer_) { timer_->stop(); delete timer_; timer_ = nullptr; }
 
-    if (underrun_ || resync_) {
-        const double avg = pump_n_ ? (double)pump_us_ / pump_n_ / 1000.0 : 0.0;
-        const double dec = pump_n_ ? (double)decode_us_ / pump_n_ / 1000.0 : 0.0;
+    if (pump_n_) {
+        const double avg = (double)pump_us_ / pump_n_ / 1000.0;
+        const double dec = (double)decode_us_ / pump_n_ / 1000.0;
         qDebug().noquote()
-            << QString("[audio] 枯渇 %1 回 / 位置合わせ %2 回"
-                       "  pump 間隔 平均 %3 ms (最大 %4 ms, 目標 %5 ms)"
-                       "  うちデコード %6 ms  (sink %7 ms)")
+            << QString("[audio] 追従中のズレ最大 %1 ms (合わせ直し %2 ms で発動)"
+                       "  枯渇 %3 回 / 位置合わせ %4 回"
+                       "  pump 間隔 平均 %5 ms (最大 %6 ms, 目標 %7 ms)"
+                       "  うちデコード %8 ms  (sink %9 ms)")
+                   .arg(err_worst_ * 1000.0, 0, 'f', 1)
+                   .arg(kResyncSec * 1000.0, 0, 'f', 0)
                    .arg((qulonglong)underrun_).arg((qulonglong)resync_)
                    .arg(avg, 0, 'f', 1)
                    .arg(pump_worst_us_ / 1000.0, 0, 'f', 1)
@@ -92,12 +94,10 @@ void audio_player::shutdown()
 
 // =============================================================================
 // ★ 自前で開く（decode_thread とは別の AVFormatContext）
-//
-//   同じファイルを 2 回開くことになるが、こちらは音声ストリームしか読まない
-//   デマルチプレクサなので実質ただのファイルハンドル。映像デコードの都合に
-//   一切縛られないのがこの構成の利点。
+//   音声ストリームしか読まないので実質ただのファイルハンドル。映像デコードの
+//   都合に縛られないのがこの構成の利点。
 // =============================================================================
-bool audio_player::openFile()
+bool audio_decode::openFile()
 {
     int ret = avformat_open_input(&fmt_ctx_, path_.toUtf8().constData(), nullptr, nullptr);
     if (ret < 0) { qWarning() << "[audio] avformat_open_input failed"; return false; }
@@ -114,18 +114,40 @@ bool audio_player::openFile()
     if (stream_index_ < 0) return false;          // 音声なし。鳴らすものが無い
 
     // ★ 音声以外は demuxer に捨てさせる。
-    //
-    //   これが無いと av_read_frame() が巨大な映像パケットを全部読んでから
-    //   捨てることになる。16K・212Mbps なら 1 秒ぶんの音声を取り出すのに
-    //   26MB 読む計算で、映像スレッドと合わせて倍の I/O になる。
-    //   AVDISCARD_ALL なら MP4/MOV の index から次の音声サンプルへ
-    //   直接 seek するので、映像の中身は読まれない。
+    //   これが無いと av_read_frame() が巨大な映像パケットを読んでから捨てる
+    //   （16K・212Mbps なら 1 秒の音声に 26MB）。AVDISCARD_ALL なら index から
+    //   次の音声サンプルへ直接 seek するので映像の中身は読まれない。
     for (unsigned i = 0; i < fmt_ctx_->nb_streams; i++)
         fmt_ctx_->streams[i]->discard =
             ((int)i == stream_index_) ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
 
     AVStream* st = fmt_ctx_->streams[stream_index_];
     time_base_ = av_q2d(st->time_base);
+
+    // ★ 映像と音声で「0 秒」の位置を合わせる。
+    //   どちらも各ストリームの pts をそのまま秒にした値なので、開始 pts が
+    //   違うファイルでは同じ瞬間を指さない。差を控えて引く（無ければ 0）。
+    {
+        const AVStream* vst = nullptr;
+        for (unsigned i = 0; i < fmt_ctx_->nb_streams; i++) {
+            if (fmt_ctx_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                vst = fmt_ctx_->streams[i];
+                break;
+            }
+        }
+
+        const double a0 = (st->start_time != AV_NOPTS_VALUE)
+                              ? st->start_time * time_base_ : 0.0;
+        const double v0 = (vst && vst->start_time != AV_NOPTS_VALUE)
+                              ? vst->start_time * av_q2d(vst->time_base) : 0.0;
+        origin_shift_ = v0 - a0;
+
+        if (std::fabs(origin_shift_) > 0.001) {
+            qWarning().noquote()
+                << QString("[audio] 映像と音声で開始位置が %1 ms ずれています（補正します）")
+                       .arg(origin_shift_ * 1000.0, 0, 'f', 1);
+        }
+    }
 
     const AVCodec* dec = avcodec_find_decoder(st->codecpar->codec_id);
     if (!dec) { qWarning() << "[audio] decoder not found"; return false; }
@@ -181,18 +203,15 @@ bool audio_player::openFile()
 // =============================================================================
 // ★ 再生速度
 //
-//   映像は fps_thread が speed 倍で進むので、音声も同じ倍率で進めないと
-//   置いていかれる。放っておくと 0.35 秒ごとに前方へシークし続けて
-//   「追いつかなくなって飛ぶ」状態になる（実測 30 分で位置合わせ 867 回）。
+//   「入力レートが speed 倍だ」と swr に申告すると出力が 1/speed 本になり、
+//   デバイスのレートはそのままで速く鳴る。音程も上がるが、これは従来と同じ。
+//   保ちたいなら libavfilter の atempo が要る。
 //
-//   やり方は「入力レートが speed 倍だ」と swr に申告するだけ。
-//   出力が 1/speed 本になるので、デバイスのレートはそのままで速く鳴る。
-//   音程も上がるが、これは decode_thread 内で鳴らしていた頃と同じ挙動
-//   （あちらは映像 1 枚につき音声を取り出していたので、速度を上げると
-//     自動的に音声も速くなっていた）。
-//   音程を保つなら libavfilter の atempo が要る。
+//   ★ 出すのは「設定どおりの速度」だけ。デコーダが設定どおりに回らない場合
+//     （16K の 2 倍速など）は音声が先行し、合わせ直しが入る。映像主導である
+//     以上これは仕様で、飽和時に崩れるのは音声の方になる。
 // =============================================================================
-bool audio_player::buildSwr(double speed)
+bool audio_decode::buildSwr(double speed)
 {
     if (!ctx_) return false;
     if (!(speed > 0.01)) speed = 1.0;
@@ -211,7 +230,7 @@ bool audio_player::buildSwr(double speed)
     return true;
 }
 
-void audio_player::closeFile()
+void audio_decode::closeFile()
 {
     if (swr_)     swr_free(&swr_);
     if (ctx_)     avcodec_free_context(&ctx_);
@@ -226,20 +245,25 @@ void audio_player::closeFile()
 // =============================================================================
 // 位置
 // =============================================================================
-double audio_player::videoSeconds() const
+// ★ 映像が「いま出している位置」を秒で返す。decode_thread が pts から
+//   作って置いたものを読むだけ（フレーム番号から作り直さないこと）。
+double audio_decode::videoSeconds() const
 {
-    if (!video_frame_no_ || VideoInfo.fps <= 0.0) return -1.0;
-    return video_frame_no_->load(std::memory_order_acquire) / VideoInfo.fps;
+    if (!video_pos_us_) return -1.0;
+    const qint64 us = video_pos_us_->load(std::memory_order_acquire);
+    if (us < 0) return -1.0;
+    const double v = (double)us / 1000000.0 - origin_shift_;
+    return (v > 0.0) ? v : 0.0;
 }
 
-double audio_player::queuedSeconds() const
+double audio_decode::queuedSeconds() const
 {
     if (!sink_ || byte_per_sec_ <= 0) return 0.0;
     const qint64 queued = (qint64)sink_->bufferSize() - sink_->bytesFree();
     return (queued > 0) ? (double)queued / byte_per_sec_ : 0.0;
 }
 
-void audio_player::flushDevice()
+void audio_decode::flushDevice()
 {
     if (!sink_) return;
     carry_.clear();          // 持ち越しも捨てる（これも鳴る）
@@ -247,7 +271,7 @@ void audio_player::flushDevice()
     dev_ = sink_->start();   // reset で停止するので張り直す
 }
 
-void audio_player::seekToSeconds(double sec)
+void audio_decode::seekToSeconds(double sec)
 {
     if (!fmt_ctx_ || stream_index_ < 0) return;
     if (sec < 0.0) sec = 0.0;
@@ -266,7 +290,7 @@ void audio_player::seekToSeconds(double sec)
 // =============================================================================
 // ★ 1 パケットぶんデコードして PCM(float) を返す
 // =============================================================================
-bool audio_player::decodeOne(QByteArray& pcm)
+bool audio_decode::decodeOne(QByteArray& pcm)
 {
     for (;;) {
         // まず溜まっている出力を引く
@@ -324,7 +348,7 @@ bool audio_player::decodeOne(QByteArray& pcm)
 // =============================================================================
 // ★ 本体。デバイスの空きを見て、空いているぶんだけ詰める。
 // =============================================================================
-void audio_player::pump()
+void audio_decode::pump()
 {
     if (!sink_ || !dev_) return;
 
@@ -354,10 +378,6 @@ void audio_player::pump()
         if (v >= 0.0) seekToSeconds(v);
     }
 
-    // ---- 映像とずれていたら合わせ直す ----
-    //   シーク・コマ送り・終端の折り返しは全部ここで吸収される。
-    //   cur_sec_ はデコード済みの位置なので、まだ鳴っていない
-    //   キュー（queuedSeconds）を引いてから比べること。
     // ---- 再生速度が変わっていたら swr を作り直す ----
     //   変えた直後はキューの中身が古い速度のものなので捨てる。
     if (std::fabs(g_AppSettings.video_speed_ratio - speed_) > 1e-6) {
@@ -368,20 +388,34 @@ void audio_player::pump()
         }
     }
 
+    // ---- 映像とずれていたら合わせ直す ----
+    //   シーク・コマ送り・終端の折り返しは全部ここで吸収される。
+    //   cur_sec_ はデコード済みの位置なので、まだ鳴っていないキューを引く。
     const double v = videoSeconds();
     const bool   settled = !since_resync_.isValid() ||
                            since_resync_.elapsed() > kResyncHoldMs;
     if (v >= 0.0 && settled) {
         // ★ queuedSeconds() は実時間。素材の時間に直すには speed を掛ける。
         const double heard = cur_sec_ - queuedSeconds() * speed_;
-        if (std::fabs(heard - v) > kResyncSec) {
+        const double err   = heard - v;
+
+        if (std::fabs(err) > kResyncSec) {
             resync_++;
             seekToSeconds(v);
             return;           // 捨てる作業は次の周から
         }
+
+        // ★ 同期の指標。合わせ直しの「後」で取ること。前で取ると終端の
+        //   折り返しや大ジャンプを拾って尺に近い値が出る（それらは resync_）。
+        if (std::fabs(err) > err_worst_) err_worst_ = std::fabs(err);
     }
 
-    if (sink_->bytesFree() >= sink_->bufferSize()) underrun_++;
+    // ★ 合わせ直した直後は、目標まで読み飛ばす間どうしてもデバイスが空になる。
+    //   これは枯渇ではないので数えない（数えるとシークのたびに増える）。
+    if (settled && skip_until_ < 0.0 &&
+        sink_->bytesFree() >= sink_->bufferSize()) {
+        underrun_++;
+    }
 
     // ★ 書けるのはサンプル枠の倍数まで。途中で切ると左右が入れ替わる。
     const auto writable = [&](qint64 want) {

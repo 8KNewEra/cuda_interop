@@ -392,7 +392,7 @@ bool nvgpudecode::initialized_ffmpeg()
 
         VideoInfo.out_sample_rate = audio_ctx->sample_rate;
         // ★ float のまま配る。S16 へ先に落とすと 0dBFS 超えがここで潰れ、
-        //   音量を下げても歪みが残る（audio_player::apply_volume 参照）。
+        //   音量を下げても歪みが残る（audio_decode::apply_volume 参照）。
         VideoInfo.out_format      = AV_SAMPLE_FMT_FLT;
         av_channel_layout_default(&out_ch_layout, 2);
 
@@ -794,7 +794,7 @@ void nvgpudecode::get_singledecode_image() {
             avcodec_flush_buffers(audio_ctx);
 
         av_seek_frame(fmt_ctx, vd[0].stream_index,
-                      slider_No * VideoInfo.pts_per_frame,
+                      frame_to_pts(slider_No),
                       AVSEEK_FLAG_BACKWARD);
 
         Frame.FrameNo = slider_No;
@@ -829,7 +829,7 @@ void nvgpudecode::get_singledecode_image() {
                     avcodec_flush_buffers(audio_ctx);
 
                 av_seek_frame(fmt_ctx, vd[0].stream_index,
-                              (Frame.FrameNo + 1) * VideoInfo.pts_per_frame,
+                              frame_to_pts(Frame.FrameNo + 1),
                               AVSEEK_FLAG_ANY);
             } else {
                 emit decode_end();
@@ -906,7 +906,7 @@ void nvgpudecode::get_multidecode_image() {
         clear_pending();          // ★ flush したら保留パケットも捨てる
 
         av_seek_frame(fmt_ctx, vd[0].stream_index,
-                      slider_No * VideoInfo.pts_per_frame,
+                      frame_to_pts(slider_No),
                       AVSEEK_FLAG_BACKWARD);
 
         Frame.FrameNo = slider_No;
@@ -1163,7 +1163,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
         avcodec_flush_buffers(audio_ctx);
 
     av_seek_frame(fmt_ctx, vd[0].stream_index,
-                  targetFrameNo * VideoInfo.pts_per_frame,
+                  frame_to_pts(targetFrameNo),
                   AVSEEK_FLAG_BACKWARD);
 
     // ----------- パケット読み込みループ -----------
@@ -1209,7 +1209,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
                     avcodec_flush_buffers(audio_ctx);
 
                 av_seek_frame(fmt_ctx, vd[0].stream_index,
-                              seek_frame * VideoInfo.pts_per_frame,
+                              frame_to_pts(seek_frame),
                               AVSEEK_FLAG_ANY);
 
                 av_packet_unref(packet);
@@ -1242,7 +1242,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
 
         //1 つ手前のコマを覚えてから、今のコマの番号を出す
         back1FrameNo = FrameNo;
-        FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
+        FrameNo = pts_to_frame(vd[0].hw_frames[ringNo]->best_effort_timestamp);
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo <= FrameNo){
@@ -1269,7 +1269,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
     clear_pending();              // ★ flush したら保留パケットも捨てる
 
     av_seek_frame(fmt_ctx, vd[0].stream_index,
-                  targetFrameNo * VideoInfo.pts_per_frame,
+                  frame_to_pts(targetFrameNo),
                   AVSEEK_FLAG_BACKWARD);
 
     //デコードループ(最初はback1Frame記憶用)
@@ -1322,20 +1322,22 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
         //     戻し先が 429 のまま残っていた）。
         bool drain_tracked_back = false;
         if (eof) {
-            const int ppf = VideoInfo.pts_per_frame;
+            // ★ 番号の算出は pts_to_frame() に通す。全タイルが同じ
+            //   pts_per_frame を通るので、タイル間の関係は崩れない。
+            const double ppf = VideoInfo.pts_per_frame;
             for (int i = 0; i < N; i++) {
                 avcodec_send_packet(vd[i].codec_ctx, nullptr);
                 for (;;) {
                     // 目標に届いているならそれ以上進めない（行き過ぎ防止）
-                    if (got_frame[i] && ppf > 0 && pts[i] != AV_NOPTS_VALUE &&
-                        pts[i] / ppf >= targetFrameNo) break;
+                    if (got_frame[i] && ppf > 0.0 && pts[i] != AV_NOPTS_VALUE &&
+                        pts_to_frame(pts[i]) >= targetFrameNo) break;
 
                     const int64_t before = pts[i];              // 上書き前の位置
                     if (!receive_into_slot(i, &pts[i])) break;   // デコーダが空
                     if (!got_frame[i]) { got_frame[i] = true; got_count++; }
 
-                    if (i == 0 && before != AV_NOPTS_VALUE && ppf > 0) {
-                        back1FrameNo = (int)(before / ppf);
+                    if (i == 0 && before != AV_NOPTS_VALUE && ppf > 0.0) {
+                        back1FrameNo = pts_to_frame(before);
                         drain_tracked_back = true;
                     }
                 }
@@ -1349,7 +1351,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
         //フレーム番号記憶
         //   ★ ドレインで実際の 1 つ手前を掴めた場合はそちらを優先する。
         if (!drain_tracked_back) back1FrameNo = FrameNo;
-        FrameNo = vd[0].hw_frames[ringNo]->best_effort_timestamp / VideoInfo.pts_per_frame;
+        FrameNo = pts_to_frame(vd[0].hw_frames[ringNo]->best_effort_timestamp);
 
         //ターゲットフレームの番号かどうか判定
         if(targetFrameNo<=FrameNo){
@@ -1380,8 +1382,8 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
 void nvgpudecode::publish_seek_fallback(int targetFrameNo)
 {
     const int64_t ts   = vd[0].hw_frames[ringNo]->best_effort_timestamp;
-    const int     ppf  = VideoInfo.pts_per_frame;
-    const int     from = (ppf > 0 && ts != AV_NOPTS_VALUE) ? (int)(ts / ppf) : -1;
+    const double  ppf  = VideoInfo.pts_per_frame;
+    const int     from = (ppf > 0.0 && ts != AV_NOPTS_VALUE) ? pts_to_frame(ts) : -1;
 
     // タイル別の到達位置。ここがバラバラなら出力遅延の差、
     // 揃っていればファイル側にそのコマが無い（または届く前に止まっている）。
@@ -1389,7 +1391,7 @@ void nvgpudecode::publish_seek_fallback(int targetFrameNo)
     for (int i = 0; i < (int)vd.size(); i++) {
         const int64_t t = vd[i].hw_frames[ringNo]->best_effort_timestamp;
         tiles += QString(" t%1=%2").arg(i)
-                     .arg((qlonglong)((ppf > 0 && t != AV_NOPTS_VALUE) ? t / ppf : -1));
+                     .arg((ppf > 0.0 && t != AV_NOPTS_VALUE) ? pts_to_frame(t) : -1);
     }
 
     qWarning().noquote() << QString(

@@ -31,8 +31,7 @@ struct AppSettings
     int jumpValueSecond = 1;
     int jumpValueFrame = 1;
     int jumpValueFrameNo = 0;
-    // ★ 未使用。低遅延モードは廃止した（再生経路は 1 本）。
-    //   ini の互換のために残してあるだけ。
+    // 未使用。低遅延モードは廃止（再生経路は 1 本）。ini 互換のため残置。
     bool audio_low_laytency_flag = false;
 
     // Filter
@@ -121,7 +120,12 @@ struct DecodeInfo {
     int max_framesNo=10;
     int end_range_framesNo=10;
     int start_range_framesNo=0;
-    int pts_per_frame=1000;
+    // ★ 1 フレームぶんの pts。必ず double。
+    //   1.0/(fps*time_base) は割り切れないことがある（MKV 1/1000 の
+    //   60fps で 16.6667）。int にすると 16 になり、番号が飛び、時刻と
+    //   max_framesNo が 4.17% 大きく出る。
+    //   変換は decode_thread::frame_to_pts() / pts_to_frame() だけを使う。
+    double pts_per_frame = 1000.0;
     double fps = 30;
     int bitdepth=8;
     int width=3840;
@@ -142,10 +146,9 @@ struct DecodeInfo {
     int out_sample_rate = 0;
     AVSampleFormat in_format  = AV_SAMPLE_FMT_NONE;
 
-    // ★ デコード後に配る PCM の形式（再生とエンコード入力の両方）。
-    //   float のまま配ること。S16 へ先に落とすと、0dBFS を超える素材
-    //   （PCM 32bit float など）がその時点で飽和し、後から音量を下げても
-    //   歪みが残る。音量は各出口が float のうちに掛ける。
+    // ★ デコード後に配る PCM。float のまま配ること。S16 へ先に落とすと
+    //   0dBFS 超え（PCM 32bit float など）がそこで飽和し、後から音量を
+    //   下げても歪みが残る。音量は各出口が float のうちに掛ける。
     AVSampleFormat out_format = AV_SAMPLE_FMT_FLT;  // インターリーブ float
 };
 
@@ -259,9 +262,8 @@ struct VideoFrame {
     int minute = 0;
     int second = 0;
 
-    //音声
+    //音声（エンコード入力。再生は audio_decode が別に読む）
     QVector<QByteArray> audio_pcm{};
-    QVector<int> audio_pts{};
 };
 
 //UI表示CPUダウンロード用

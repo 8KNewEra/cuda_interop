@@ -31,7 +31,7 @@ SOURCES += \
     $$PWD/src/videoprocess/cpudecode.cpp \
     $$PWD/src/videoprocess/nvgpudecode.cpp \
     $$PWD/src/videoprocess/decode_thread.cpp \
-    $$PWD/src/videoprocess/audio_player.cpp \
+    $$PWD/src/videoprocess/audio_decode.cpp \
     $$PWD/src/videoprocess/save_encode.cpp \
     $$PWD/src/ui_control/audio_volume.cpp \
     $$PWD/src/ui_control/encode_setting.cpp \
@@ -51,7 +51,7 @@ HEADERS += \
     $$PWD/src/videoprocess/avidecode.h \
     $$PWD/src/videoprocess/cpudecode.h \
     $$PWD/src/videoprocess/decode_thread.h \
-    $$PWD/src/videoprocess/audio_player.h \
+    $$PWD/src/videoprocess/audio_decode.h \
     $$PWD/src/videoprocess/nvgpudecode.h \
     $$PWD/src/videoprocess/yuv_plane_ring.h \
     $$PWD/src/videoprocess/save_encode.h \
