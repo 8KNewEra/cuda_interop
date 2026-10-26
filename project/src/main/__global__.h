@@ -44,6 +44,25 @@ struct AppSettings
 struct EncodeSettings {
     // Encode setting
     QString encode_path = QCoreApplication::applicationDirPath()+"/output.mp4";
+
+    // ★ 出力コンテナ。muxer は encode_path の拡張子から決まるので、
+    //   ここはその拡張子をどれに揃えるかの指定。
+    QString container = "mp4";
+
+    // ★ タイルごとに別ファイルへ出す。out.mp4 -> out.tile0.mp4 ...
+    //   音声はタイル 0 のファイルにだけ入る。
+    bool separate_files = false;
+
+    // ★ 音声コーデック。コンテナごとに入らない組み合わせがある
+    //   （docs/encode-settings.md）。可逆はビットレート指定が効かない。
+    bool    audio_enable  = true;    // 外すと音声トラックごと作らない
+    QString audio_codec   = "aac";
+    int     audio_bitrate = 192000;  // AAC のときだけ意味がある
+
+    // ★ ゲイン [dB]。0 で素通し。float のうちに掛ける。
+    //   pcm_f32le 以外は掛けたあと ±1.0 で頭を打つ。
+    double  audio_gain_db = 0.0;
+
     QString codec  = "h264_nvenc";
     QString preset = "p4";
     QString tune   = "default";
@@ -56,15 +75,65 @@ struct EncodeSettings {
     QString pass_mode = "1pass";
     QString rc_mode   = "cbr";
 
+    // ★ 常に「1 ストリーム（タイル 1 枚）あたり」。合計はタイル数倍になる。
     int target_bit_rate = 100000000;
     int max_bit_rate    = 1000000000;
     int cq = 23;
+
+    // UI の表示単位の記録。換算は UI 側だけ。
+    QString bitrate_basis = "stream";
 
     int encode_tile = 1;
     int width_tile = 1;
     int height_tile = 1;
     std::vector<int> tile_gpu_map;
 };
+
+// ★ ストリーム 1 本あたりのビットレート上限（bps）。コーデックのレベル由来。
+//   target と max は必ず別々に通すこと。
+inline int codec_max_bitrate(const QString& codec)
+{
+    if (codec.contains("h264")) return 960000000;   // 960 Mbps
+    if (codec.contains("hevc")) return 800000000;   // 800 Mbps
+    if (codec.contains("av1"))  return 800000000;   // 800 Mbps（暫定）
+    return 800000000;
+}
+
+// ★ リング段数と VRAM の見積もり。save_encode と設定画面で同じ式を使う
+//   （片方だけ直すと表示と実体がずれる）。不変条件 ring > nvenc_surfaces。
+
+// エンコーダごとの B-frame 上限（NV_ENC_CAPS_NUM_MAX_BFRAMES 相当）。
+//   超えると avcodec_open2 は通るのに NVENC が出力を始めず、
+//   ring をいくら増やしても completed=0 のまま停止する。
+inline int nvenc_max_bframes(const QString& codec)
+{
+    const QString c = codec.toLower();
+    if (c.contains("av1"))                        return 7;
+    if (c.contains("hevc") || c.contains("h265")) return 5;   // Turing 以降
+    if (c.contains("h264"))                       return 4;
+    return 2;                                                 // 未知は安全側
+}
+
+// NVENC が掴みうる入力サーフェス数。
+//   B-frame 使用時はリオーダで増える。傾きが読めないので過大に見積もる。
+inline int nvenc_surface_estimate(int b_frames)
+{
+    const int fIP   = b_frames + 1;
+    const int async = (b_frames > 0) ? 1 : 4;
+    return (b_frames == 0) ? (async + fIP + 3) : (3 * fIP + 12);
+}
+
+inline int encode_ring_size(int b_frames)
+{
+    return nvenc_surface_estimate(b_frames) + 4;
+}
+
+// プール全体の VRAM（MB）。ring + 4 は FFmpeg の hwframe 側の予備。
+inline int encode_pool_mb(int tile_w, int tile_h, int ring, int tiles)
+{
+    if (tile_w <= 0 || tile_h <= 0 || tiles <= 0) return 0;
+    return (int)((double)tile_w * tile_h * 1.5 * (ring + 4) * tiles / (1024.0 * 1024.0));
+}
 
 // ★書き込みを許可したいクラスをここで「前方宣言」
 class encode_setting;
@@ -120,11 +189,8 @@ struct DecodeInfo {
     int max_framesNo=10;
     int end_range_framesNo=10;
     int start_range_framesNo=0;
-    // ★ 1 フレームぶんの pts。必ず double。
-    //   1.0/(fps*time_base) は割り切れないことがある（MKV 1/1000 の
-    //   60fps で 16.6667）。int にすると 16 になり、番号が飛び、時刻と
-    //   max_framesNo が 4.17% 大きく出る。
-    //   変換は decode_thread::frame_to_pts() / pts_to_frame() だけを使う。
+    // ★ 1 フレームぶんの pts。必ず double（int にすると番号が飛び、時刻と
+    //   max_framesNo が最大 4% ずれる）。変換は frame_to_pts/pts_to_frame。
     double pts_per_frame = 1000.0;
     double fps = 30;
     int bitdepth=8;
@@ -141,7 +207,10 @@ struct DecodeInfo {
 
     //音声
     bool audio = false;
-    int audio_channels=1;
+    // ★ デコード後に配るチャンネル数。各デコーダが out_ch_layout を
+    //   決めた時点で入れる（既定は 2ch へダウンミックス）。
+    //   エンコーダはこれを見て開くので、1 のまま残っているとモノラルになる。
+    int audio_channels=2;
     int in_sample_rate  = 0;
     int out_sample_rate = 0;
     AVSampleFormat in_format  = AV_SAMPLE_FMT_NONE;

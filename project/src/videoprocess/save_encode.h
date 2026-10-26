@@ -56,6 +56,13 @@ struct VideoEncoder {
     AVCodecContext* codec_ctx = nullptr;
     AVStream*       stream    = nullptr;
 
+    // ★ このタイルを書き込む先。
+    //   fmt     … 書き込み先（1 ファイル構成では全タイルが同じものを指す）
+    //   own_fmt … このタイルが所有しているもの。別ファイル構成のときだけ
+    //             非 null で、解放の責任はこちらにある。
+    AVFormatContext* fmt     = nullptr;
+    AVFormatContext* own_fmt = nullptr;
+
     // リングバッファ
     AVBufferRef*    hw_frames_ctx = nullptr;
     std::vector<FrameSlot> hw_frames;
@@ -125,7 +132,16 @@ private:
 
     // --- FFmpeg 関連 ---
     std::vector<std::unique_ptr<VideoEncoder>> ve;   // デフォルトコンストラクタで N 個作成
-    AVFormatContext* fmt_ctx = nullptr;          // 出力ファイルのフォーマットコンテキスト
+    // ★ 音声を書き込む先。1 ファイル構成では唯一の出力、別ファイル構成では
+    //   タイル 0 のファイル。映像は各 VideoEncoder::fmt へ書く。
+    AVFormatContext* fmt_ctx = nullptr;
+
+    // ★ 解放すべきフォーマットコンテキストの一覧（1 本か、タイル数ぶん）。
+    //   fmt_ctx と own_fmt は同じものを指すことがあるので、二重解放を避ける
+    //   ために所有はここ 1 箇所に集める。
+    std::vector<AVFormatContext*> files_;
+    bool separate_ = false;
+
     int64_t frame_index = 0;                         // PTS 管理用
 
     //エンコード設定
@@ -146,6 +162,17 @@ private:
     AVStream*       audio_stream  = nullptr;
     int64_t         audio_pts     = 0;
     AVAudioFifo* audio_fifo = nullptr;
+
+    // ★ 1 回に送るサンプル数。
+    //   AAC / FLAC は codec_ctx->frame_size が決まっているのでそれに従う。
+    //   PCM は frame_size を持たない（任意長を受け付ける）ので自分で決める。
+    //   0 のまま FIFO の条件に使うと無限ループになるため、必ず 1 以上。
+    int audio_frame_size_ = 1024;
+
+    // ★ 実際に音声を書き出すか。素材に音声があり、かつ設定で有効なとき。
+    //   encode() がキューへ積むかどうかの判定にも使う。false のまま積むと
+    //   取り出すスレッドが居ないのでキューが伸び続ける。
+    bool audio_on_ = false;
 
     //音声エンコードスレッド関連
     std::queue<AudioJob> audioQueue;

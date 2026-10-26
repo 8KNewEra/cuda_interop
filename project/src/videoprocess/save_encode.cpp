@@ -1,5 +1,6 @@
 #include "src/videoprocess/save_encode.h"
 #include "qdebug.h"
+#include <cmath>
 
 // ======================================================================
 // Windows: スレッド優先度をフォアグラウンド状態に依存させないための設定
@@ -78,27 +79,8 @@ namespace {
 // UI 側が指定しうる B-frame の絶対上限
 const int kMaxBFrames = 7;
 
-// ==============================================================
-// ★ エンコーダごとの B-frame 上限（NV_ENC_CAPS_NUM_MAX_BFRAMES 相当）
-//
-//   frameIntervalP(= b_frames+1) が NVENC の上限を超えると、
-//   avcodec_open2 はエラーを返さないのに nvEncEncodePicture が
-//   NEED_MORE_INPUT を返し続け、出力が永久に始まらない。
-//   その結果 submitted だけが増えて completed=0 のまま停止する。
-//   （この場合は ring をいくら増やしても直らない）
-//
-//   GPU 世代・ドライバで変わりうるので、実機の capability に
-//   合わせて調整してよい。上げるときは必ずエンコードを完走させること。
-// ==============================================================
-int nvenc_max_bframes(const QString& codec_name)
-{
-    const QString c = codec_name.toLower();
-
-    if (c.contains("av1"))                         return 7;
-    if (c.contains("hevc") || c.contains("h265"))  return 5;  // Turing 以降
-    if (c.contains("h264"))                        return 4;
-    return 2;                                                 // 未知は安全側
-}
+// ★ nvenc_max_bframes() / nvenc_surface_estimate() / encode_ring_size() は
+//   __global__.h へ移した。設定画面が同じ式で VRAM を見積もるため。
 
 bool frame_is_unreferenced(const AVFrame* f)
 {
@@ -130,6 +112,9 @@ save_encode::save_encode(int h,int w) {
     height_=h;
     frame_index = 0;
     int ret = 0;
+
+    // ★ 出力の形は最初に確定させる。下のログも分岐も参照する。
+    separate_ = encodeSettings.separate_files;
 
     // ------------------------------------------------------------------
     // ★ B-frame から surfaces / async_depth / ring 段数を決める
@@ -180,31 +165,12 @@ save_encode::save_encode(int h,int w) {
     //   さらに出力を溜める必要はない。1 にして
     //   output_ready() の条件 (nb_ready + nb_pending >= async_depth) を
     //   即座に満たし、最初の packet が出るまでの枚数を減らす。
+    //   ★ nvenc_surface_estimate() の中の async と必ず同じ値にすること。
     async_depth_ = (b_frames_ > 0) ? 1 : 4;
 
-    // ------------------------------------------------------------------
-    // NVENC が掴みうる入力サーフェス数
-    //
-    //   ★ B-frame 使用時は frameIntervalP 1 段につき「2枚以上」増える。
-    //     実測（av1_nvenc / RTX 5000 Ada、async_depth=2 時）:
-    //       b_frames=4 (fIP 5) : ring 21 -> 通る   => 保持 <= 20
-    //       b_frames=5 (fIP 6) : ring 22 -> 停止   => 保持 >= 22
-    //     この 2 点から傾きは 2/fIP 以上。切片込みで hold ≈ 2*fIP + 10。
-    //     傾きがさらに大きい可能性（最大 4/fIP）も残るので、
-    //     3*fIP + 12 と過大に見積もる。
-    //
-    //   足りないと停止、多すぎても VRAM を食うだけなので安全側に倒す。
-    //   それでも停止する場合はこの係数(3)と切片(12)を上げること。
-    // ------------------------------------------------------------------
-    if (b_frames_ == 0) {
-        nvenc_surfaces_ = async_depth_ + frameIntervalP + 3;   // = 8
-    } else {
-        nvenc_surfaces_ = 3 * frameIntervalP + 12;
-    }
-
-    // ★ 不変条件: ring > nvenc_surfaces_
-    //   VRAM が厳しい場合はこの +4 を詰められるが、+1 未満にはしないこと。
-    encodeRingSize = nvenc_surfaces_ + 4;
+    // ★ 式は __global__.h（設定画面の VRAM 表示と共有）。別計算にしないこと。
+    nvenc_surfaces_ = nvenc_surface_estimate(b_frames_);
+    encodeRingSize  = encode_ring_size(b_frames_);
 
     // ---- 参考: リングが消費する VRAM を出しておく ----
     {
@@ -213,26 +179,73 @@ save_encode::save_encode(int h,int w) {
         const int tiles = std::max(1, encodeSettings.encode_tile);
         const double one_mb =
             (double)(width_ / wt) * (double)(height_ / ht) * 1.5 / (1024.0 * 1024.0);
-        const double total_mb = one_mb * (encodeRingSize + 4) * tiles;
+        // ★ 設定画面の「想定使用 VRAM」と同じ式（encode_pool_mb）
+        const int total_mb = encode_pool_mb(width_ / wt, height_ / ht,
+                                            encodeRingSize, tiles);
 
+        qDebug() << "[save_encode] 出力 =" << (separate_ ? "タイルごとに別ファイル" : "1ファイル")
+                 << " files =" << (separate_ ? tiles : 1);
         qDebug() << "[save_encode] b_frames =" << b_frames_
                  << " async_depth =" << async_depth_
                  << " frameIntervalP =" << frameIntervalP
                  << " nvenc surfaces =" << nvenc_surfaces_
                  << " ring =" << encodeRingSize
-                 << " / pool VRAM =" << (int)total_mb << "MB"
+                 << " / pool VRAM =" << total_mb << "MB"
                  << "(" << (encodeRingSize + 4) * tiles << "frames x"
                  << (int)one_mb << "MB )";
+
+        // ★ レート制御とビットレート。ビットレートは「1 本あたり」なので、
+        //   ファイル全体の合計はタイル数倍になる。両方出しておく。
+        if (encodeSettings.rc_mode == "cqp") {
+            qDebug() << "[save_encode] rc = constqp  qp =" << qBound(1, encodeSettings.cq, 51);
+        } else if (encodeSettings.rc_mode == "cq") {
+            qDebug() << "[save_encode] rc = vbr(CQ)  cq =" << qBound(1, encodeSettings.cq, 51)
+                     << " 上限 1本あたり =" << encodeSettings.max_bit_rate / 1000000 << "Mbps"
+                     << " / タイル" << tiles << "-> 合計上限 ="
+                     << (qint64)encodeSettings.max_bit_rate * tiles / 1000000 << "Mbps";
+        } else {
+            qDebug() << "[save_encode] rc =" << encodeSettings.rc_mode
+                     << " 1本あたり target ="
+                     << encodeSettings.target_bit_rate / 1000000 << "Mbps  max ="
+                     << encodeSettings.max_bit_rate / 1000000 << "Mbps"
+                     << " / タイル" << tiles << "-> 合計 target ="
+                     << (qint64)encodeSettings.target_bit_rate * tiles / 1000000 << "Mbps";
+        }
     }
 
-    // ① FormatContext は1回だけ
-    ret = avformat_alloc_output_context2(&fmt_ctx, nullptr, nullptr, encodeSettings.encode_path.toUtf8().constData());
-    if (ret < 0 || !fmt_ctx) throw std::runtime_error("Failed to allocate format context");
+    // ★ 別ファイル構成では out.mp4 -> out.tile0.mp4 ... と拡張子の手前へ
+    //   差し込む。音声はタイル 0 のファイルにだけ入れる。
+    const auto open_fmt = [&](const QString& path) -> AVFormatContext* {
+        AVFormatContext* f = nullptr;
+        const int r = avformat_alloc_output_context2(
+            &f, nullptr, nullptr, path.toUtf8().constData());
+        if (r < 0 || !f) throw std::runtime_error("Failed to allocate format context");
+        files_.push_back(f);
+        return f;
+    };
+
+    const auto tile_path = [&](int i) {
+        const QString& p = encodeSettings.encode_path;
+        const int dot = p.lastIndexOf('.');
+        const QString tag = QString(".tile%1").arg(i);
+        return (dot < 0) ? (p + tag) : (p.left(dot) + tag + p.mid(dot));
+    };
+
+    if (!separate_)
+        fmt_ctx = open_fmt(encodeSettings.encode_path);
 
     // ② Encoder / Stream を複数作る
     qDebug()<<encodeSettings.encode_tile;
     for (int i = 0; i < encodeSettings.encode_tile; i++) {
         ve.emplace_back(std::make_unique<VideoEncoder>());
+
+        // ★ 書き込み先を先に決める。コーデックコンテキストの
+        //   AVFMT_GLOBALHEADER 判定がこれを見るので、必ずその前に。
+        if (separate_) {
+            ve[i]->own_fmt = open_fmt(tile_path(i));
+            if (i == 0) fmt_ctx = ve[i]->own_fmt;   // 音声はタイル 0 へ
+        }
+        ve[i]->fmt = separate_ ? ve[i]->own_fmt : fmt_ctx;
 
         //CUDAデバイスコンテキスト
         QString gpuId = QString::number(encodeSettings.tile_gpu_map[i]);
@@ -244,7 +257,7 @@ save_encode::save_encode(int h,int w) {
         initialized_ffmpeg_codec_context(i,encodeSettings.encode_tile);
 
         // ★ stream 作成だけ
-        ve[i]->stream = avformat_new_stream(fmt_ctx, nullptr);
+        ve[i]->stream = avformat_new_stream(ve[i]->fmt, nullptr);
         if (!ve[i]->stream) throw std::runtime_error("Failed to create stream");
 
         ve[i]->stream->time_base = ve[i]->codec_ctx->time_base;
@@ -295,7 +308,9 @@ save_encode::save_encode(int h,int w) {
     }
 
     //音声エンコーダー作成
-    if(VideoInfo.audio){
+    //   ★ 「音声を含める」を外しているときは音声ストリーム自体を作らない。
+    audio_on_ = (VideoInfo.audio && encodeSettings.audio_enable);
+    if(audio_on_){
         init_audio_encoder();
         audioRunning = true;
         audioThread =
@@ -305,13 +320,18 @@ save_encode::save_encode(int h,int w) {
                 );
     }
 
-    // ③ ファイルオープンは1回
-    ret = avio_open(&fmt_ctx->pb, encodeSettings.encode_path.toUtf8().constData(), AVIO_FLAG_WRITE);
-    if (ret < 0) throw std::runtime_error("Failed to open output file");
+    // ③④ 全ファイルを開いてヘッダを書く
+    //     ★ 必ず全 stream（映像 N 本 + 音声）を作り終えてから。
+    for (int fi = 0; fi < (int)files_.size(); fi++) {
+        AVFormatContext* f = files_[fi];
+        const QString p = separate_ ? tile_path(fi) : encodeSettings.encode_path;
 
-    // ④ ヘッダ書き込みは全 stream 作成後
-    ret = avformat_write_header(fmt_ctx, nullptr);
-    if (ret < 0) throw std::runtime_error("Failed to write header");
+        ret = avio_open(&f->pb, p.toUtf8().constData(), AVIO_FLAG_WRITE);
+        if (ret < 0) throw std::runtime_error("Failed to open output file");
+
+        ret = avformat_write_header(f, nullptr);
+        if (ret < 0) throw std::runtime_error("Failed to write header");
+    }
 
     //Stream作成
     cudaStreamCreateWithFlags(
@@ -345,20 +365,21 @@ save_encode::~save_encode() {
     // ==========================
     // ③ ファイルの終了処理（mux 参加者が全員止まってから）
     // ==========================
-    if (fmt_ctx) {
-        if (fmt_ctx->pb) {
-            avio_flush(fmt_ctx->pb);
-        }
+    //   ★ 所有は files_ 1 箇所。fmt_ctx と ve[]->own_fmt は同じものを
+    //     指すことがあるので、ここで畳んでから両方 null にする。
+    for (AVFormatContext* f : files_) {
+        if (!f) continue;
+        if (f->pb) avio_flush(f->pb);
 
-        int tret = av_write_trailer(fmt_ctx);
+        const int tret = av_write_trailer(f);
         qDebug() << "trailer ret =" << tret;
 
-        if (fmt_ctx->pb) {
-            avio_closep(&fmt_ctx->pb);
-        }
-        avformat_free_context(fmt_ctx);
-        fmt_ctx = nullptr;
+        if (f->pb) avio_closep(&f->pb);
+        avformat_free_context(f);
     }
+    files_.clear();
+    fmt_ctx = nullptr;
+    for (auto& e : ve) { if (e) { e->fmt = nullptr; e->own_fmt = nullptr; } }
 
     // ==========================
     // ④ 各メモリ解放
@@ -503,25 +524,50 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     ve[i]->codec_ctx->hw_device_ctx = av_buffer_ref(ve[i]->hw_device_ctx);
     ve[i]->codec_ctx->hw_frames_ctx = av_buffer_ref(ve[i]->hw_frames_ctx);
 
-    if (fmt_ctx && (fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER))
+    // ★ 自分が書き込むファイルの flags を見ること（別ファイル構成では
+    //   fmt_ctx はタイル 0 のものなので、そちらを見ると i>0 で食い違う）
+    AVFormatContext* const own = ve[i]->fmt;
+    if (own && (own->oformat->flags & AVFMT_GLOBALHEADER))
         ve[i]->codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
     //ビットレート周りの設定
     AVDictionary* opts = nullptr;
 
-    // cbr, vbr, cq 切り替え
-    if (encodeSettings.rc_mode == "cq") {
-        // --- CQ モード ---
-        av_dict_set_int(&opts, "cq", encodeSettings.cq, 0);
+    // ★ "rc" は必ず明示する。省略すると FFmpeg が bit_rate / global_quality /
+    //   tune から推測するので、版によって選ばれ方が変わる。
+    //   ビットレートは 1 ストリームあたり（docs/encode-settings.md）。
+    const int quality = qBound(1, encodeSettings.cq, 51);
+
+    if (encodeSettings.rc_mode == "cqp") {
+        // --- 固定量子化 ---
+        //   ビットレートには一切触らない。品質は常に一定で、容量は素材次第。
+        av_dict_set(&opts, "rc", "constqp", 0);
+        av_dict_set_int(&opts, "qp", quality, 0);
+    } else if (encodeSettings.rc_mode == "cq") {
+        // --- CQ（品質指定VBR）---
+        //   ★ bit_rate は 0 のままにすること（= -b:v 0）。
+        //     目標ビットレートを与えると NVENC はそちらを優先し、
+        //     cq は上限としてしか効かなくなる。
+        //   最大ビットレートは「ここまでは出してよい」という上限として使う。
+        av_dict_set(&opts, "rc", "vbr", 0);
+        av_dict_set_int(&opts, "cq", quality, 0);
+        ve[i]->codec_ctx->bit_rate = 0;
+        if (encodeSettings.max_bit_rate > 0) {
+            ve[i]->codec_ctx->rc_max_rate    = encodeSettings.max_bit_rate;
+            ve[i]->codec_ctx->rc_buffer_size = encodeSettings.max_bit_rate;
+        }
     } else if (encodeSettings.rc_mode == "vbr") {
-        // --- VBR モード ---
-        ve[i]->codec_ctx->bit_rate = encodeSettings.target_bit_rate;
-        ve[i]->codec_ctx->rc_max_rate = encodeSettings.max_bit_rate;
+        // --- VBR ---
+        av_dict_set(&opts, "rc", "vbr", 0);
+        ve[i]->codec_ctx->bit_rate       = encodeSettings.target_bit_rate;
+        ve[i]->codec_ctx->rc_max_rate    = encodeSettings.max_bit_rate;
         ve[i]->codec_ctx->rc_buffer_size = encodeSettings.max_bit_rate;
-    } else if (encodeSettings.rc_mode == "cbr") {
-        // --- CBR モード ---
-        ve[i]->codec_ctx->bit_rate = encodeSettings.target_bit_rate;
-        ve[i]->codec_ctx->rc_max_rate = encodeSettings.max_bit_rate;
+    } else {
+        // --- CBR ---
+        //   bufsize = 目標にすると 1 秒窓で張り付く。
+        av_dict_set(&opts, "rc", "cbr", 0);
+        ve[i]->codec_ctx->bit_rate       = encodeSettings.target_bit_rate;
+        ve[i]->codec_ctx->rc_max_rate    = encodeSettings.max_bit_rate;
         ve[i]->codec_ctx->rc_buffer_size = encodeSettings.target_bit_rate;
     }
 
@@ -619,21 +665,49 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
 //オーディオエンコーダー初期化
 void save_encode::init_audio_encoder()
 {
-    const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
-    if (!codec)
-        throw std::runtime_error("AAC encoder not found");
+    // ★ UI は入らない組み合わせを出さないが、ini は手で書き換えられる。
+    const QString want = encodeSettings.audio_codec.isEmpty()
+                             ? QStringLiteral("aac") : encodeSettings.audio_codec;
+
+    const AVCodec* codec = avcodec_find_encoder_by_name(want.toUtf8().constData());
+    if (!codec) {
+        qWarning() << "[save_encode] 音声コーデック" << want << "が見つかりません。aac にします";
+        codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    }
+    if (!codec) throw std::runtime_error("audio encoder not found");
+
+    const QString muxer = fmt_ctx->oformat->name;
+    if (codec->id == AV_CODEC_ID_FLAC && muxer.contains("mov")) {
+        qWarning() << "[save_encode] MOV は FLAC を格納できません。aac にします";
+        codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+        if (!codec) throw std::runtime_error("audio encoder not found");
+    }
+
+    // ★ 可逆はビットレートを指定できない。PCM はサンプル幅で、FLAC は
+    //   中身で決まる。立てても無視されるだけだが、立てない方が
+    //   「UI でビットレートを無効にする条件」と一対一で読める。
+    const bool lossless = (qstrncmp(codec->name, "pcm_", 4) == 0) ||
+                          (codec->id == AV_CODEC_ID_FLAC);
 
     audio_enc_ctx = avcodec_alloc_context3(codec);
     audio_enc_ctx->sample_rate = VideoInfo.in_sample_rate;
-    audio_enc_ctx->bit_rate = 192000;
     audio_enc_ctx->time_base = AVRational{1, audio_enc_ctx->sample_rate};
+    if (!lossless) audio_enc_ctx->bit_rate = encodeSettings.audio_bitrate;
 
     av_channel_layout_default(
         &audio_enc_ctx->ch_layout,
         VideoInfo.audio_channels > 0 ? VideoInfo.audio_channels : 2
         );
 
-    audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_FLTP;
+    // ★ AVCodec::sample_fmts は FFmpeg 7.x で非推奨・新しい版では削除なので
+    //   触らずに決め打つ（対応表は docs/encode-settings.md）。
+    switch (codec->id) {
+    case AV_CODEC_ID_FLAC:      audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_S16;  break;
+    case AV_CODEC_ID_PCM_S16LE: audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_S16;  break;
+    case AV_CODEC_ID_PCM_S24LE: audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_S32;  break;
+    case AV_CODEC_ID_PCM_F32LE: audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_FLT;  break;
+    default:                    audio_enc_ctx->sample_fmt = AV_SAMPLE_FMT_FLTP; break;
+    }
 
     if (fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
         audio_enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -641,8 +715,17 @@ void save_encode::init_audio_encoder()
     if (avcodec_open2(audio_enc_ctx, codec, nullptr) < 0)
         throw std::runtime_error("avcodec_open2(audio) failed");
 
-    if (audio_enc_ctx->frame_size <= 0)
-        throw std::runtime_error("Invalid AAC frame_size");
+    // ★ PCM は frame_size を持たない。0 のまま FIFO の条件に使うと無限ループ。
+    audio_frame_size_ = (audio_enc_ctx->frame_size > 0)
+                            ? audio_enc_ctx->frame_size : 1024;
+
+    qDebug() << "[save_encode] 音声 =" << codec->name
+             << " fmt =" << av_get_sample_fmt_name(audio_enc_ctx->sample_fmt)
+             << " ch =" << audio_enc_ctx->ch_layout.nb_channels
+             << " rate =" << audio_enc_ctx->sample_rate
+             << " frame =" << audio_frame_size_
+             << " gain =" << encodeSettings.audio_gain_db << "dB"
+             << (lossless ? " (可逆)" : "");
 
     audio_stream = avformat_new_stream(fmt_ctx, nullptr);
     if (!audio_stream)
@@ -690,7 +773,7 @@ void save_encode::init_audio_encoder()
 void save_encode::encode(VideoFrame Frame, cudaTextureObject_t srcTex,
                          cudaEvent_t glWaitEvent, cudaEvent_t* convertDone)
 {
-    if (!Frame.audio_pcm.isEmpty()&&VideoInfo.audio)
+    if (!Frame.audio_pcm.isEmpty() && audio_on_)
     {
         AudioJob job;
 
@@ -1030,8 +1113,10 @@ void save_encode::drain_video_encoder(VideoEncoder& enc)
             pkt->stream_index = enc.stream->index;
 
             {
+                // ★ 自分のファイルへ書く。1 ファイル構成では全タイルが
+                //   同じものを指すので、ロックは共通で取る。
                 QMutexLocker locker(&muxMutex);
-                int wret = av_interleaved_write_frame(fmt_ctx, pkt);
+                int wret = av_interleaved_write_frame(enc.fmt, pkt);
                 if (wret < 0) {
                     char err[256];
                     av_strerror(wret, err, sizeof(err));
@@ -1152,30 +1237,34 @@ void save_encode::encode_audio(AudioJob Frame)
     // 入力形式はデコード側が決める（現在はインターリーブ float）
     const int in_bps = av_get_bytes_per_sample(VideoInfo.out_format);
 
+    // ★ 0dB のときは配列に触らない。x 1.0f でも丸めが入り、
+    //   pcm_f32le へ等倍で出したときのビット一致が崩れる。
+    const bool  use_gain  = (std::fabs(encodeSettings.audio_gain_db) > 1e-9);
+    const float gain      = use_gain
+                              ? (float)std::pow(10.0, encodeSettings.audio_gain_db / 20.0)
+                              : 1.0f;
+    // float 出力のときは頭打ちしない（0dBFS 超えを保持できるのが取り柄）
+    const bool  need_clamp = (audio_enc_ctx->sample_fmt != AV_SAMPLE_FMT_FLT);
+
     for (const QByteArray& pcm : Frame.audio_pcm) {
         int in_samples = pcm.size() / (ch * in_bps);
         if (in_samples <= 0) continue;
 
-        // ★ AAC へ渡す前に ±1.0 へ収める。
-        //
-        //   デコード側が float のまま配るようになったので、0dBFS を超える
-        //   素材（PCM 32bit float など）の値がそのまま届く。AAC は 0dBFS
-        //   超えを持てず、再生側で必ず潰れるうえ、範囲外を入れると
-        //   エンコーダの量子化が乱れる。
-        //   以前は S16 へ落とす段で飽和していたぶんを、ここで肩代わりする。
-        //
-        //   ★ 再生の音量とは別物。こちらは音量を掛けない（掛けると
-        //     スライダーの位置が録画結果に焼き付く）。
+        // ★ float 出力のときは頭打ちしない（0dBFS 超えを保持できるのが取り柄）。
         QByteArray clamped;
         const uint8_t* src = reinterpret_cast<const uint8_t*>(pcm.constData());
 
-        if (VideoInfo.out_format == AV_SAMPLE_FMT_FLT) {
+        if (VideoInfo.out_format == AV_SAMPLE_FMT_FLT && (use_gain || need_clamp)) {
             clamped = pcm;                       // 暗黙共有。data() で複製される
             float*    q = reinterpret_cast<float*>(clamped.data());
             const int n = clamped.size() / (int)sizeof(float);
             for (int k = 0; k < n; k++) {
-                if      (q[k] >  1.0f) q[k] =  1.0f;
-                else if (q[k] < -1.0f) q[k] = -1.0f;
+                float v = use_gain ? q[k] * gain : q[k];
+                if (need_clamp) {
+                    if      (v >  1.0f) v =  1.0f;
+                    else if (v < -1.0f) v = -1.0f;
+                }
+                q[k] = v;
             }
             src = reinterpret_cast<const uint8_t*>(clamped.constData());
         }
@@ -1216,8 +1305,8 @@ void save_encode::encode_audio(AudioJob Frame)
         av_freep(&converted);
     }
 
-    // ---- AAC frame 単位で吐き出し ----
-    const int fs = audio_enc_ctx->frame_size;
+    // ---- 1 フレーム単位で吐き出し（PCM は自分で決めた長さ）----
+    const int fs = audio_frame_size_;
 
     while (av_audio_fifo_size(audio_fifo) >= fs) {
         AVFrame* frame = av_frame_alloc();
@@ -1323,7 +1412,7 @@ void save_encode::audio_flush(){
     // Audio flush（AAC）
     // ==========================
     if (audio_enc_ctx && audio_fifo) {
-        const int fs = audio_enc_ctx->frame_size;
+        const int fs = audio_frame_size_;
         int remain = av_audio_fifo_size(audio_fifo);
 
         if (remain > 0) {

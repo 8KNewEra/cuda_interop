@@ -16,32 +16,49 @@ void logfile_control::load_inifile()
     }
     QSettings settings("setting.ini", QSettings::IniFormat);
 
-    g_AppSettings.decode_path = settings.value("Path/decode_path").toString();
-    g_AppSettings.videoInfo_flag = settings.value("Info/videoInfo_flag").toBool();
-    g_AppSettings.histgram_flag = settings.value("Info/histgram_flag").toBool();
-    g_AppSettings.video_speed_ratio = settings.value("Playback/video_speed_ratio").toDouble();
-    g_AppSettings.audio_volume = settings.value("Playback/audio_volume").toInt();
-    g_AppSettings.frame_jump_mode = settings.value("Playback/frame_jump_mode").toInt();
-    g_AppSettings.jumpValueSecond = settings.value("Playback/jumpValueSecond").toInt();
-    g_AppSettings.jumpValueFrame = settings.value("Playback/jumpValueFrame").toInt();
-    g_AppSettings.jumpValueFrameNo = settings.value("Playback/jumpValueFrameNo").toInt();
-    g_AppSettings.sobelfilterEnabled = settings.value("Filter/sobelfilterEnabled").toBool();
-    g_AppSettings.gaussianfilterEnabled = settings.value("Filter/gaussianfilterEnabled").toBool();
-    g_AppSettings.averagingfilterEnabled = settings.value("Filter/averagingfilterEnabled").toBool();
+    // ★ 既定値は必ず渡すこと。無いとキーが無いときに 0 / 空文字になり、
+    //   設定項目を増やすたびに既存の ini を持つユーザーがその項目 0 で起動する
+    //   （video_speed_ratio が 0 なら再生速度 0 倍）。
+    g_AppSettings.decode_path = settings.value("Path/decode_path", g_AppSettings.decode_path).toString();
+    g_AppSettings.videoInfo_flag = settings.value("Info/videoInfo_flag", g_AppSettings.videoInfo_flag).toBool();
+    g_AppSettings.histgram_flag = settings.value("Info/histgram_flag", g_AppSettings.histgram_flag).toBool();
+    g_AppSettings.video_speed_ratio = settings.value("Playback/video_speed_ratio", g_AppSettings.video_speed_ratio).toDouble();
+    g_AppSettings.audio_volume = settings.value("Playback/audio_volume", g_AppSettings.audio_volume).toInt();
+    g_AppSettings.frame_jump_mode = settings.value("Playback/frame_jump_mode", g_AppSettings.frame_jump_mode).toInt();
+    g_AppSettings.jumpValueSecond = settings.value("Playback/jumpValueSecond", g_AppSettings.jumpValueSecond).toInt();
+    g_AppSettings.jumpValueFrame = settings.value("Playback/jumpValueFrame", g_AppSettings.jumpValueFrame).toInt();
+    g_AppSettings.jumpValueFrameNo = settings.value("Playback/jumpValueFrameNo", g_AppSettings.jumpValueFrameNo).toInt();
+    g_AppSettings.sobelfilterEnabled = settings.value("Filter/sobelfilterEnabled", g_AppSettings.sobelfilterEnabled).toBool();
+    g_AppSettings.gaussianfilterEnabled = settings.value("Filter/gaussianfilterEnabled", g_AppSettings.gaussianfilterEnabled).toBool();
+    g_AppSettings.averagingfilterEnabled = settings.value("Filter/averagingfilterEnabled", g_AppSettings.averagingfilterEnabled).toBool();
 
-    encodeSettings.encode_path = settings.value("Encodesetting/encode_path").toString();
-    encodeSettings.codec = settings.value("Encodesetting/codec").toString();
-    encodeSettings.preset = settings.value("Encodesetting/preset").toString();
-    encodeSettings.tune = settings.value("Encodesetting/tune").toString();
-    encodeSettings.b_frames = settings.value("Encodesetting/b_frames").toInt();
-    encodeSettings.gop_size = settings.value("Encodesetting/gop_size").toInt();
-    encodeSettings.encode_tile = settings.value("Encodesetting/encode_tile").toInt();
-    encodeSettings.split_encode_mode = settings.value("Encodesetting/split_encode_mode").toString();
-    encodeSettings.pass_mode = settings.value("Encodesetting/pass_mode").toString();
-    encodeSettings.rc_mode = settings.value("Encodesetting/rc_mode").toString();
-    encodeSettings.target_bit_rate = settings.value("Encodesetting/target_bit_rate").toInt();
-    encodeSettings.max_bit_rate = settings.value("Encodesetting/max_bit_rate").toInt();
-    encodeSettings.cq = settings.value("Encodesetting/cq").toInt();
+    encodeSettings.encode_path = settings.value("Encodesetting/encode_path", encodeSettings.encode_path).toString();
+    encodeSettings.container = settings.value("Encodesetting/container", encodeSettings.container).toString();
+    encodeSettings.separate_files = settings.value("Encodesetting/separate_files", encodeSettings.separate_files).toBool();
+    encodeSettings.audio_enable = settings.value("Encodesetting/audio_enable", encodeSettings.audio_enable).toBool();
+    encodeSettings.audio_codec = settings.value("Encodesetting/audio_codec", encodeSettings.audio_codec).toString();
+    encodeSettings.audio_gain_db = settings.value("Encodesetting/audio_gain_db", encodeSettings.audio_gain_db).toDouble();
+    encodeSettings.audio_bitrate = settings.value("Encodesetting/audio_bitrate", encodeSettings.audio_bitrate).toInt();
+    encodeSettings.codec = settings.value("Encodesetting/codec", encodeSettings.codec).toString();
+    encodeSettings.preset = settings.value("Encodesetting/preset", encodeSettings.preset).toString();
+    encodeSettings.tune = settings.value("Encodesetting/tune", encodeSettings.tune).toString();
+    encodeSettings.b_frames = settings.value("Encodesetting/b_frames", encodeSettings.b_frames).toInt();
+    encodeSettings.gop_size = settings.value("Encodesetting/gop_size", encodeSettings.gop_size).toInt();
+    encodeSettings.encode_tile = settings.value("Encodesetting/encode_tile", encodeSettings.encode_tile).toInt();
+    encodeSettings.split_encode_mode = settings.value("Encodesetting/split_encode_mode", encodeSettings.split_encode_mode).toString();
+    encodeSettings.pass_mode = settings.value("Encodesetting/pass_mode", encodeSettings.pass_mode).toString();
+    encodeSettings.rc_mode = settings.value("Encodesetting/rc_mode", encodeSettings.rc_mode).toString();
+    encodeSettings.target_bit_rate = settings.value("Encodesetting/target_bit_rate", encodeSettings.target_bit_rate).toInt();
+    encodeSettings.max_bit_rate = settings.value("Encodesetting/max_bit_rate", encodeSettings.max_bit_rate).toInt();
+    encodeSettings.cq = settings.value("Encodesetting/cq", encodeSettings.cq).toInt();
+    encodeSettings.bitrate_basis = settings.value("Encodesetting/bitrate_basis", encodeSettings.bitrate_basis).toString();
+
+    // 知らない値が入っていたら既定へ倒す（手で ini を編集した場合の保険）
+    if (encodeSettings.bitrate_basis != "total" && encodeSettings.bitrate_basis != "stream")
+        encodeSettings.bitrate_basis = "stream";
+    if (encodeSettings.container != "mp4" && encodeSettings.container != "mkv" &&
+        encodeSettings.container != "mov")
+        encodeSettings.container = "mp4";
 
     // ==========================
     // GPUInfo 読み込み（追記）
@@ -75,7 +92,9 @@ void logfile_control::load_inifile()
 void logfile_control::save_inifile(){
     QSettings settings("setting.ini", QSettings::IniFormat);
     settings.setValue("Path/decode_path", g_AppSettings.decode_path);
-    settings.setValue("Info//videoInfo_flag", g_AppSettings.videoInfo_flag);
+    // ★ ここは "Info//" とスラッシュが 1 つ多かった。読み出しは "Info/" なので
+    //   videoInfo_flag だけ保存されず、毎回 false で起動していた。
+    settings.setValue("Info/videoInfo_flag", g_AppSettings.videoInfo_flag);
     settings.setValue("Info/histgram_flag", g_AppSettings.histgram_flag);
     settings.setValue("Playback/video_speed_ratio", g_AppSettings.video_speed_ratio);
     settings.setValue("Playback/audio_volume", g_AppSettings.audio_volume);
@@ -88,6 +107,12 @@ void logfile_control::save_inifile(){
     settings.setValue("Filter/averagingfilterEnabled", g_AppSettings.averagingfilterEnabled);
 
     settings.setValue("Encodesetting/encode_path", encodeSettings.encode_path);
+    settings.setValue("Encodesetting/container", encodeSettings.container);
+    settings.setValue("Encodesetting/separate_files", encodeSettings.separate_files);
+    settings.setValue("Encodesetting/audio_enable", encodeSettings.audio_enable);
+    settings.setValue("Encodesetting/audio_codec", encodeSettings.audio_codec);
+    settings.setValue("Encodesetting/audio_gain_db", encodeSettings.audio_gain_db);
+    settings.setValue("Encodesetting/audio_bitrate", encodeSettings.audio_bitrate);
     settings.setValue("Encodesetting/codec", encodeSettings.codec);
     settings.setValue("Encodesetting/preset", encodeSettings.preset);
     settings.setValue("Encodesetting/tune", encodeSettings.tune);
@@ -100,6 +125,7 @@ void logfile_control::save_inifile(){
     settings.setValue("Encodesetting/target_bit_rate", encodeSettings.target_bit_rate);
     settings.setValue("Encodesetting/max_bit_rate", encodeSettings.max_bit_rate);
     settings.setValue("Encodesetting/cq", encodeSettings.cq);
+    settings.setValue("Encodesetting/bitrate_basis", encodeSettings.bitrate_basis);
 
     // ==========================
     // GPUInfo 保存（追記）

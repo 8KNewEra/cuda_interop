@@ -238,6 +238,14 @@ bool cpudecode::initialized_ffmpeg()
         VideoInfo.out_format      = AV_SAMPLE_FMT_FLT;
         av_channel_layout_default(&out_ch_layout, 2);
 
+        // ★ チャンネル数はここで入れること。
+        //   以前は get_decode_audio() の中（= 最初の音声パケットを変換した
+        //   時点）でしか代入しておらず、しかもそれはエンコード中しか走らない。
+        //   save_encode の init_audio_encoder() はエンコーダ構築時に
+        //   VideoInfo.audio_channels を読むので、初期値の 1 を拾って
+        //   モノラルで開いていた。レイアウトが決まるこの場所が正しい。
+        VideoInfo.audio_channels  = out_ch_layout.nb_channels;
+
         if (swr) {
             swr_free(&swr);
         }
