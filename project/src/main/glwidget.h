@@ -92,6 +92,8 @@ public:
 
     void resetZoom();
 
+    bool screenshot_flag = false;
+
 protected:
     void initializeGL() override;
     void paintGL() override;

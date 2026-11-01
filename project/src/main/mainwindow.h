@@ -1,6 +1,7 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "src/ui_control/save_screenshot.h"
 #include "src/main/fps_thread.h"
 #include "src/videoprocess/decode_thread.h"
 #include "src/info/info_thread.h"
@@ -26,6 +27,7 @@
 #include <QFileDialog>
 #include <QShortcut>
 #include <QPointer>
+#include <QStandardPaths>
 
 //ドラッグアンドドロップ
 #include <QDragEnterEvent>
@@ -143,6 +145,7 @@ private:
     //ファイル
     void Open_Video_File();
     void Close_Video_File();
+    void save_sreenshot();
 
     //エンコード
     void encode_set();
@@ -165,6 +168,9 @@ private:
 
     //Frameジャンプ、モード選択
     jump_mode *jumpMode;
+
+    // 画像保存　保存先
+    save_screenshot *saveScreenshot;
 
     //iniファイル
     logfile_control *logFile;

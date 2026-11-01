@@ -67,6 +67,12 @@ MainWindow::MainWindow(QWidget *parent)
     ui->pushButton_speed->setFixedHeight(26);
     ui->pushButton_volume->setFixedWidth(30);
     ui->pushButton_volume->setFixedHeight(26);
+    ui->widget_savescreenshot->setFixedWidth(63);
+    ui->widget_savescreenshot->setFixedHeight(26);
+    ui->pushButton_screenshot_path->setFixedWidth(15);
+    ui->pushButton_screenshot_path->setFixedHeight(26);
+    ui->pushButton_screenshot->setFixedWidth(48);
+    ui->pushButton_screenshot->setFixedHeight(26);
     ui->jumpmode_pushButton->setFixedWidth(72);
     ui->jumpmode_pushButton->setFixedHeight(22);
     ui->jumpvalue_spinbox->setFixedWidth(65);
@@ -114,6 +120,7 @@ MainWindow::MainWindow(QWidget *parent)
     QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::Open_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionCloseFile, &QAction::triggered, this, &MainWindow::Close_Video_File,Qt::QueuedConnection);
     QObject::connect(ui->actionFileSave, &QAction::triggered, this, &MainWindow::encode_set,Qt::QueuedConnection);
+    QObject::connect(ui->pushButton_screenshot, &QPushButton::clicked, this, &MainWindow::save_sreenshot,Qt::QueuedConnection);
 
     //画像処理
     QObject::connect(ui->action_filter_sobel, &QAction::triggered,this, [&](bool flag) {
@@ -251,7 +258,30 @@ void MainWindow::GLwidgetInitialized(){
             else
                 icon = QStyle::SP_MediaVolume;         // 中〜大（Qtは統一）
 
-            ui->pushButton_volume->setIcon(style()->standardIcon(icon));
+            QIcon originalIcon = style()->standardIcon(icon);
+
+            // アイコンサイズ
+            QSize size(32, 32);
+
+            // 元のPixmap
+            QPixmap pixmap = originalIcon.pixmap(size);
+
+            // 白いPixmapを作成
+            QPixmap whitePixmap(size);
+            whitePixmap.fill(Qt::transparent);
+
+            QPainter painter(&whitePixmap);
+
+            // 元アイコンの形をマスクとして使う
+            painter.setCompositionMode(QPainter::CompositionMode_Source);
+            painter.drawPixmap(0, 0, pixmap);
+
+            painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+            painter.fillRect(whitePixmap.rect(), Qt::white);
+
+            painter.end();
+
+            ui->pushButton_volume->setIcon(QIcon(whitePixmap));
         },Qt::QueuedConnection);
         audioVolume->volumeChanged(g_AppSettings.audio_volume);
 
@@ -359,6 +389,99 @@ void MainWindow::GLwidgetInitialized(){
             jumpMode->hideTimer.stop();
         },Qt::QueuedConnection);
         jumpMode->modeChanged(g_AppSettings.frame_jump_mode);
+
+        /* 画像保存 保存先設定 */
+        saveScreenshot = new save_screenshot(this);
+        saveScreenshot->setAnchorButton(ui->pushButton_screenshot_path);
+        ui->pushButton_screenshot_path->installEventFilter(this);
+
+        connect(ui->pushButton_screenshot_path, &QPushButton::clicked, this, [this]() {
+            if (!saveScreenshot)
+                return;
+
+            // すでに表示中なら閉じる
+            if (saveScreenshot->isVisible()) {
+                saveScreenshot->hide();
+                saveScreenshot->hideTimer.stop();
+            }
+            // 非表示なら表示
+            else {
+                saveScreenshot->showPopup();
+            }
+        });
+
+        //ボタンシグナル受信
+        connect(saveScreenshot, &save_screenshot::modeChanged, this,[this]() {
+            // 非同期ダイアログ中に消す処理が走ると不自然になる
+            saveScreenshot->hide();
+            saveScreenshot->hideTimer.stop();
+
+            QFileInfo fileInfo(g_AppSettings.saveScreenshot_path);
+
+            // 保存先フォルダ
+            QString startDir = fileInfo.absolutePath();
+
+            if (startDir.isEmpty() || !QDir(startDir).exists())
+            {
+                startDir = QDir::homePath();
+            }
+
+            // 前回のファイル名
+            QString fileName = fileInfo.fileName();
+
+            QFileDialog* dlg = new QFileDialog(this);
+
+            dlg->setAttribute(Qt::WA_DeleteOnClose);
+
+            dlg->setWindowTitle(tr("スクリーンショットの保存先"));
+
+            dlg->setDirectory(startDir);
+
+            // ★ 前回のファイル名を表示
+            if (!fileName.isEmpty())
+            {
+                dlg->selectFile(fileName);
+            }
+
+            dlg->setAcceptMode(QFileDialog::AcceptSave);
+            dlg->setFileMode(QFileDialog::AnyFile);
+
+            dlg->setNameFilter(
+                tr("BMP画像 (*.bmp)")
+                );
+
+            dlg->setDefaultSuffix("bmp");
+
+            dlg->setAcceptMode(QFileDialog::AcceptSave);
+
+            connect(
+                dlg,
+                &QFileDialog::fileSelected,
+                this,
+                [this](const QString& filePath)
+                {
+                    qDebug() << "保存先:" << filePath;
+
+                    // ★ フルパスを保存
+                    g_AppSettings.saveScreenshot_path = filePath;
+
+                    // スクリーンショット保存
+                    // saveScreenshot(filePath);
+                }
+                );
+
+            connect(
+                dlg,
+                &QFileDialog::rejected,
+                this,
+                []
+                {
+                    qDebug() << "保存がキャンセルされました";
+                }
+                );
+
+            dlg->open();
+        },Qt::QueuedConnection);
     });
 
     glWidget->show();
@@ -634,9 +757,10 @@ void MainWindow::CSS_Design(){
     ui->stop_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->cutend_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->jumpmode_pushButton->setFocusPolicy(Qt::NoFocus);
-
     ui->pushButton_volume->setFocusPolicy(Qt::NoFocus);
     ui->pushButton_volume->setIconSize(QSize(20, 20));
+    ui->pushButton_screenshot_path->setFocusPolicy(Qt::NoFocus);
+    ui->pushButton_screenshot->setFocusPolicy(Qt::NoFocus);
 
     //スピンボックス制御
     QString inputStyle = R"(
@@ -744,6 +868,119 @@ void MainWindow::CSS_Design(){
             font-family: Consolas;
         }
         )");
+
+    ui->pushButton_screenshot->setStyleSheet(R"(
+        QPushButton {
+            background: qlineargradient(
+                x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(80,80,80,230),
+                stop:1 rgba(35,35,35,230)
+            );
+
+            border: 1px solid rgba(255,255,255,70);
+
+            border-top-left-radius: 8px;
+            border-bottom-left-radius: 8px;
+            border-top-right-radius: 0px;
+            border-bottom-right-radius: 0px;
+
+            padding: 2px;
+            color: rgb(235,235,235);
+            font-weight: 600;
+        }
+
+        QPushButton:hover {
+            background: qlineargradient(
+                x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(130,190,255,220),
+                stop:1 rgba(60,110,220,220)
+            );
+
+            border: 1px solid rgba(160,210,255,220);
+            color: white;
+        }
+
+        QPushButton:pressed {
+            background: qlineargradient(
+                x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(50,50,50,230),
+                stop:1 rgba(20,20,20,230)
+            );
+
+            color: rgb(200,200,200);
+        }
+
+        QPushButton:disabled {
+            color: rgba(150,150,150,140);
+            background: rgba(40,40,40,200);
+            border: 1px solid rgba(255,255,255,30);
+        }
+
+        QPushButton:focus {
+            outline: none;
+        }
+    )");
+
+    ui->pushButton_screenshot_path->setStyleSheet(R"(
+        QPushButton {
+            background: qlineargradient(
+                x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(80,80,80,230),
+                stop:1 rgba(35,35,35,230)
+            );
+
+            border: 1px solid rgba(255,255,255,70);
+
+            border-top-left-radius: 0px;
+            border-bottom-left-radius: 0px;
+            border-top-right-radius: 8px;
+            border-bottom-right-radius: 8px;
+
+            padding: 2px;
+            color: rgb(235,235,235);
+            font-weight: 600;
+        }
+
+        QPushButton:hover {
+            background: qlineargradient(
+                x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(130,190,255,220),
+                stop:1 rgba(60,110,220,220)
+            );
+
+            border: 1px solid rgba(160,210,255,220);
+            color: white;
+        }
+
+        QPushButton:pressed {
+            background: qlineargradient(
+                x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(50,50,50,230),
+                stop:1 rgba(20,20,20,230)
+            );
+
+            color: rgb(200,200,200);
+        }
+
+        QPushButton:disabled {
+            color: rgba(150,150,150,140);
+            background: rgba(40,40,40,200);
+            border: 1px solid rgba(255,255,255,30);
+        }
+
+        QPushButton:focus {
+            outline: none;
+        }
+    )");
+
+    // アイコンを無理やり白くする
+    QIcon icon = QIcon::fromTheme("camera-photo");
+    QPixmap pixmap = icon.pixmap(32, 32);
+    QPainter painter(&pixmap);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    painter.fillRect(pixmap.rect(), Qt::white);
+    painter.end();
+    ui->pushButton_screenshot->setIcon(QIcon(pixmap));
 }
 
 //マウスカーソルホバー処理
@@ -831,6 +1068,13 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         }
     }
 
+    // 画像保存
+    if (obj == ui->pushButton_screenshot_path) {
+        if (event->type() == QEvent::Leave) {
+            saveScreenshot->hideTimer.start();
+        }
+    }
+
     return QMainWindow::eventFilter(obj, event);
 }
 
@@ -864,6 +1108,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
     ui->pushButton_speed->setGeometry(window_width-71, window_height-83,41,window_height-5);
     ui->pushButton_volume->setGeometry(window_width-38, window_height-83,41,window_height-5);
+    ui->widget_savescreenshot->setGeometry(window_width-71, window_height-53,41,window_height-5);
     ui->label_start_time->setGeometry(slider_length*0.5-100, window_height-89,41,window_height-5);
     ui->label_play_time->setGeometry(slider_length*0.5+125, window_height-89,41,window_height-5);
     ui->label_end_time->setGeometry(slider_length*0.5+350, window_height-89,41,window_height-5);
@@ -1039,6 +1284,13 @@ void MainWindow::Close_Video_File()
     glWidget->GLreset();
     glWidget->GLreset();
     glWidget->doneCurrent();
+}
+
+// 画像保存ボタン
+void MainWindow::save_sreenshot(){
+    glWidget->screenshot_flag = true;
+
+
 }
 
 //現在のフレームを始端

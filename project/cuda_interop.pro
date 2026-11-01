@@ -38,13 +38,14 @@ SOURCES += \
     $$PWD/src/ui_control/jump_mode.cpp \
     $$PWD/src/ui_control/rangeslider.cpp \
     $$PWD/src/ui_control/video_speed.cpp \
+    $$PWD/src/ui_control/save_screenshot.cpp \
     $$PWD/src/info/info_thread.cpp \
     $$PWD/src/info/logfile_control.cpp \
     $$PWD/src/imageprocess/cuda_imageprocess.cpp \
     $$PWD/src/main/fps_thread.cpp \
     $$PWD/src/main/glwidget.cpp \
     $$PWD/src/main/main.cpp \
-    $$PWD/src/main/mainwindow.cpp
+    $$PWD/src/main/mainwindow.cpp \
 
 HEADERS += \
     $$PWD/src/__global__.h \
@@ -60,6 +61,7 @@ HEADERS += \
     $$PWD/src/ui_control/jump_mode.h \
     $$PWD/src/ui_control/rangeslider.h \
     $$PWD/src/ui_control/video_speed.h \
+    $$PWD/src/ui_control/save_screenshot.h \
     $$PWD/src/info/info_thread.h \
     $$PWD/src/info/logfile_control.h \
     $$PWD/src/imageprocess/cuda_imageprocess.h \
@@ -73,7 +75,8 @@ FORMS += \
     $$PWD/form/encode_setting.ui \
     $$PWD/form/jump_mode.ui \
     $$PWD/form/mainwindow.ui \
-    $$PWD/form/video_speed.ui
+    $$PWD/form/video_speed.ui \
+    $$PWD/form/save_screenshot.ui \
 
 TRANSLATIONS += \
     cuda_interop_ja_JP.ts

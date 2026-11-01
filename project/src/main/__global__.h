@@ -18,7 +18,8 @@ extern "C" {
 struct AppSettings
 {
     // Path
-    QString decode_path = QDir::homePath();
+    QString decode_path = "";
+    QString saveScreenshot_path = "";
 
     // Info
     bool videoInfo_flag = false;

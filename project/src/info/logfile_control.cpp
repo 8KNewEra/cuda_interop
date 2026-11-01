@@ -20,6 +20,7 @@ void logfile_control::load_inifile()
     //   設定項目を増やすたびに既存の ini を持つユーザーがその項目 0 で起動する
     //   （video_speed_ratio が 0 なら再生速度 0 倍）。
     g_AppSettings.decode_path = settings.value("Path/decode_path", g_AppSettings.decode_path).toString();
+    g_AppSettings.saveScreenshot_path = settings.value("Path/saveScreenshot_path", g_AppSettings.saveScreenshot_path).toString();
     g_AppSettings.videoInfo_flag = settings.value("Info/videoInfo_flag", g_AppSettings.videoInfo_flag).toBool();
     g_AppSettings.histgram_flag = settings.value("Info/histgram_flag", g_AppSettings.histgram_flag).toBool();
     g_AppSettings.video_speed_ratio = settings.value("Playback/video_speed_ratio", g_AppSettings.video_speed_ratio).toDouble();
@@ -92,6 +93,7 @@ void logfile_control::load_inifile()
 void logfile_control::save_inifile(){
     QSettings settings("setting.ini", QSettings::IniFormat);
     settings.setValue("Path/decode_path", g_AppSettings.decode_path);
+    settings.setValue("Path/saveScreenshot_path", g_AppSettings.saveScreenshot_path);
     // ★ ここは "Info//" とスラッシュが 1 つ多かった。読み出しは "Info/" なので
     //   videoInfo_flag だけ保存されず、毎回 false で起動していた。
     settings.setValue("Info/videoInfo_flag", g_AppSettings.videoInfo_flag);
