@@ -19,7 +19,7 @@ struct AppSettings
 {
     // Path
     QString decode_path = "";
-    QString saveScreenshot_path = "";
+    QString saveScreenshot_folder = "";
 
     // Info
     bool videoInfo_flag = false;

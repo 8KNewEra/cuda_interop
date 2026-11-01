@@ -257,6 +257,92 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
     glBindVertexArray(0);
     glUseProgram(0);
 
+    // BMP保存
+    if (screenshot_flag)
+    {
+        // =====================================================
+        // fbo の内容を CPU に取得
+        // =====================================================
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+        const int width  = width_;
+        const int height = height_;
+
+        // RGBA
+        std::vector<uint8_t> pixels(
+            static_cast<size_t>(width) * height * 4
+            );
+
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+        glReadPixels(
+            0,
+            0,
+            width,
+            height,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixels.data()
+            );
+
+        // OpenGLは下→上なので上下反転
+        QImage image(
+            pixels.data(),
+            width,
+            height,
+            width * 4,
+            QImage::Format_RGBA8888
+            );
+
+        QImage flipped = image.mirrored(
+            false,  // 左右反転なし
+            true    // 上下反転
+            );
+
+        // =====================================================
+        // 保存先
+        // =====================================================
+
+        QString saveDir = g_AppSettings.saveScreenshot_folder;
+
+        if (saveDir.isEmpty() || !QDir(saveDir).exists())
+        {
+            saveDir = QDir::homePath();
+        }
+
+        // 元動画のファイル名（拡張子なし）
+        QString baseName =
+            QFileInfo(g_AppSettings.decode_path).completeBaseName();
+
+        // screenshot_ファイル名_No.フレーム番号.bmp
+        QString screenshotFileName =
+            QString("screenshot_%1_No.%2.bmp")
+                .arg(baseName)
+                .arg(Frame.FrameNo);
+
+        QString savePath =
+            QDir(saveDir).filePath(screenshotFileName);
+
+        // BMP保存
+        bool ok = flipped.save(savePath, "BMP");
+
+        if (ok)
+        {
+            qDebug() << "スクリーンショット保存:" << savePath;
+        }
+        else
+        {
+            qDebug() << "BMP保存失敗:" << savePath;
+        }
+
+        // 元のFramebufferに戻す
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // フラグを戻す
+        screenshot_flag = false;
+    }
+
     if (encode_state==STATE_ENCODING) {
         downloadToGLTexture_and_Encode(Frame);
     } else if(encode_state==STATE_NOT_ENCODE){

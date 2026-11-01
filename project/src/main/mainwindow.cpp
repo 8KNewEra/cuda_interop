@@ -69,8 +69,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->pushButton_volume->setFixedHeight(26);
     ui->widget_savescreenshot->setFixedWidth(63);
     ui->widget_savescreenshot->setFixedHeight(26);
-    ui->pushButton_screenshot_path->setFixedWidth(15);
-    ui->pushButton_screenshot_path->setFixedHeight(26);
+    ui->pushButton_screenshot_folder->setFixedWidth(15);
+    ui->pushButton_screenshot_folder->setFixedHeight(26);
     ui->pushButton_screenshot->setFixedWidth(48);
     ui->pushButton_screenshot->setFixedHeight(26);
     ui->jumpmode_pushButton->setFixedWidth(72);
@@ -392,10 +392,10 @@ void MainWindow::GLwidgetInitialized(){
 
         /* 画像保存 保存先設定 */
         saveScreenshot = new save_screenshot(this);
-        saveScreenshot->setAnchorButton(ui->pushButton_screenshot_path);
-        ui->pushButton_screenshot_path->installEventFilter(this);
+        saveScreenshot->setAnchorButton(ui->pushButton_screenshot_folder);
+        ui->pushButton_screenshot_folder->installEventFilter(this);
 
-        connect(ui->pushButton_screenshot_path, &QPushButton::clicked, this, [this]() {
+        connect(ui->pushButton_screenshot_folder, &QPushButton::clicked, this, [this]() {
             if (!saveScreenshot)
                 return;
 
@@ -416,57 +416,49 @@ void MainWindow::GLwidgetInitialized(){
             saveScreenshot->hide();
             saveScreenshot->hideTimer.stop();
 
-            QFileInfo fileInfo(g_AppSettings.saveScreenshot_path);
-
-            // 保存先フォルダ
-            QString startDir = fileInfo.absolutePath();
+            QString startDir = g_AppSettings.saveScreenshot_folder;
 
             if (startDir.isEmpty() || !QDir(startDir).exists())
             {
-                startDir = QDir::homePath();
-            }
+                startDir = QStandardPaths::writableLocation(
+                    QStandardPaths::PicturesLocation
+                    );
 
-            // 前回のファイル名
-            QString fileName = fileInfo.fileName();
+                if (startDir.isEmpty() || !QDir(startDir).exists())
+                {
+                    startDir = QDir::homePath();
+                }
+            }
 
             QFileDialog* dlg = new QFileDialog(this);
 
             dlg->setAttribute(Qt::WA_DeleteOnClose);
 
-            dlg->setWindowTitle(tr("スクリーンショットの保存先"));
+            dlg->setWindowTitle(tr("フォルダーを選択"));
 
             dlg->setDirectory(startDir);
 
-            // ★ 前回のファイル名を表示
-            if (!fileName.isEmpty())
-            {
-                dlg->selectFile(fileName);
-            }
+            // フォルダー選択
+            dlg->setFileMode(QFileDialog::Directory);
 
-            dlg->setAcceptMode(QFileDialog::AcceptSave);
-            dlg->setFileMode(QFileDialog::AnyFile);
-
-            dlg->setNameFilter(
-                tr("BMP画像 (*.bmp)")
+            // 「フォルダーを選択」だけにする
+            dlg->setOption(
+                QFileDialog::ShowDirsOnly,
+                true
                 );
-
-            dlg->setDefaultSuffix("bmp");
-
-            dlg->setAcceptMode(QFileDialog::AcceptSave);
 
             connect(
                 dlg,
                 &QFileDialog::fileSelected,
                 this,
-                [this](const QString& filePath)
+                [this](const QString& folderPath)
                 {
-                    qDebug() << "保存先:" << filePath;
+                    qDebug()
+                    << "選択されたフォルダー:"
+                    << folderPath;
 
-                    // ★ フルパスを保存
-                    g_AppSettings.saveScreenshot_path = filePath;
-
-                    // スクリーンショット保存
-                    // saveScreenshot(filePath);
+                    // 必要なら設定に保存
+                    g_AppSettings.saveScreenshot_folder = folderPath;
                 }
                 );
 
@@ -476,10 +468,12 @@ void MainWindow::GLwidgetInitialized(){
                 this,
                 []
                 {
-                    qDebug() << "保存がキャンセルされました";
+                    qDebug()
+                    << "フォルダー選択がキャンセルされました";
                 }
                 );
 
+            // 非同期表示
             dlg->open();
         },Qt::QueuedConnection);
     });
@@ -759,7 +753,7 @@ void MainWindow::CSS_Design(){
     ui->jumpmode_pushButton->setFocusPolicy(Qt::NoFocus);
     ui->pushButton_volume->setFocusPolicy(Qt::NoFocus);
     ui->pushButton_volume->setIconSize(QSize(20, 20));
-    ui->pushButton_screenshot_path->setFocusPolicy(Qt::NoFocus);
+    ui->pushButton_screenshot_folder->setFocusPolicy(Qt::NoFocus);
     ui->pushButton_screenshot->setFocusPolicy(Qt::NoFocus);
 
     //スピンボックス制御
@@ -921,7 +915,7 @@ void MainWindow::CSS_Design(){
         }
     )");
 
-    ui->pushButton_screenshot_path->setStyleSheet(R"(
+    ui->pushButton_screenshot_folder->setStyleSheet(R"(
         QPushButton {
             background: qlineargradient(
                 x1:0, y1:0, x2:0, y2:1,
@@ -1069,7 +1063,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     }
 
     // 画像保存
-    if (obj == ui->pushButton_screenshot_path) {
+    if (obj == ui->pushButton_screenshot_folder) {
         if (event->type() == QEvent::Leave) {
             saveScreenshot->hideTimer.start();
         }
@@ -1516,6 +1510,8 @@ void MainWindow::heavy_process_UI_control(bool flag){
     ui->action_filter_sobel->setEnabled(flag);
     ui->action_filter_gausian->setEnabled(flag);
     ui->action_filter_averaging->setEnabled(flag);
+    ui->pushButton_screenshot->setEnabled(flag);
+    ui->pushButton_screenshot_folder->setEnabled(flag);
     rangeSlider->setEnabled(flag);
 }
 
