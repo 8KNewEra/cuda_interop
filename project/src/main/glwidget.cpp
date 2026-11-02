@@ -1,8 +1,12 @@
 #include "src/main/glwidget.h"
 #include <QDebug>
+#include <QThreadPool>
+#include <QRunnable>
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
+#include <atomic>
+#include <memory>
 
 GLWidget::GLWidget(QWindow *parent)
     :  QOpenGLWindow(NoPartialUpdate, parent),
@@ -261,83 +265,115 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
     if (screenshot_flag)
     {
         // =====================================================
-        // fbo の内容を CPU に取得
+        // 保存は常に1枚だけ走らせる
         // =====================================================
+        static std::atomic<bool> saving{false};
+        bool idle = false;
 
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-
-        const int width  = width_;
-        const int height = height_;
-
-        // RGBA
-        std::vector<uint8_t> pixels(
-            static_cast<size_t>(width) * height * 4
-            );
-
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-
-        glReadPixels(
-            0,
-            0,
-            width,
-            height,
-            GL_RGBA,
-            GL_UNSIGNED_BYTE,
-            pixels.data()
-            );
-
-        // OpenGLは下→上なので上下反転
-        QImage image(
-            pixels.data(),
-            width,
-            height,
-            width * 4,
-            QImage::Format_RGBA8888
-            );
-
-        QImage flipped = image.mirrored(
-            false,  // 左右反転なし
-            true    // 上下反転
-            );
-
-        // =====================================================
-        // 保存先
-        // =====================================================
-
-        QString saveDir = g_AppSettings.saveScreenshot_folder;
-
-        if (saveDir.isEmpty() || !QDir(saveDir).exists())
+        if (!saving.compare_exchange_strong(idle, true))
         {
-            saveDir = QDir::homePath();
-        }
-
-        // 元動画のファイル名（拡張子なし）
-        QString baseName =
-            QFileInfo(g_AppSettings.decode_path).completeBaseName();
-
-        // screenshot_ファイル名_No.フレーム番号.bmp
-        QString screenshotFileName =
-            QString("screenshot_%1_No.%2.bmp")
-                .arg(baseName)
-                .arg(Frame.FrameNo);
-
-        QString savePath =
-            QDir(saveDir).filePath(screenshotFileName);
-
-        // BMP保存
-        bool ok = flipped.save(savePath, "BMP");
-
-        if (ok)
-        {
-            qDebug() << "スクリーンショット保存:" << savePath;
+            qDebug() << "前のキャプチャを保存中のため今回は見送り";
         }
         else
         {
-            qDebug() << "BMP保存失敗:" << savePath;
-        }
+            // =====================================================
+            // fbo の内容を CPU に取得
+            // ここだけは GLコンテキストを持つこのスレッドでしか出来ない
+            // =====================================================
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
-        // 元のFramebufferに戻す
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            const int width  = width_;
+            const int height = height_;
+
+            // RGBA
+            // ワーカーへ寿命ごと渡すので shared_ptr で持つ。
+            // 中身のコピーは発生しない。
+            auto pixels = std::make_shared<std::vector<uint8_t>>(
+                static_cast<size_t>(width) * height * 4
+                );
+
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+            glReadPixels(
+                0,
+                0,
+                width,
+                height,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                pixels->data()
+                );
+
+            // 元のFramebufferに戻す
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+            // =====================================================
+            // 保存先
+            // パス組み立てはここで済ませる。g_AppSettings と Frame は
+            // ワーカーが走る頃には別の値になりうるので持ち越さない。
+            // =====================================================
+            QString saveDir = g_AppSettings.saveScreenshot_folder;
+
+            if (saveDir.isEmpty() || !QDir(saveDir).exists())
+            {
+                saveDir = QDir::homePath();
+            }
+
+            // 元動画のファイル名（拡張子なし）
+            QString baseName =
+                QFileInfo(g_AppSettings.decode_path).completeBaseName();
+
+            // screenshot_ファイル名_No.フレーム番号.bmp
+            QString screenshotFileName =
+                QString("screenshot_%1_No.%2.bmp")
+                    .arg(baseName)
+                    .arg(Frame.FrameNo);
+
+            QString savePath =
+                QDir(saveDir).filePath(screenshotFileName);
+
+            // =====================================================
+            //   上下反転とBMP書き出しはワーカースレッドへ
+            //   16K だと反転で約530MBのコピー、書き出しも同容量級になり、
+            //   GUIスレッドでやると再生が目に見えて止まる。
+            //   ラムダは this を掴まないので、GLWidget が先に消えても安全。
+            // =====================================================
+            QThreadPool::globalInstance()->start(
+                QRunnable::create(
+                    [pixels, width, height, savePath, this]()
+                    {
+                        // OpenGLは下→上なので上下反転
+                        QImage image(
+                            pixels->data(),
+                            width,
+                            height,
+                            width * 4,
+                            QImage::Format_RGBA8888
+                            );
+
+                        QImage flipped = image.mirrored(
+                            false,  // 左右反転なし
+                            true    // 上下反転
+                            );
+
+                        // BMP保存
+                        bool ok = flipped.save(savePath, "BMP");
+
+                        if (ok)
+                        {
+                            qDebug() << "スクリーンショット保存:" << savePath;
+                        }
+                        else
+                        {
+                            qDebug() << "BMP保存失敗:" << savePath;
+                        }
+
+                        emit screenshot_finished();
+
+                        saving.store(false);
+                    })
+                );
+        }
 
         // フラグを戻す
         screenshot_flag = false;

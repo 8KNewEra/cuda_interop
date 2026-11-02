@@ -1284,7 +1284,12 @@ void MainWindow::Close_Video_File()
 void MainWindow::save_sreenshot(){
     glWidget->screenshot_flag = true;
 
+    heavy_process_UI_control(false);
 
+    // 保存完了したらUIを戻す
+    connect(glWidget, &GLWidget::screenshot_finished, this,[this]() {
+        heavy_process_UI_control(true);
+    },Qt::SingleShotConnection);
 }
 
 //現在のフレームを始端
@@ -1634,11 +1639,6 @@ void MainWindow::decode_view(VideoFrame Frame,bool pause,bool reverse){
             ui->label_play_time->setText(QString::asprintf("再生:%02d:%02d:%02d(%d Frames)", Frame.hour, Frame.minute, Frame.second, Frame.FrameNo));
         }else {
             ui->label_play_time->setText(QString::asprintf("再生:%02d:%02d(%d Frames)", Frame.minute, Frame.second,Frame.FrameNo));
-        }
-
-        //1フレーム戻しが入っている場合はUI有効に
-        if(!decodestream->back1frame_flag){
-            heavy_process_UI_control(true);
         }
 
         //UIの制御
