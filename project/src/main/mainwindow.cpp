@@ -1883,6 +1883,8 @@ void MainWindow::encode_set(){
     glWidget->encode_mode(encode_state);
     decodestream->encode_state = encode_state;
 
+    ui->play_pushButton->setText("▶");
+
     // ★ ここから先はタイマー駆動を切り離す（二重駆動の防止）
     set_fps_driving(false);
 
@@ -2016,6 +2018,8 @@ void MainWindow::finished_encode(){
 
     // ★ 通常再生に戻すのでタイマー駆動を復帰させる
     set_fps_driving(true);
+
+    ui->play_pushButton->setText("||");
 
     emit send_manual_resumeplayback();
     emit decode_please();

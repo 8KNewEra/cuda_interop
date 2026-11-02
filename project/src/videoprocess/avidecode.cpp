@@ -542,6 +542,7 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
         //0以下の処理
         targetFrameNo = VideoInfo.end_range_framesNo;
     }
+    // 重い処理が始まったらUIを止める
     if(heavy_UI_flag){
         //UIはfalse
         emit heavy_process_signal(false);
@@ -633,5 +634,10 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
             break;
         }
         av_packet_unref(packet);
+    }
+
+    // 重い処理が終わったらUIを戻す
+    if(heavy_UI_flag){
+        emit heavy_process_signal(true);
     }
 }
