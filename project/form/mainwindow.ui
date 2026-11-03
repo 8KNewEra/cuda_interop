@@ -122,6 +122,9 @@
     </property>
    </widget>
    <widget class="QPushButton" name="pushButton_speed">
+    <property name="enabled">
+     <bool>false</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>1183</x>

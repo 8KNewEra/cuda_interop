@@ -1515,6 +1515,7 @@ void MainWindow::heavy_process_UI_control(bool flag){
     ui->action_filter_sobel->setEnabled(flag);
     ui->action_filter_gausian->setEnabled(flag);
     ui->action_filter_averaging->setEnabled(flag);
+    ui->pushButton_speed->setEnabled(flag);
     ui->pushButton_screenshot->setEnabled(flag);
     ui->pushButton_screenshot_folder->setEnabled(flag);
     rangeSlider->setEnabled(flag);
