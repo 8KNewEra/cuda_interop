@@ -14,6 +14,10 @@
 #include <cuda_gl_interop.h>
 #include <QWheelEvent>
 #include <QMouseEvent>
+#include <atomic>
+#include <memory>
+
+namespace gpuimg { class Encoder; }
 
 // ==============================================================
 // ★ CUDA object（texture / surface）の遅延破棄リング
@@ -111,6 +115,7 @@ private:
     void initCudaTexture(int width,int height);
     void setShaderUniform(int width,int height);
     void initCudaHist();
+    void initCudaScreenshot(int width,int height);
     void histgram_Analysys();
     void downloadToGLTexture_and_Encode(VideoFrame Frame);
 
@@ -144,6 +149,7 @@ private:
     cudaGraphicsResource* cudaResource1;
     cudaGraphicsResource* cudaResource2;
     cudaGraphicsResource* cudaResource_hist_draw=nullptr;
+    cudaGraphicsResource_t cudaResource_screenshot = nullptr;
     CUDA_ImageProcess* CUDA_IMG_Proc=nullptr;
     cudaStream_t interop_stream = nullptr;
 
@@ -243,6 +249,19 @@ private:
     //   （d_hist_* と同じ理由で、ここだけ初期化子が抜けていた）
     HistStats h_hist_stats{};
     int num_bins = 256;
+
+    // screenshot関連
+    uint8_t* d_cudaScreenshot = nullptr;
+    size_t d_cudaScreenshotPitch = 0;
+    cudaStream_t screenshotStream = nullptr;
+
+    // ★ PNG 保存 (gpuimg)
+    //   Encoder は GPU 作業バッファを持つので毎回作らず使い回す。
+    //   screenshotSaving が true の間は d_cudaScreenshot をワーカーが読んでいるので
+    //   上書き・解放してはいけない（waitScreenshotSaved() で終了を待つ）。
+    std::unique_ptr<gpuimg::Encoder> screenshotEncoder;
+    std::atomic<bool> screenshotSaving{false};
+    void waitScreenshotSaved();
 };
 
 

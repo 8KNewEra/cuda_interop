@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <gpuimg/gpuimg.hpp>
+#include <QThread>
 
 GLWidget::GLWidget(QWindow *parent)
     :  QOpenGLWindow(NoPartialUpdate, parent),
@@ -21,7 +23,21 @@ GLWidget::GLWidget(QWindow *parent)
 }
 
 
+void GLWidget::waitScreenshotSaved()
+{
+    while (screenshotSaving.load())
+        QThread::msleep(1);
+}
+
 GLWidget::~GLWidget() {
+    // ★ 保存ワーカーが this / d_cudaScreenshot を使い終わるまで待つ
+    waitScreenshotSaved();
+    screenshotEncoder.reset();
+    if (d_cudaScreenshot) {
+        cudaFree(d_cudaScreenshot);
+        d_cudaScreenshot = nullptr;
+    }
+
     // ★ 生存中の surface / texture object は、
     //   参照先の cudaArray を手放す（＝リソースを unregister する）前に破棄する
     inputSurfRetire.destroy();
@@ -33,6 +49,10 @@ GLWidget::~GLWidget() {
     }
     if (cudaResource2) {
         cudaGraphicsUnregisterResource(cudaResource2);
+    }
+    if (cudaResource_screenshot) {
+        cudaGraphicsUnregisterResource(cudaResource_screenshot);
+        cudaResource_screenshot = nullptr;
     }
     if (inputTextureID) {
         glDeleteTextures(1, &inputTextureID);
@@ -71,6 +91,11 @@ GLWidget::~GLWidget() {
         cudaEventDestroy(hist_event);
         hist_event = nullptr;
     }
+    if (screenshotStream) {
+        cudaStreamSynchronize(screenshotStream);
+        cudaStreamDestroy(screenshotStream);
+        screenshotStream = nullptr;
+    }
 
     if (cudaResource_hist_draw) {
         cudaGraphicsUnregisterResource(cudaResource_hist_draw);
@@ -89,6 +114,10 @@ GLWidget::~GLWidget() {
     if (d_hist_data) {
         cudaFree(d_hist_data);
         d_hist_data = nullptr;
+    }
+    if (d_cudaScreenshot) {
+        cudaFree(d_cudaScreenshot);
+        d_cudaScreenshot= nullptr;
     }
 
     delete CUDA_IMG_Proc;
@@ -201,6 +230,7 @@ void GLWidget::initializeGL()
     }
     cudaStreamCreate(&hist_stream);
     cudaEventCreate(&hist_event);
+    cudaStreamCreate(&screenshotStream);
 
     // === 初期化完了 ===
     fpsTimer.start();
@@ -261,122 +291,78 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
     glBindVertexArray(0);
     glUseProgram(0);
 
-    // BMP保存
+    // スクリーンショット (PNG, GPU エンコード)
     if (screenshot_flag)
     {
-        // =====================================================
-        // 保存は常に1枚だけ走らせる
-        // =====================================================
-        static std::atomic<bool> saving{false};
-        bool idle = false;
+        // 失敗しても毎フレーム再試行しないよう先に戻す
+        screenshot_flag = false;
 
-        if (!saving.compare_exchange_strong(idle, true))
+        // ★ 前の保存がまだ d_cudaScreenshot を読んでいるかもしれないので、
+        //   コピーで上書きする「前」に判定する
+        bool idle = false;
+        if (!screenshotSaving.compare_exchange_strong(idle, true))
         {
             qDebug() << "前のキャプチャを保存中のため今回は見送り";
         }
+        else if (!d_cudaScreenshot || !cudaResource_screenshot || !screenshotStream)
+        {
+            screenshotSaving.store(false);
+        }
         else
         {
-            // =====================================================
-            // fbo の内容を CPU に取得
-            // ここだけは GLコンテキストを持つこのスレッドでしか出来ない
-            // =====================================================
-            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-
-            const int width  = width_;
-            const int height = height_;
-
-            // RGBA
-            // ワーカーへ寿命ごと渡すので shared_ptr で持つ。
-            // 中身のコピーは発生しない。
-            auto pixels = std::make_shared<std::vector<uint8_t>>(
-                static_cast<size_t>(width) * height * 4
-                );
-
-            glPixelStorei(GL_PACK_ALIGNMENT, 1);
-
-            glReadPixels(
-                0,
-                0,
-                width,
-                height,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                pixels->data()
-                );
-
-            // 元のFramebufferに戻す
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-            // =====================================================
-            // 保存先
-            // パス組み立てはここで済ませる。g_AppSettings と Frame は
-            // ワーカーが走る頃には別の値になりうるので持ち越さない。
-            // =====================================================
-            QString saveDir = g_AppSettings.saveScreenshot_folder;
-
-            if (saveDir.isEmpty() || !QDir(saveDir).exists())
+            // FBO テクスチャ → d_cudaScreenshot (GPU 内コピー, CPU は待たない)
+            bool ok = false;
+            if (cudaGraphicsMapResources(1, &cudaResource_screenshot, screenshotStream) == cudaSuccess)
             {
-                saveDir = QDir::homePath();
+                cudaArray_t cudaArray = nullptr;
+                ok = cudaGraphicsSubResourceGetMappedArray(&cudaArray, cudaResource_screenshot, 0, 0) == cudaSuccess
+                  && cudaMemcpy2DFromArrayAsync(d_cudaScreenshot, d_cudaScreenshotPitch, cudaArray, 0, 0,
+                                                static_cast<size_t>(width_) * 4, height_,
+                                                cudaMemcpyDeviceToDevice, screenshotStream) == cudaSuccess;
+                cudaGraphicsUnmapResources(1, &cudaResource_screenshot, screenshotStream);
             }
 
-            // 元動画のファイル名（拡張子なし）
-            QString baseName =
-                QFileInfo(g_AppSettings.decode_path).completeBaseName();
+            if (!ok)
+            {
+                qDebug() << "スクリーンショットのコピーに失敗:" << cudaGetErrorString(cudaGetLastError());
+                screenshotSaving.store(false);
+            }
+            else
+            {
+                if (!screenshotEncoder)
+                    screenshotEncoder = std::make_unique<gpuimg::Encoder>();   // 画像のある GPU を自動使用
 
-            // screenshot_ファイル名_No.フレーム番号.bmp
-            QString screenshotFileName =
-                QString("screenshot_%1_No.%2.png")
-                    .arg(baseName)
-                    .arg(Frame.FrameNo);
+                // 保存先 (g_AppSettings / Frame はワーカー実行時には変わりうるのでここで確定)
+                QString saveDir = g_AppSettings.saveScreenshot_folder;
+                if (saveDir.isEmpty() || !QDir(saveDir).exists())
+                    saveDir = QDir::homePath();
+                const QString baseName = QFileInfo(g_AppSettings.decode_path).completeBaseName();
+                const QString savePath = QDir(saveDir).filePath(
+                    QString("screenshot_%1_No.%2.png").arg(baseName).arg(Frame.FrameNo));
 
-            QString savePath =
-                QDir(saveDir).filePath(screenshotFileName);
+                const gpuimg::Image img = gpuimg::Image::rgba8(
+                    d_cudaScreenshot, width_, height_, width_*4);   // ★ pitch は cudaMallocPitch の値
+                const gpuimg::EncodeParams params = gpuimg::EncodeParams(GPUIMG_FORMAT_PNG)
+                    .stream(screenshotStream)   // ★ 上のコピー完了を GPU 側で待ってから圧縮
+                    .flipVertical().high();            // ★ OpenGL は下の行から並ぶので上下反転して保存
+                gpuimg::Encoder* enc = screenshotEncoder.get();
 
-            // =====================================================
-            //   上下反転とBMP書き出しはワーカースレッドへ
-            //   16K だと反転で約530MBのコピー、書き出しも同容量級になり、
-            //   GUIスレッドでやると再生が目に見えて止まる。
-            //   ラムダは this を掴まないので、GLWidget が先に消えても安全。
-            // =====================================================
-            QThreadPool::globalInstance()->start(
-                QRunnable::create(
-                    [pixels, width, height, savePath, this]()
+                // 圧縮・書き出しはワーカーで (GUI スレッドを止めない)。
+                // this を使うので、破棄時は waitScreenshotSaved() で終了を待つ。
+                QThreadPool::globalInstance()->start(QRunnable::create(
+                    [this, enc, img, params, savePath]()
                     {
-                        // OpenGLは下→上なので上下反転
-                        QImage image(
-                            pixels->data(),
-                            width,
-                            height,
-                            width * 4,
-                            QImage::Format_RGBA8888
-                            );
-
-                        QImage flipped = image.mirrored(
-                            false,  // 左右反転なし
-                            true    // 上下反転
-                            );
-
-                        // BMP保存
-                        bool ok = flipped.save(savePath, "PNG");
-
-                        if (ok)
-                        {
-                            qDebug() << "スクリーンショット保存:" << savePath;
+                        try {
+                            gpuimg_stats st = enc->save(savePath.toUtf8().constData(), img, params);
+                            qDebug() << "screenshot saved:" << savePath << st.seconds << "s";
+                        } catch (const gpuimg::Error& e) {
+                            qWarning() << "gpuimg" << int(e.status()) << e.what();
                         }
-                        else
-                        {
-                            qDebug() << "BMP保存失敗:" << savePath;
-                        }
-
+                        screenshotSaving.store(false);
                         emit screenshot_finished();
-
-                        saving.store(false);
-                    })
-                );
+                    }));
+            }
         }
-
-        // フラグを戻す
-        screenshot_flag = false;
     }
 
     if (encode_state==STATE_ENCODING) {
@@ -1060,6 +1046,7 @@ void GLWidget::uploadToGLTexture(VideoFrame Frame) {
     if (want_w != width_ || want_h != height_) {
         initCudaTexture(want_w, want_h);
         initTextureCuda(want_w, want_h);
+        initCudaScreenshot(want_w, want_h);
         setShaderUniform(want_w, want_h);
         initCudaHist();
         width_  = want_w;
@@ -1324,6 +1311,59 @@ void GLWidget::encode_mode(int flag){
                 return;
             }
         }
+    }
+}
+
+// screenshot関連
+void GLWidget::initCudaScreenshot(int width,int height)
+{
+    // ★ 保存中のバッファを解放しないよう待つ
+    waitScreenshotSaved();
+
+    if (d_cudaScreenshot) {
+        cudaFree(d_cudaScreenshot);
+        d_cudaScreenshot= nullptr;
+    }
+    if (cudaResource_screenshot) {
+        cudaGraphicsUnregisterResource(cudaResource_screenshot);
+        cudaResource_screenshot = nullptr;
+    }
+
+    cudaError_t err = cudaSuccess;
+
+    // CUDAメモリ確保
+    err = cudaMallocPitch(
+        &d_cudaScreenshot,
+        &d_cudaScreenshotPitch,
+        width * 4,
+        height
+        );
+    if (err != cudaSuccess) {
+        qDebug() << "cudaMallocPitch error:" << cudaGetErrorString(err);
+        d_cudaScreenshot = nullptr;
+        d_cudaScreenshotPitch = 0;
+    }
+
+    // Stream作成 (再初期化時に前のものをリークしない)
+    if (screenshotStream) {
+        cudaStreamSynchronize(screenshotStream);
+        cudaStreamDestroy(screenshotStream);
+        screenshotStream = nullptr;
+    }
+    err = cudaStreamCreateWithFlags(
+        &screenshotStream,
+        cudaStreamNonBlocking
+        );
+    if (err != cudaSuccess) {
+        qDebug() << "cudaMallocPitch error:" << cudaGetErrorString(err);
+        screenshotStream = nullptr;
+    }
+
+    // FBO登録
+    err = cudaGraphicsGLRegisterImage(&cudaResource_screenshot, fboTextureID, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsReadOnly);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaGraphicsGLRegisterImage (fbo) error:" << cudaGetErrorString(err);
+        cudaResource_screenshot = nullptr;
     }
 }
 

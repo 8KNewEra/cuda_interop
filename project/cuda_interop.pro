@@ -128,6 +128,14 @@ LIBS += -lswresample
 LIBS += -lswscale
 LIBS += -lavutil
 
+#gpuimg
+gpuimg_DIR = "$$PWD/gpuimg"
+
+INCLUDEPATH += $$gpuimg_DIR/include
+LIBS += -L$$gpuimg_DIR/lib
+
+LIBS += -gpuimg
+
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
