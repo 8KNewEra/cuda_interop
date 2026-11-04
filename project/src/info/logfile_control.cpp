@@ -34,6 +34,9 @@ void logfile_control::load_inifile()
     g_AppSettings.averagingfilterEnabled = settings.value("Filter/averagingfilterEnabled", g_AppSettings.averagingfilterEnabled).toBool();
     g_AppSettings.screenshot_format = settings.value("Screenshot/screenshot_format", g_AppSettings.screenshot_format).toString();
     g_AppSettings.screenshot_mode = settings.value("Screenshot/screenshot_mode", g_AppSettings.screenshot_mode).toString();
+    g_AppSettings.screenshot_tiff_compression = settings.value("Screenshot/screenshot_tiff_compression", g_AppSettings.screenshot_tiff_compression).toString();
+    g_AppSettings.screenshot_jpeg_quality = settings.value("Screenshot/screenshot_jpeg_quality", g_AppSettings.screenshot_jpeg_quality).toInt();
+    g_AppSettings.screenshot_jpeg_subsampling = settings.value("Screenshot/screenshot_jpeg_subsampling", g_AppSettings.screenshot_jpeg_subsampling).toString();
 
     encodeSettings.encode_path = settings.value("Encodesetting/encode_path", encodeSettings.encode_path).toString();
     encodeSettings.container = settings.value("Encodesetting/container", encodeSettings.container).toString();
@@ -111,6 +114,9 @@ void logfile_control::save_inifile(){
     settings.setValue("Filter/averagingfilterEnabled", g_AppSettings.averagingfilterEnabled);
     settings.setValue("Screenshot/screenshot_format", g_AppSettings.screenshot_format);
     settings.setValue("Screenshot/screenshot_mode", g_AppSettings.screenshot_mode);
+    settings.setValue("Screenshot/screenshot_tiff_compression", g_AppSettings.screenshot_tiff_compression);
+    settings.setValue("Screenshot/screenshot_jpeg_quality", g_AppSettings.screenshot_jpeg_quality);
+    settings.setValue("Screenshot/screenshot_jpeg_subsampling", g_AppSettings.screenshot_jpeg_subsampling);
 
     settings.setValue("Encodesetting/encode_path", encodeSettings.encode_path);
     settings.setValue("Encodesetting/container", encodeSettings.container);

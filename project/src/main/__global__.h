@@ -41,7 +41,13 @@ struct AppSettings
     bool averagingfilterEnabled = false;
 
     QString screenshot_format = "png";
-    QString screenshot_mode = "fast";
+    QString screenshot_mode = "high";
+    // TIFF の圧縮方式: "deflate" (可逆) / "none" (非圧縮)
+    QString screenshot_tiff_compression = "deflate";
+    // JPEG の品質 0..100
+    int screenshot_jpeg_quality = 90;
+    // JPEG の色差サンプリング: "444" / "422" / "420"
+    QString screenshot_jpeg_subsampling = "420";
 };
 
 // エンコード設定の構造体

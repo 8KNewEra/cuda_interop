@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>379</width>
-    <height>88</height>
+    <height>188</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -65,7 +65,7 @@
     <string>保存フォーマット:</string>
    </property>
   </widget>
-  <widget class="QLabel" name="label_3">
+  <widget class="QLabel" name="label_tiffcompression">
    <property name="geometry">
     <rect>
      <x>10</x>
@@ -75,7 +75,105 @@
     </rect>
    </property>
    <property name="text">
-    <string>保存モード:</string>
+    <string>TIFF圧縮:</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label_jpegquality">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>105</y>
+     <width>80</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>JPEG品質:</string>
+   </property>
+  </widget>
+  <widget class="QSlider" name="horizontalSlider_jpegquality">
+   <property name="geometry">
+    <rect>
+     <x>150</x>
+     <y>106</y>
+     <width>180</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="minimum">
+    <number>0</number>
+   </property>
+   <property name="maximum">
+    <number>100</number>
+   </property>
+   <property name="singleStep">
+    <number>1</number>
+   </property>
+   <property name="pageStep">
+    <number>10</number>
+   </property>
+   <property name="value">
+    <number>90</number>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label_jpegquality_value">
+   <property name="geometry">
+    <rect>
+     <x>335</x>
+     <y>105</y>
+     <width>37</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>90</string>
+   </property>
+   <property name="alignment">
+    <set>Qt::AlignRight|Qt::AlignVCenter</set>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label_jpegsubsampling">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>129</y>
+     <width>100</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>色差サンプリング:</string>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="comboBox_savescreenshot_jpegsubsampling">
+   <property name="geometry">
+    <rect>
+     <x>272</x>
+     <y>131</y>
+     <width>100</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <pointsize>8</pointsize>
+    </font>
+   </property>
+  </widget>
+  <widget class="QLabel" name="label_3">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>81</y>
+     <width>80</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>圧縮レベル:</string>
    </property>
   </widget>
   <widget class="QComboBox" name="comboBox_savescreenshot_format">
@@ -93,11 +191,26 @@
     </font>
    </property>
   </widget>
+  <widget class="QComboBox" name="comboBox_savescreenshot_tiffcompression">
+   <property name="geometry">
+    <rect>
+     <x>272</x>
+     <y>59</y>
+     <width>100</width>
+     <height>18</height>
+    </rect>
+   </property>
+   <property name="font">
+    <font>
+     <pointsize>8</pointsize>
+    </font>
+   </property>
+  </widget>
   <widget class="QComboBox" name="comboBox_savescreenshot_pngmode">
    <property name="geometry">
     <rect>
      <x>292</x>
-     <y>59</y>
+     <y>83</y>
      <width>80</width>
      <height>18</height>
     </rect>
@@ -106,6 +219,32 @@
     <font>
      <pointsize>8</pointsize>
     </font>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_ok">
+   <property name="geometry">
+    <rect>
+     <x>216</x>
+     <y>157</y>
+     <width>75</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>OK</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_cancel">
+   <property name="geometry">
+    <rect>
+     <x>297</x>
+     <y>157</y>
+     <width>75</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>キャンセル</string>
    </property>
   </widget>
  </widget>

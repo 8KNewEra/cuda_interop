@@ -156,7 +156,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->actionOpenFile->setIcon(makeWhiteIcon(QIcon::fromTheme("document-open")));
     ui->info->setIcon(makeWhiteIcon(QIcon::fromTheme("dialog-information")));
     ui->actionCloseFile->setIcon(makeWhiteIcon(QIcon::fromTheme("edit-clear")));
-    ui->actionFileSave->setIcon(makeWhiteIcon(QIcon::fromTheme("document-print")));
+    ui->actionFileSave->setIcon(makeWhiteIcon(QIcon::fromTheme("emblem-downloads")));
 
     //ダークUI
     HWND hwnd = (HWND)winId();

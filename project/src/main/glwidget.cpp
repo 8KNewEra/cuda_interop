@@ -23,6 +23,37 @@ GLWidget::GLWidget(QWindow *parent)
 }
 
 
+// スクリーンショットの保存形式 (UI 設定: 形式 / TIFF 圧縮 / 圧縮レベル) を gpuimg のパラメータへ。
+// 値の正規化は save_screenshot 側で済んでいる前提。ext に拡張子を返す。
+static gpuimg::EncodeParams makeScreenshotParams(QString& ext)
+{
+    gpuimg_compression level = GPUIMG_COMPRESSION_FAST;
+    if (g_AppSettings.screenshot_mode == "normal")    level = GPUIMG_COMPRESSION_NORMAL;
+    else if (g_AppSettings.screenshot_mode == "high") level = GPUIMG_COMPRESSION_HIGH;
+
+    if (g_AppSettings.screenshot_format == "tiff") {
+        ext = "tif";
+        gpuimg::EncodeParams p(GPUIMG_FORMAT_TIFF);
+        if (g_AppSettings.screenshot_tiff_compression == "none") p.tiffUncompressed();
+        else                                                       p.tiffDeflate().compressionLevel(level);
+        return p;
+    }
+    if (g_AppSettings.screenshot_format == "bmp") {
+        ext = "bmp";
+        return gpuimg::EncodeParams(GPUIMG_FORMAT_BMP);    // 非圧縮のみ (圧縮レベルは無関係)
+    }
+    if (g_AppSettings.screenshot_format == "jpg") {
+        ext = "jpg";
+        return gpuimg::EncodeParams(GPUIMG_FORMAT_JPEG)
+            .jpegQuality(g_AppSettings.screenshot_jpeg_quality)                   // 0..100
+            .jpegSubsampling(g_AppSettings.screenshot_jpeg_subsampling.toInt());  // 444 / 422 / 420 (Gray では無視)
+    }
+    ext = "png";
+    gpuimg::EncodeParams p(GPUIMG_FORMAT_PNG);
+    p.compressionLevel(level);
+    return p;
+}
+
 void GLWidget::waitScreenshotSaved()
 {
     while (screenshotSaving.load())
@@ -351,23 +382,18 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
                 if (saveDir.isEmpty() || !QDir(saveDir).exists())
                     saveDir = QDir::homePath();
                 const QString baseName = QFileInfo(g_AppSettings.decode_path).completeBaseName();
+                // 保存形式 (UI 設定) → エンコードパラメータと拡張子
+                QString ext;
+                gpuimg::EncodeParams params = makeScreenshotParams(ext);
+                params.stream(screenshotStream)   // 上のコピー完了を GPU 側で待ってから圧縮
+                      .flipVertical();            // OpenGL は下の行から並ぶので上下反転して保存
+
                 const QString savePath = QDir(saveDir).filePath(
-                    QString("screenshot_%1_No.%2.png").arg(baseName).arg(Frame.FrameNo));
+                    QString("screenshot_%1_No.%2.%3").arg(baseName).arg(Frame.FrameNo).arg(ext));
 
                 // ★ pitch は必ず cudaMallocPitch が返した値 (width_*4 だと幅によって画像が斜めに崩れる)
                 const gpuimg::Image img = gpuimg::Image::rgba8(
                     d_cudaScreenshot, width_, height_, d_cudaScreenshotPitch);
-
-                // 圧縮レベル (UI 設定)。未知の値は FAST
-                gpuimg_compression level = GPUIMG_COMPRESSION_FAST;
-                if (g_AppSettings.screenshot_mode == "normal")    level = GPUIMG_COMPRESSION_NORMAL;
-                else if (g_AppSettings.screenshot_mode == "high") level = GPUIMG_COMPRESSION_HIGH;
-
-                // ★ stream / 上下反転はレベルに関係なく必須なので共通で設定する
-                const gpuimg::EncodeParams params = gpuimg::EncodeParams(GPUIMG_FORMAT_PNG)
-                    .stream(screenshotStream)   // 上のコピー完了を GPU 側で待ってから圧縮
-                    .flipVertical()             // OpenGL は下の行から並ぶので上下反転して保存
-                    .compressionLevel(level);
 
                 gpuimg::Encoder* enc = screenshotEncoder.get();
 
