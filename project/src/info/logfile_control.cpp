@@ -32,6 +32,8 @@ void logfile_control::load_inifile()
     g_AppSettings.sobelfilterEnabled = settings.value("Filter/sobelfilterEnabled", g_AppSettings.sobelfilterEnabled).toBool();
     g_AppSettings.gaussianfilterEnabled = settings.value("Filter/gaussianfilterEnabled", g_AppSettings.gaussianfilterEnabled).toBool();
     g_AppSettings.averagingfilterEnabled = settings.value("Filter/averagingfilterEnabled", g_AppSettings.averagingfilterEnabled).toBool();
+    g_AppSettings.screenshot_format = settings.value("Screenshot/screenshot_format", g_AppSettings.screenshot_format).toString();
+    g_AppSettings.screenshot_mode = settings.value("Screenshot/screenshot_mode", g_AppSettings.screenshot_mode).toString();
 
     encodeSettings.encode_path = settings.value("Encodesetting/encode_path", encodeSettings.encode_path).toString();
     encodeSettings.container = settings.value("Encodesetting/container", encodeSettings.container).toString();
@@ -107,6 +109,8 @@ void logfile_control::save_inifile(){
     settings.setValue("Filter/sobelfilterEnabled", g_AppSettings.sobelfilterEnabled);
     settings.setValue("Filter/gaussianfilterEnabled", g_AppSettings.gaussianfilterEnabled);
     settings.setValue("Filter/averagingfilterEnabled", g_AppSettings.averagingfilterEnabled);
+    settings.setValue("Screenshot/screenshot_format", g_AppSettings.screenshot_format);
+    settings.setValue("Screenshot/screenshot_mode", g_AppSettings.screenshot_mode);
 
     settings.setValue("Encodesetting/encode_path", encodeSettings.encode_path);
     settings.setValue("Encodesetting/container", encodeSettings.container);

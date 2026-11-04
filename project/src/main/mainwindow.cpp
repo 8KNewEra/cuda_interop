@@ -391,90 +391,12 @@ void MainWindow::GLwidgetInitialized(){
         jumpMode->modeChanged(g_AppSettings.frame_jump_mode);
 
         /* 画像保存 保存先設定 */
-        saveScreenshot = new save_screenshot(this);
-        saveScreenshot->setAnchorButton(ui->pushButton_screenshot_folder);
-        ui->pushButton_screenshot_folder->installEventFilter(this);
+        saveScreenshot = new save_screenshot();
+        saveScreenshot->setWindowModality(Qt::ApplicationModal);
+        saveScreenshot->hide();
 
         connect(ui->pushButton_screenshot_folder, &QPushButton::clicked, this, [this]() {
-            if (!saveScreenshot)
-                return;
-
-            // すでに表示中なら閉じる
-            if (saveScreenshot->isVisible()) {
-                saveScreenshot->hide();
-                saveScreenshot->hideTimer.stop();
-            }
-            // 非表示なら表示
-            else {
-                saveScreenshot->showPopup();
-            }
-        });
-
-        //ボタンシグナル受信
-        connect(saveScreenshot, &save_screenshot::modeChanged, this,[this]() {
-            // 非同期ダイアログ中に消す処理が走ると不自然になる
-            saveScreenshot->hide();
-            saveScreenshot->hideTimer.stop();
-
-            QString startDir = g_AppSettings.saveScreenshot_folder;
-
-            if (startDir.isEmpty() || !QDir(startDir).exists())
-            {
-                startDir = QStandardPaths::writableLocation(
-                    QStandardPaths::PicturesLocation
-                    );
-
-                if (startDir.isEmpty() || !QDir(startDir).exists())
-                {
-                    startDir = QDir::homePath();
-                }
-            }
-
-            QFileDialog* dlg = new QFileDialog(this);
-
-            dlg->setAttribute(Qt::WA_DeleteOnClose);
-
-            dlg->setWindowTitle(tr("フォルダーを選択"));
-
-            dlg->setDirectory(startDir);
-
-            // フォルダー選択
-            dlg->setFileMode(QFileDialog::Directory);
-
-            // 「フォルダーを選択」だけにする
-            dlg->setOption(
-                QFileDialog::ShowDirsOnly,
-                true
-                );
-
-            connect(
-                dlg,
-                &QFileDialog::fileSelected,
-                this,
-                [this](const QString& folderPath)
-                {
-                    qDebug()
-                    << "選択されたフォルダー:"
-                    << folderPath;
-
-                    // 必要なら設定に保存
-                    g_AppSettings.saveScreenshot_folder = folderPath;
-                }
-                );
-
-            connect(
-                dlg,
-                &QFileDialog::rejected,
-                this,
-                []
-                {
-                    qDebug()
-                    << "フォルダー選択がキャンセルされました";
-                }
-                );
-
-            // 非同期表示
-            dlg->open();
+            saveScreenshot->show();
         },Qt::QueuedConnection);
     });
 
@@ -1059,13 +981,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (obj == ui->jumpmode_pushButton) {
         if (event->type() == QEvent::Leave) {
             jumpMode->hideTimer.start();
-        }
-    }
-
-    // 画像保存
-    if (obj == ui->pushButton_screenshot_folder) {
-        if (event->type() == QEvent::Leave) {
-            saveScreenshot->hideTimer.start();
         }
     }
 

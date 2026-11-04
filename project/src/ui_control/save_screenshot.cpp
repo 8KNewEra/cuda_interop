@@ -1,5 +1,7 @@
 #include "src/ui_control/save_screenshot.h"
+#include "info/logfile_control.h"
 #include "qpainter.h"
+#include "QStandardPaths"
 #include "ui_save_screenshot.h"
 
 save_screenshot::save_screenshot(QWidget *parent)
@@ -8,69 +10,87 @@ save_screenshot::save_screenshot(QWidget *parent)
 {
     ui->setupUi(this);
 
-    // 通常スタイル
-    const QString style = R"(
-        QPushButton {
-            background: qlineargradient(
-                x1:0, y1:0, x2:0, y2:1,
-                stop:0 rgba(80,80,80,230),
-                stop:1 rgba(35,35,35,230)
-            );
-            border-radius: 8px;
-            padding: 4px;
-            color: rgb(235,235,235); /* ← 通常テキスト 白 */
-            font-weight: 600;
+    ui->label_savescreenshotpath->setText(g_AppSettings.saveScreenshot_folder);
+    QObject::connect(ui->pushButton_savescreenshotpath, &QPushButton::clicked,this, &save_screenshot::screenshot_path_dialog,Qt::QueuedConnection);
+
+    ui->comboBox_savescreenshot_format->addItem("JPG (.jpg)");
+    ui->comboBox_savescreenshot_format->addItem("PNG (.png)");
+    ui->comboBox_savescreenshot_format->addItem("TIFF (.tiff)");
+    ui->comboBox_savescreenshot_format->addItem("BMP (.bmp)");
+
+    ui->comboBox_savescreenshot_pngmode->addItem("fast");
+    ui->comboBox_savescreenshot_pngmode->addItem("normal");
+    ui->comboBox_savescreenshot_pngmode->addItem("high");
+
+
+
+    QObject::connect(ui->comboBox_savescreenshot_format, &QComboBox::currentIndexChanged,
+                     this, [&](int index) {
+                        if(index == 0){
+                            g_AppSettings.screenshot_format = "jpg";
+                        }else if(index == 1){
+                            g_AppSettings.screenshot_format = "png";
+                        }else if(index == 2){
+                            g_AppSettings.screenshot_format = "tiff";
+                        }else if(index == 3){
+                            g_AppSettings.screenshot_format = "bmp";
+                        }
+        }, Qt::QueuedConnection);
+    QObject::connect(ui->comboBox_savescreenshot_pngmode, &QComboBox::currentIndexChanged,
+                     this, [&](int index) {
+                        if(index == 0){
+                            g_AppSettings.screenshot_mode = "fast";
+                        }else if(index == 1){
+                            g_AppSettings.screenshot_mode = "normal";
+                        }else if(index == 2){
+                            g_AppSettings.screenshot_mode = "high";
+                        }
+        }, Qt::QueuedConnection);
+
+    auto emitIndexChanged = [&](QComboBox* box){
+        int idx = box->currentIndex();
+        Q_EMIT box->currentIndexChanged(idx);
+    };
+
+    {
+        int index{};
+        if(g_AppSettings.screenshot_format == "jpg"){
+            index = 0;
+        }else if(g_AppSettings.screenshot_format == "png"){
+            index = 1;
+        }else if(g_AppSettings.screenshot_format == "tiff"){
+            index = 2;
+        }else if(g_AppSettings.screenshot_format == "bmp"){
+            index = 3;
         }
+        ui->comboBox_savescreenshot_format->setCurrentIndex(index);
+        emitIndexChanged(ui->comboBox_savescreenshot_format);
+    }
 
-        /* Hover = 発光ブルー */
-        QPushButton:hover {
-            background: qlineargradient(
-                x1:0, y1:0, x2:0, y2:1,
-                stop:0 rgba(130,190,255,220),
-                stop:1 rgba(60,110,220,220)
-            );
-            border-radius: 8px;
-            padding: 4px;
-            color: rgb(235,235,235); /* ← 通常テキスト 白 */
-            font-weight: 600;
+    {
+        int index{};
+        if(g_AppSettings.screenshot_mode == "fast"){
+            index = 0;
+        }else if(g_AppSettings.screenshot_mode == "normal"){
+            index = 1;
+        }else if(g_AppSettings.screenshot_mode == "high"){
+            index = 2;
         }
-    )";
+        ui->comboBox_savescreenshot_pngmode->setCurrentIndex(index);
+        emitIndexChanged(ui->comboBox_savescreenshot_pngmode);
+    }
 
-    ui->pushButton_savescreenshotpath->setStyleSheet(style);
+    if (g_AppSettings.saveScreenshot_folder.isEmpty() || !QDir(g_AppSettings.saveScreenshot_folder).exists())
+    {
+        g_AppSettings.saveScreenshot_folder = QStandardPaths::writableLocation(
+            QStandardPaths::PicturesLocation
+            );
 
-    // フレームなし & 常に前面
-    setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
-
-    // 透過は paintEvent に任せる
-    setAttribute(Qt::WA_TranslucentBackground);
-
-    //待機タイマー
-    hideTimer.setInterval(125); // 500ms 待機
-    hideTimer.setSingleShot(true);
-
-    fadeAnim = new QPropertyAnimation(this, "windowOpacity");
-    fadeAnim->setDuration(400); // フェード時間 500ms
-    fadeAnim->setStartValue(1.0);
-    fadeAnim->setEndValue(0.0);
-
-    connect(fadeAnim, &QPropertyAnimation::finished, this, [this]() {
-        hide();
-        setWindowOpacity(1.0); // 次回用に戻す
-    });
-
-    connect(&hideTimer, &QTimer::timeout, this, [this]() {
-        // 両方にマウスが無ければフェード開始
-        if (!mouseInside &&
-            (!anchorButton || !anchorButton->underMouse()))
+        if (g_AppSettings.saveScreenshot_folder.isEmpty() || !QDir(g_AppSettings.saveScreenshot_folder).exists())
         {
-            fadeAnim->stop();
-            fadeAnim->start();
+            g_AppSettings.saveScreenshot_folder = QDir::homePath();
         }
-    });
-
-    connect(ui->pushButton_savescreenshotpath, &QPushButton::clicked, this, [&]() {
-        emit modeChanged();
-    });
+    }
 }
 
 save_screenshot::~save_screenshot()
@@ -78,65 +98,66 @@ save_screenshot::~save_screenshot()
     delete ui;
 }
 
-void save_screenshot::paintEvent(QPaintEvent *)
-{
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
+void save_screenshot::screenshot_path_dialog(){
 
-    QColor bg(60, 60, 60, 150);
-    p.setBrush(bg);
-    p.setPen(Qt::NoPen);
+    QString startDir = g_AppSettings.saveScreenshot_folder;
 
-    QRect r = rect();
-    QPainterPath path;
-    path.addRoundedRect(r, 12, 12);
+    if (startDir.isEmpty() || !QDir(startDir).exists())
+    {
+        startDir = QStandardPaths::writableLocation(
+            QStandardPaths::PicturesLocation
+            );
 
-    p.drawPath(path);
-}
+        if (startDir.isEmpty() || !QDir(startDir).exists())
+        {
+            startDir = QDir::homePath();
+        }
+    }
 
-void save_screenshot::setAnchorButton(QPushButton* button)
-{
-    anchorButton = button;
-}
+    QFileDialog* dlg = new QFileDialog(this);
 
-void save_screenshot::showEvent(QShowEvent *event)
-{
-    QWidget::showEvent(event);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
 
-    if (!anchorButton)
-        return;
+    dlg->setWindowTitle(tr("フォルダーを選択"));
 
-    QPoint btnPos = anchorButton->mapToGlobal(QPoint(0, 0));
+    dlg->setDirectory(startDir);
 
-    int x = btnPos.x() + (anchorButton->width() - width()) / 2;
-    int y = btnPos.y() + 22; // ← ピッタリ接触
+    // フォルダー選択
+    dlg->setFileMode(QFileDialog::Directory);
 
-    move(x, y);
-}
+    // 「フォルダーを選択」だけにする
+    dlg->setOption(
+        QFileDialog::ShowDirsOnly,
+        true
+        );
 
+    connect(
+        dlg,
+        &QFileDialog::fileSelected,
+        this,
+        [this](const QString& folderPath)
+        {
+            qDebug()
+            << "選択されたフォルダー:"
+            << folderPath;
 
-void save_screenshot::enterEvent(QEnterEvent *)
-{
-    mouseInside = true;
+            // 必要なら設定に保存
+            g_AppSettings.saveScreenshot_folder = folderPath;
+            ui->label_savescreenshotpath->setText(g_AppSettings.saveScreenshot_folder);
+        }
+        );
 
-    hideTimer.stop();
-    fadeAnim->stop();
+    connect(
+        dlg,
+        &QFileDialog::rejected,
+        this,
+        []
+        {
+            qDebug()
+            << "フォルダー選択がキャンセルされました";
+        }
+        );
 
-    setWindowOpacity(1.0); // 即表示
-}
-
-void save_screenshot::leaveEvent(QEvent *)
-{
-    mouseInside = false;
-    hideTimer.start(); // 500ms後にフェード開始
-}
-
-void save_screenshot::showPopup()
-{
-    fadeAnim->stop();
-    hideTimer.stop();
-
-    setWindowOpacity(1.0);
-    show();
-    raise();
+    // 非同期表示
+    dlg->open();
 }

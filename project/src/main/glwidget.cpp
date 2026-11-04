@@ -302,36 +302,50 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
         bool idle = false;
         if (!screenshotSaving.compare_exchange_strong(idle, true))
         {
+            // 実行中の保存が終われば screenshot_finished が出るので、ここでは出さない
             qDebug() << "前のキャプチャを保存中のため今回は見送り";
-        }
-        else if (!d_cudaScreenshot || !cudaResource_screenshot || !screenshotStream)
-        {
-            screenshotSaving.store(false);
         }
         else
         {
-            // FBO テクスチャ → d_cudaScreenshot (GPU 内コピー, CPU は待たない)
-            bool ok = false;
-            if (cudaGraphicsMapResources(1, &cudaResource_screenshot, screenshotStream) == cudaSuccess)
-            {
-                cudaArray_t cudaArray = nullptr;
-                ok = cudaGraphicsSubResourceGetMappedArray(&cudaArray, cudaResource_screenshot, 0, 0) == cudaSuccess
-                  && cudaMemcpy2DFromArrayAsync(d_cudaScreenshot, d_cudaScreenshotPitch, cudaArray, 0, 0,
-                                                static_cast<size_t>(width_) * 4, height_,
-                                                cudaMemcpyDeviceToDevice, screenshotStream) == cudaSuccess;
-                cudaGraphicsUnmapResources(1, &cudaResource_screenshot, screenshotStream);
+            // ★ 保存を開始できなかった経路でも必ず screenshot_finished を出す
+            //   (出さないと MainWindow が無効化した UI が戻らない)
+            auto abortScreenshot = [this](const char* why) {
+                qWarning() << "スクリーンショット中止:" << why;
+                screenshotSaving.store(false);
+                emit screenshot_finished();
+            };
+
+            if (!screenshotEncoder) {
+                try {
+                    screenshotEncoder = std::make_unique<gpuimg::Encoder>();   // 画像のある GPU を自動使用
+                } catch (const std::exception& e) {
+                    qWarning() << "gpuimg::Encoder 作成失敗:" << e.what();
+                }
             }
 
-            if (!ok)
+            bool ok = false;
+            if (!d_cudaScreenshot || !cudaResource_screenshot || !screenshotStream || !screenshotEncoder)
             {
-                qDebug() << "スクリーンショットのコピーに失敗:" << cudaGetErrorString(cudaGetLastError());
-                screenshotSaving.store(false);
+                abortScreenshot("未初期化");
             }
             else
             {
-                if (!screenshotEncoder)
-                    screenshotEncoder = std::make_unique<gpuimg::Encoder>();   // 画像のある GPU を自動使用
+                // FBO テクスチャ → d_cudaScreenshot (GPU 内コピー, CPU は待たない)
+                if (cudaGraphicsMapResources(1, &cudaResource_screenshot, screenshotStream) == cudaSuccess)
+                {
+                    cudaArray_t cudaArray = nullptr;
+                    ok = cudaGraphicsSubResourceGetMappedArray(&cudaArray, cudaResource_screenshot, 0, 0) == cudaSuccess
+                      && cudaMemcpy2DFromArrayAsync(d_cudaScreenshot, d_cudaScreenshotPitch, cudaArray, 0, 0,
+                                                    static_cast<size_t>(width_) * 4, height_,
+                                                    cudaMemcpyDeviceToDevice, screenshotStream) == cudaSuccess;
+                    cudaGraphicsUnmapResources(1, &cudaResource_screenshot, screenshotStream);
+                }
+                if (!ok)
+                    abortScreenshot(cudaGetErrorString(cudaGetLastError()));
+            }
 
+            if (ok)
+            {
                 // 保存先 (g_AppSettings / Frame はワーカー実行時には変わりうるのでここで確定)
                 QString saveDir = g_AppSettings.saveScreenshot_folder;
                 if (saveDir.isEmpty() || !QDir(saveDir).exists())
@@ -340,11 +354,21 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
                 const QString savePath = QDir(saveDir).filePath(
                     QString("screenshot_%1_No.%2.png").arg(baseName).arg(Frame.FrameNo));
 
+                // ★ pitch は必ず cudaMallocPitch が返した値 (width_*4 だと幅によって画像が斜めに崩れる)
                 const gpuimg::Image img = gpuimg::Image::rgba8(
-                    d_cudaScreenshot, width_, height_, width_*4);   // ★ pitch は cudaMallocPitch の値
+                    d_cudaScreenshot, width_, height_, d_cudaScreenshotPitch);
+
+                // 圧縮レベル (UI 設定)。未知の値は FAST
+                gpuimg_compression level = GPUIMG_COMPRESSION_FAST;
+                if (g_AppSettings.screenshot_mode == "normal")    level = GPUIMG_COMPRESSION_NORMAL;
+                else if (g_AppSettings.screenshot_mode == "high") level = GPUIMG_COMPRESSION_HIGH;
+
+                // ★ stream / 上下反転はレベルに関係なく必須なので共通で設定する
                 const gpuimg::EncodeParams params = gpuimg::EncodeParams(GPUIMG_FORMAT_PNG)
-                    .stream(screenshotStream)   // ★ 上のコピー完了を GPU 側で待ってから圧縮
-                    .flipVertical().high();            // ★ OpenGL は下の行から並ぶので上下反転して保存
+                    .stream(screenshotStream)   // 上のコピー完了を GPU 側で待ってから圧縮
+                    .flipVertical()             // OpenGL は下の行から並ぶので上下反転して保存
+                    .compressionLevel(level);
+
                 gpuimg::Encoder* enc = screenshotEncoder.get();
 
                 // 圧縮・書き出しはワーカーで (GUI スレッドを止めない)。
@@ -355,11 +379,12 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
                         try {
                             gpuimg_stats st = enc->save(savePath.toUtf8().constData(), img, params);
                             qDebug() << "screenshot saved:" << savePath << st.seconds << "s";
-                        } catch (const gpuimg::Error& e) {
-                            qWarning() << "gpuimg" << int(e.status()) << e.what();
+                        } catch (const std::exception& e) {
+                            qWarning() << "screenshot:" << e.what();
                         }
-                        screenshotSaving.store(false);
+                        // ★ emit を先に。store(false) の瞬間にデストラクタが進んで this が消えうる
                         emit screenshot_finished();
+                        screenshotSaving.store(false);
                     }));
             }
         }

@@ -39,6 +39,9 @@ struct AppSettings
     bool sobelfilterEnabled = false;
     bool gaussianfilterEnabled = false;
     bool averagingfilterEnabled = false;
+
+    QString screenshot_format = "png";
+    QString screenshot_mode = "fast";
 };
 
 // エンコード設定の構造体
