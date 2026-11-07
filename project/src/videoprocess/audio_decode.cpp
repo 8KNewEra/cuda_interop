@@ -1,6 +1,7 @@
 #include "src/videoprocess/audio_decode.h"
 
 #include <QTimer>
+#include <QStringList>
 #include <QDebug>
 #include <QAudioDevice>
 #include <QMediaDevices>
@@ -130,6 +131,7 @@ bool audio_decode::openFile()
 
     AVStream* st = fmt_ctx_->streams[stream_index_];
     time_base_ = av_q2d(st->time_base);
+    stream_tb_ = st->time_base;
 
     // ★ 映像と音声で「0 秒」の位置を合わせる。
     //   どちらも各ストリームの pts をそのまま秒にした値なので、開始 pts が
@@ -166,9 +168,10 @@ bool audio_decode::openFile()
         qWarning() << "[audio] avcodec_open2 failed"; return false;
     }
 
-    pkt_   = av_packet_alloc();
-    frame_ = av_frame_alloc();
-    if (!pkt_ || !frame_) return false;
+    pkt_        = av_packet_alloc();
+    frame_      = av_frame_alloc();
+    filt_frame_ = av_frame_alloc();
+    if (!pkt_ || !frame_ || !filt_frame_) return false;
 
     // ---- 出力デバイス ----
     //   float を優先する。Windows(WASAPI 共有) の内部形式が float なので
@@ -196,44 +199,127 @@ bool audio_decode::openFile()
     sink_->setBufferSize(byte_per_sec_ * kBufferMs / 1000);
     dev_  = sink_->start();
 
-    // ---- swr（出力は常にインターリーブ float。音量を掛けるため）----
+    // ---- フィルタ（出力は常にインターリーブ float。音量を掛けるため）----
     av_channel_layout_copy(&in_ch_, &ctx_->ch_layout);
     av_channel_layout_default(&out_ch_, channels);
+    out_rate_ = ctx_->sample_rate;
+    src_rate_ = ctx_->sample_rate;
+    src_fmt_  = ctx_->sample_fmt;
 
     setting_speed_ = g_AppSettings.video_speed_ratio;
-    if (!buildSwr(setting_speed_)) {
-        qWarning() << "[audio] swr_init failed"; return false;
+    if (!buildFilter(setting_speed_, false)) {
+        qWarning() << "[audio] フィルタグラフを作れません"; return false;
     }
 
     return true;
 }
 
 // =============================================================================
-// ★ 再生速度
+// ★ 再生速度（音程を保つ）
 //
-//   「入力レートが speed 倍だ」と swr に申告すると出力が 1/speed 本になり、
-//   デバイスのレートはそのままで速く鳴る。音程も上がるが、これは従来と同じ。
-//   保ちたいなら libavfilter の atempo が要る。
+//     abuffer -> atempo(xN) -> aformat=flt/stereo/実レート -> abuffersink
 //
-//   ★ speed は設定値そのままとは限らない。デコーダが設定どおりに回らない
-//     （60fps の素材が 40fps しか出ない）ときは、updateVideoRate() が映像の
-//     実効速度を測ってここへ入れる。設定値で鳴らし続けると音声が毎秒先行し、
-//     合わせ直しのたびに巻き戻って同じ所を繰り返していた。
+//   以前は swr に「入力レートが speed 倍だ」と申告して伸縮していたので、
+//   音程も速度に比例して動いた（実効速度 0.67 倍で約 7 半音低い）。
+//   atempo は時間軸だけを伸縮するので音程が変わらない。
+//
+//   ★ atempo 1 段の範囲は 0.5〜2.0（古い FFmpeg）。外れる速度は段を重ねる。
+//   ★ 速度 1.0 では atempo を入れない（素通しが一番きれい）。
+//   ★ 形式・チャンネル・レートの変換は aformat が自動で aresample を挿入して
+//     行う（中身は swr）。swr を自前で持つ必要はもう無い。
+//   ★ 速度・EOF 以外にも、デコーダの出力形式が途中で変わると abuffer が
+//     弾く。そのときは decodeOne が作り直す。
 // =============================================================================
-bool audio_decode::buildSwr(double speed)
+void audio_decode::freeFilter()
+{
+    avfilter_graph_free(&graph_);   // 中のフィルタごと解放。src/sink は所有していない
+    src_ctx_  = nullptr;
+    sink_ctx_ = nullptr;
+    filter_eof_ = false;
+}
+
+bool audio_decode::buildFilter(double speed, bool drain)
 {
     if (!ctx_) return false;
     if (!(speed > 0.01)) speed = 1.0;
 
-    if (swr_) swr_free(&swr_);
+    // ---- 旧グラフの残りを吐かせる（速度だけ変えるとき）----
+    //   atempo は窓の分（数十 ms）を内部に抱えている。捨てるとそこが欠ける。
+    if (drain && graph_ && src_ctx_ && sink_ctx_ && !filter_eof_) {
+        if (av_buffersrc_add_frame(src_ctx_, nullptr) >= 0) {
+            while (av_buffersink_get_frame(sink_ctx_, filt_frame_) >= 0) {
+                const int n = filt_frame_->nb_samples;
+                const int bytes = n * out_ch_.nb_channels * (int)sizeof(float);
+                drained_.append(reinterpret_cast<const char*>(filt_frame_->data[0]), bytes);
+                out_samples_ += n;
+                av_frame_unref(filt_frame_);
+            }
+            if (src_anchor_ >= 0.0)
+                drained_end_sec_ = src_anchor_ + (double)out_samples_ * speed_ / out_rate_;
+            else
+                drained_end_sec_ = cur_sec_;
+        }
+    }
 
-    out_rate_ = ctx_->sample_rate;
-    in_rate_  = (int)llround((double)ctx_->sample_rate * speed);
-    if (in_rate_ < 1) in_rate_ = ctx_->sample_rate;
+    freeFilter();
+    src_anchor_  = -1.0;     // 次に入れるフレームの位置から数え直す
+    out_samples_ = 0;
 
-    const int ret = swr_alloc_set_opts2(&swr_, &out_ch_, AV_SAMPLE_FMT_FLT, out_rate_,
-                                        &in_ch_, ctx_->sample_fmt, in_rate_, 0, nullptr);
-    if (ret < 0 || !swr_ || swr_init(swr_) < 0) return false;
+    graph_ = avfilter_graph_alloc();
+    if (!graph_) return false;
+
+    // ---- 入口: デコーダの出力そのまま ----
+    char layout[128] = {};
+    av_channel_layout_describe(&in_ch_, layout, sizeof(layout));
+    const QString src_args =
+        QString("time_base=%1/%2:sample_rate=%3:sample_fmt=%4:channel_layout=%5")
+            .arg(stream_tb_.num).arg(stream_tb_.den)
+            .arg(src_rate_)
+            .arg(av_get_sample_fmt_name(src_fmt_))
+            .arg(layout);
+
+    int ret = avfilter_graph_create_filter(&src_ctx_, avfilter_get_by_name("abuffer"),
+                                           "in", src_args.toUtf8().constData(),
+                                           nullptr, graph_);
+    if (ret < 0) {
+        qWarning() << "[audio] abuffer の作成に失敗:" << src_args;
+        freeFilter(); return false;
+    }
+
+    ret = avfilter_graph_create_filter(&sink_ctx_, avfilter_get_by_name("abuffersink"),
+                                       "out", nullptr, nullptr, graph_);
+    if (ret < 0) { qWarning() << "[audio] abuffersink の作成に失敗"; freeFilter(); return false; }
+
+    // ---- 中身: atempo を必要な段数だけ + 出口の形式 ----
+    QStringList chain;
+    if (std::fabs(speed - 1.0) > 1e-6) {
+        double rest = speed;
+        while (rest < 0.5) { chain << "atempo=0.5"; rest /= 0.5; }
+        while (rest > 2.0) { chain << "atempo=2.0"; rest /= 2.0; }
+        chain << QString("atempo=%1").arg(rest, 0, 'f', 6);
+    }
+    char out_layout[64] = {};
+    av_channel_layout_describe(&out_ch_, out_layout, sizeof(out_layout));
+    chain << QString("aformat=sample_fmts=flt:sample_rates=%1:channel_layouts=%2")
+                 .arg(out_rate_).arg(out_layout);
+    const QByteArray desc = chain.join(',').toUtf8();
+
+    AVFilterInOut* outputs = avfilter_inout_alloc();   // グラフ側から見た「出口へ繋ぐ口」= src
+    AVFilterInOut* inputs  = avfilter_inout_alloc();   // 同「入口へ繋ぐ口」= sink
+    if (!outputs || !inputs) {
+        avfilter_inout_free(&outputs); avfilter_inout_free(&inputs);
+        freeFilter(); return false;
+    }
+    outputs->name = av_strdup("in");  outputs->filter_ctx = src_ctx_;  outputs->pad_idx = 0; outputs->next = nullptr;
+    inputs->name  = av_strdup("out"); inputs->filter_ctx  = sink_ctx_; inputs->pad_idx  = 0; inputs->next  = nullptr;
+
+    ret = avfilter_graph_parse_ptr(graph_, desc.constData(), &inputs, &outputs, nullptr);
+    avfilter_inout_free(&inputs);
+    avfilter_inout_free(&outputs);
+    if (ret < 0 || avfilter_graph_config(graph_, nullptr) < 0) {
+        qWarning() << "[audio] フィルタグラフの構成に失敗:" << desc;
+        freeFilter(); return false;
+    }
 
     speed_ = speed;
     return true;
@@ -241,7 +327,9 @@ bool audio_decode::buildSwr(double speed)
 
 void audio_decode::closeFile()
 {
-    if (swr_)     swr_free(&swr_);
+    freeFilter();
+    if (filt_frame_) av_frame_free(&filt_frame_);
+    drained_.clear();
     if (ctx_)     avcodec_free_context(&ctx_);
     if (fmt_ctx_) avformat_close_input(&fmt_ctx_);
     if (pkt_)     av_packet_free(&pkt_);
@@ -290,6 +378,12 @@ void audio_decode::seekToSeconds(double sec)
     av_seek_frame(fmt_ctx_, stream_index_, ts, AVSEEK_FLAG_BACKWARD);
 
     flushDevice();
+
+    // ★ グラフも作り直す。atempo が抱えているシーク前の音を出させないため。
+    //   速度切り替え用の残り（drained_）もシーク前の音なので捨てる。
+    drained_.clear();
+    buildFilter(speed_, false);
+
     cur_sec_   = sec;
     skip_until_ = sec;        // ★ 目標に届くまで捨てる（上の説明）
     eof_       = false;
@@ -297,47 +391,92 @@ void audio_decode::seekToSeconds(double sec)
 }
 
 // =============================================================================
-// ★ 1 パケットぶんデコードして PCM(float) を返す
+// ★ 1 かたまりぶんの PCM(インターリーブ float) を返す
+//
+//   引く順番: 速度切り替えの残り -> グラフの出力 -> デコーダ -> パケット
+//   グラフは入力 1 フレームにつき 0〜数フレームを出す（atempo は窓が溜まる
+//   まで出さない）ので、出口から先に引き、空なら入口へ足す。
 // =============================================================================
 bool audio_decode::decodeOne(QByteArray& pcm)
 {
+    if (!drained_.isEmpty()) {
+        pcm.swap(drained_);
+        drained_.clear();
+        cur_sec_ = drained_end_sec_;
+        return true;
+    }
+
+    if (!graph_ && !buildFilter(speed_, false)) return false;
+
     for (;;) {
-        // まず溜まっている出力を引く
-        int r = avcodec_receive_frame(ctx_, frame_);
+        // ---- ① グラフの出口 ----
+        int r = av_buffersink_get_frame(sink_ctx_, filt_frame_);
+        if (r >= 0) {
+            const int n = filt_frame_->nb_samples;
+            const int bytes = n * out_ch_.nb_channels * (int)sizeof(float);
+            pcm = QByteArray(reinterpret_cast<const char*>(filt_frame_->data[0]), bytes);
+            av_frame_unref(filt_frame_);
+            if (n <= 0) continue;
 
-        if (r == 0) {
-            const int ch = out_ch_.nb_channels;
-
-            // ★ 遅い再生（speed < 1）では出力が入力より多くなる。
-            //   実レートで割らず、必ず in_rate_/out_rate_ で見積もること。
-            const int max_out = (int)av_rescale_rnd(
-                swr_get_delay(swr_, in_rate_) + frame_->nb_samples,
-                out_rate_, in_rate_, AV_ROUND_UP) + 64;
-
-            pcm.resize(max_out * ch * (int)sizeof(float));
-            uint8_t* out[1] = { reinterpret_cast<uint8_t*>(pcm.data()) };
-
-            const int n = swr_convert(swr_, out, max_out,
-                                      (const uint8_t**)frame_->extended_data,
-                                      frame_->nb_samples);
-            if (n <= 0) { pcm.clear(); continue; }
-
-            pcm.resize(n * ch * (int)sizeof(float));
-
-            // ★ 「このフレームの終わり」を素材の時間で指すこと。
+            // ★ 「このかたまりの終わり」を素材の時間で指す。
             //   出力 n 本は素材の n*speed/out_rate 秒ぶんに当たる。
-            const double adv = (double)n * speed_ / out_rate_;
-            if (frame_->best_effort_timestamp != AV_NOPTS_VALUE)
-                cur_sec_ = frame_->best_effort_timestamp * time_base_ + adv;
+            out_samples_ += n;
+            if (src_anchor_ >= 0.0)
+                cur_sec_ = src_anchor_ + (double)out_samples_ * speed_ / out_rate_;
             else
-                cur_sec_ += adv;
-
+                cur_sec_ += (double)n * speed_ / out_rate_;
             return true;
         }
+        if (r == AVERROR_EOF) return false;            // 終端まで出し切った
+        if (r != AVERROR(EAGAIN)) return false;
 
-        if (r != AVERROR(EAGAIN)) return false;     // EOF など
+        // ---- ② デコーダ ----
+        r = avcodec_receive_frame(ctx_, frame_);
+        if (r == 0) {
+            if (src_anchor_ < 0.0) {
+                src_anchor_ = (frame_->best_effort_timestamp != AV_NOPTS_VALUE)
+                                  ? frame_->best_effort_timestamp * time_base_
+                                  : cur_sec_;
+                out_samples_ = 0;
+            }
 
-        // 次のパケットを入れる
+            // ★ 形式が途中で変わった（チャンネル数・レートの切り替わり）。
+            //   abuffer は宣言と違うフレームを受け付けないので作り直す。
+            if (frame_->sample_rate != src_rate_ ||
+                frame_->format != src_fmt_ ||
+                av_channel_layout_compare(&frame_->ch_layout, &in_ch_) != 0) {
+                av_channel_layout_uninit(&in_ch_);
+                av_channel_layout_copy(&in_ch_, &frame_->ch_layout);
+                src_rate_ = frame_->sample_rate;
+                src_fmt_  = (AVSampleFormat)frame_->format;
+                const double anchor = src_anchor_;
+                const qint64 done   = out_samples_;
+                if (!buildFilter(speed_, true)) { av_frame_unref(frame_); return false; }
+                // drained_ に残りがあれば次の呼び出しで返る。位置は数え直し。
+                src_anchor_ = (frame_->best_effort_timestamp != AV_NOPTS_VALUE)
+                                  ? frame_->best_effort_timestamp * time_base_
+                                  : anchor + (double)done * speed_ / out_rate_;
+            }
+
+            // KEEP_REF: グラフは参照を足して受け取る。frame_ はこちらで解放する。
+            if (av_buffersrc_add_frame_flags(src_ctx_, frame_, AV_BUFFERSRC_FLAG_KEEP_REF) < 0)
+                qWarning() << "[audio] フィルタへの投入に失敗";
+            av_frame_unref(frame_);
+            continue;
+        }
+
+        if (r == AVERROR_EOF) {
+            // デコーダが空になった。グラフにも終わりを伝え、残りを出させる。
+            if (!filter_eof_) {
+                (void)av_buffersrc_add_frame(src_ctx_, nullptr);   // 失敗しても下の get_frame が EOF を返す
+                filter_eof_ = true;
+                continue;
+            }
+            return false;
+        }
+        if (r != AVERROR(EAGAIN)) return false;
+
+        // ---- ③ 次のパケットを入れる ----
         if (eof_) return false;
 
         const int rr = av_read_frame(fmt_ctx_, pkt_);
@@ -363,8 +502,7 @@ bool audio_decode::decodeOne(QByteArray& pcm)
 //
 //   ★ 速度を変えるときにシークしないこと。積んである音はそのまま鳴らし、
 //     ここから先を新しい速度で作る（シークすると切り替えのたびに音が途切れる）。
-//   ★ 音程は速度に比例して下がる（0.67 倍なら約 7 半音）。保ちたいなら
-//     swr ではなく libavfilter の atempo を使う。
+//   ★ 伸縮は atempo なので音程は変わらない（buildFilter 参照）。
 // =============================================================================
 void audio_decode::resetVideoRate()
 {
@@ -374,6 +512,39 @@ void audio_decode::resetVideoRate()
     rate_clock_.invalidate();
     // rate_ema_ は残す。シークしてもデコーダの性能は変わらないので、
     // 測り直しが済むまでは前の値のほうが当たっている。
+}
+
+// 切り替え直後に鳴らし始める速度。上限が分かっていれば最初からそこに合わせる。
+//   丸め方は updateVideoRate の目標速度と揃えること（揃わないと最初の計測で
+//   同じ速度へ作り直しが走る）。
+double audio_decode::initialSpeed() const
+{
+    if (capacity_ <= 0.0 || capacity_ >= setting_speed_ * (1.0 - kSpeedTolerance))
+        return setting_speed_;
+    const double t = std::round(capacity_ / kSpeedStep) * kSpeedStep;
+    return std::max((double)kSpeedStep, std::min(t, setting_speed_));
+}
+
+// 出せるか分からない速度か。
+//   飽和を見ていれば initialSpeed() で当てられる。確認済みの範囲なら設定どおり。
+bool audio_decode::needProbe() const
+{
+    if (capacity_ > 0.0) return false;
+    return setting_speed_ > proven_ * (1.0 + kSpeedTolerance);
+}
+
+void audio_decode::startProbe()
+{
+    probing_       = true;
+    waiting_       = false;
+    fresh_setting_ = false;     // プローブの結果で直接決めるので不要
+    rate_ema_      = 0.0;       // 古い計測を使わない
+    resetVideoRate();
+    flushDevice();
+    probe_clock_.restart();
+    qDebug().noquote()
+        << QString("[audio] 速度 %1 が出せるか分からないので、測ってから鳴らします")
+               .arg(setting_speed_, 0, 'f', 2);
 }
 
 void audio_decode::updateVideoRate(double v)
@@ -410,6 +581,21 @@ void audio_decode::updateVideoRate(double v)
 
     rate_ema_ = (rate_ema_ > 0.0) ? (rate_ema_ * 0.5 + rate * 0.5) : rate;
 
+    // ---- デコーダの上限を覚える ----
+    //   設定に届いていない = 飽和している。そのときの速度が上限。
+    //   届いている = 上限は設定以上。覚えていた値より速く回れたなら引き上げる
+    //   （軽い場面に入った）。
+    if (rate_ema_ < setting_speed_ * (1.0 - kSpeedTolerance)) {
+        capacity_ = rate_ema_;
+    } else {
+        proven_ = std::max(proven_, rate_ema_);
+        if (capacity_ > 0.0 && rate_ema_ > capacity_)
+            capacity_ = rate_ema_;
+    }
+
+    // プローブ中は pump 側が結果を見て鳴らし始める
+    if (probing_) return;
+
     // ---- 目標速度 ----
     //   設定より速くはしない（映像が設定より速く進むことは無い。あれば計測の揺れ）。
     //   ほぼ設定どおりなら設定値そのもの。外れていれば kSpeedStep に丸める。
@@ -422,14 +608,19 @@ void audio_decode::updateVideoRate(double v)
         target = std::max((double)kSpeedStep, std::min(target, setting_speed_));
     }
 
+    const bool fresh = fresh_setting_;
+    fresh_setting_ = false;
+
     if (std::fabs(target - speed_) < 1e-6) { rate_votes_ = 0; return; }
 
-    // 1 回の計測だけでは変えない（重い GOP を 1 回踏んだだけで下げない）
-    if (++rate_votes_ < 2) return;
+    // 1 回の計測だけでは変えない（重い GOP を 1 回踏んだだけで下げない）。
+    // ★ ただし切り替え直後は 1 回で反映する。initialSpeed() は前の設定での
+    //   観測から推した値なので、外れていたら早く直したほうがいい。
+    if (++rate_votes_ < (fresh ? 1 : 2)) return;
     rate_votes_ = 0;
 
     const double from = speed_;
-    if (buildSwr(target)) {
+    if (buildFilter(target, true)) {
         qDebug().noquote()
             << QString("[audio] 映像の実効速度 %1 に合わせて %2 -> %3 で鳴らします (設定 %4)")
                    .arg(rate_ema_, 0, 'f', 3).arg(from, 0, 'f', 2)
@@ -471,12 +662,17 @@ void audio_decode::pump()
     if (!was_playing_) {
         was_playing_ = true;
         waiting_     = false;
+        probing_     = false;
         resetVideoRate();
-        const double v = videoSeconds();
-        if (v >= 0.0) seekToSeconds(v);
+        if (needProbe()) {
+            startProbe();
+        } else {
+            const double v = videoSeconds();
+            if (v >= 0.0) seekToSeconds(v);
+        }
     }
 
-    // ---- ユーザーが再生速度を変えたら swr を作り直す ----
+    // ---- ユーザーが再生速度を変えたらグラフを作り直す ----
     //   変えた直後はキューの中身が古い速度のものなので捨てる。
     //   ★ speed_ とではなく設定の控えと比べること。speed_ は実効速度への
     //     追従で設定値から外れるので、比べると毎周ここで作り直してしまう。
@@ -484,7 +680,27 @@ void audio_decode::pump()
         setting_speed_ = g_AppSettings.video_speed_ratio;
         rate_ema_      = 0.0;      // 速度が変われば実効速度も変わるので測り直す
         resetVideoRate();
-        if (buildSwr(setting_speed_)) {
+        fresh_setting_ = true;
+
+        // 出せるか分からない速度なら、測ってから鳴らす
+        if (needProbe()) {
+            probing_ = false;
+            startProbe();
+            return;
+        }
+        probing_ = false;
+
+        // ★ 設定値ではなく「出せるはずの速度」から始める（capacity_ 参照）。
+        //   シークはこれまでどおり行う。積んである音は古い速度のもので、
+        //   残すと切り替え直後にその分だけ映像とずれたまま固定される。
+        const double start = initialSpeed();
+        if (std::fabs(start - setting_speed_) > 1e-6) {
+            qDebug().noquote()
+                << QString("[audio] 速度 %1 はデコーダの上限 %2 を超えるので %3 から始めます")
+                       .arg(setting_speed_, 0, 'f', 2).arg(capacity_, 0, 'f', 3)
+                       .arg(start, 0, 'f', 2);
+        }
+        if (buildFilter(start, false)) {
             const double at = videoSeconds();
             seekToSeconds(at >= 0.0 ? at : cur_sec_);
             return;
@@ -498,6 +714,26 @@ void audio_decode::pump()
 
     // ---- 映像の実効速度に合わせる（デコーダが飽和しているとき）----
     updateVideoRate(v);
+
+    // ---- プローブ中: 最初の計測が出るまで黙る ----
+    if (probing_) {
+        const bool measured = (rate_ema_ > 0.0);
+        if (!measured && probe_clock_.elapsed() < kProbeMaxMs) return;
+
+        probing_ = false;
+        const double start = measured ? initialSpeed() : setting_speed_;
+        qDebug().noquote()
+            << (measured
+                    ? QString("[audio] 映像の実効速度 %1 (設定 %2) -> %3 で鳴らし始めます")
+                          .arg(rate_ema_, 0, 'f', 3).arg(setting_speed_, 0, 'f', 2)
+                          .arg(start, 0, 'f', 2)
+                    : QString("[audio] 映像の速度を測れなかったので設定どおり %1 で鳴らします")
+                          .arg(start, 0, 'f', 2));
+        if (std::fabs(start - speed_) > 1e-6) buildFilter(start, false);
+        resetVideoRate();
+        if (v >= 0.0) seekToSeconds(v);   // 映像の今の位置から鳴らす
+        return;
+    }
 
     const bool   settled = !since_resync_.isValid() ||
                            since_resync_.elapsed() > kResyncHoldMs;

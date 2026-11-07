@@ -12,7 +12,9 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include "libswresample/swresample.h"
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersrc.h>
+#include <libavfilter/buffersink.h>
 }
 
 class QTimer;
@@ -63,10 +65,13 @@ private slots:
 private:
     bool openFile();
 
-    // ★ 再生速度。「入力レートが speed 倍だ」と swr に申告すると出力が
-    //   1/speed 本になる = 速く鳴る。音程も上がるが、これは従来（映像 1 枚に
-    //   つき音声を取り出していた頃）と同じ挙動。保ちたいなら atempo が要る。
-    bool buildSwr(double speed);
+    // ★ 再生速度。libavfilter の atempo で音程を保ったまま伸縮する。
+    //     abuffer -> atempo(xN) -> aformat(flt/stereo/実レート) -> abuffersink
+    //   drain = true なら、作り直す前に旧グラフの残りを吐かせて drained_ に
+    //   取っておく（実効速度への追従はシークせずに切り替えるので、捨てると
+    //   その数十 ms が欠ける）。シーク・初期化では false。
+    bool buildFilter(double speed, bool drain);
+    void freeFilter();
     void closeFile();
     void flushDevice();          // デバイスに積んである音を捨てる
     void seekToSeconds(double sec);
@@ -112,13 +117,34 @@ private:
     AVCodecContext*  ctx_     = nullptr;
     AVPacket*        pkt_     = nullptr;
     AVFrame*         frame_   = nullptr;
-    SwrContext*      swr_     = nullptr;
+    // ---- フィルタグラフ（swr の代わり。形式変換もここで行う）----
+    AVFilterGraph*   graph_    = nullptr;
+    AVFilterContext* src_ctx_  = nullptr;   // abuffer
+    AVFilterContext* sink_ctx_ = nullptr;   // abuffersink
+    AVFrame*         filt_frame_ = nullptr;
+    bool             filter_eof_ = false;   // グラフへ EOF を送った
+
+    // ★ 出力の位置（素材の秒）はグラフの出力本数から逆算する。
+    //   atempo の出力 pts は「伸縮後の時間」なので素材の位置には使えない。
+    //   素材位置 = src_anchor_ + out_samples_ * speed_ / out_rate_
+    double           src_anchor_  = -1.0;   // このグラフに最初に入れたフレームの位置。-1 = 未定
+    qint64           out_samples_ = 0;      // このグラフが出したサンプル数
+
+    // 速度切り替え時に旧グラフから吐かせた残り。decodeOne が先に返す。
+    QByteArray       drained_;
+    double           drained_end_sec_ = 0.0;
     AVChannelLayout  in_ch_{};
     AVChannelLayout  out_ch_{};
     int              stream_index_ = -1;
-    int              in_rate_  = 0;   // swr へ渡す「嘘の」入力レート = 実レート x speed
     int              out_rate_ = 0;   // デバイスのレート（実レート）
-    double           speed_    = 1.0; // いま swr に入れてある再生速度
+    double           speed_    = 1.0; // いまグラフに入れてある再生速度
+    AVRational       stream_tb_{0, 1};
+
+    // abuffer に宣言した入力形式。デコーダの出力が途中で変わったら（チャンネル
+    // 数・レートの切り替わり）ここを書き換えてグラフを作り直す。
+    // ★ ctx_ のフィールドを書き換えて代用しないこと（デコーダの持ち物）。
+    int              src_rate_ = 0;
+    AVSampleFormat   src_fmt_  = AV_SAMPLE_FMT_NONE;
     double           time_base_ = 0.0;
     bool             eof_ = false;
 
@@ -158,10 +184,42 @@ private:
     double rate_ema_   = 0.0;      // 実効速度（素材秒 / 実秒）の平滑値。0 = 未計測
     int    rate_votes_ = 0;        // 速度を変えるべき計測が何回続いたか
 
+    // ★ デコーダが出せる上限の速度（素材秒 / 実秒）。飽和を観測したときの
+    //   実効速度を覚えておく。0 = 飽和を観測していない（上限は設定より上）。
+    //   ユーザーが速度を切り替えた直後は、計測を待たずに min(設定, これ) で
+    //   鳴らし始める。待つと切り替え直後の約 1 秒（計測 2 回ぶん）、出せない
+    //   速度で鳴らして待機と再開を繰り返し、音が途切れ途切れになる。
+    double capacity_ = 0.0;
+
+    // 切り替え直後の最初の計測か（1 回で反映する）
+    bool   fresh_setting_ = false;
+
+    double initialSpeed() const;   // 切り替え直後に鳴らし始める速度
+
+    // ★ 飽和せずに出せると確認できた速度の最大。0 = 何も確認していない。
+    //   capacity_（飽和したときの上限）と合わせて「この速度は出せるか」を判断する。
+    double proven_ = 0.0;
+
+    // =========================================================================
+    // ★ 測ってから鳴らす（プローブ）
+    //
+    //   出せるか分からない速度で再生を始めるとき（ファイルを開いた直後に
+    //   既に 4 倍速になっている、確認済みより速い速度へ切り替えた）は、
+    //   鳴らしてから直すと最初の計測が揃うまで待機と再開を繰り返す。
+    //   最初の計測（kRateWindowMs）が終わるまで黙り、測れた速度で鳴らし始める。
+    // =========================================================================
+    bool   needProbe() const;
+    void   startProbe();
+    bool   probing_ = false;
+    QElapsedTimer probe_clock_;
+
+    // 映像が進まず測れないときの打ち切り（ms）。超えたら設定値で鳴らす。
+    static const int kProbeMaxMs = 1500;
+
     // 計測区間（ms）。映像位置はコマ単位でしか進まないので短すぎると揺れる。
     static const int kRateWindowMs = 500;
 
-    // 速度を変える閾値（設定速度に対する比）と刻み。細かく変えると swr の
+    // 速度を変える閾値（設定速度に対する比）と刻み。細かく変えるとグラフの
     // 作り直しが続くので、刻んで揃え、2 回続いたときだけ変える。
     static constexpr double kSpeedTolerance = 0.05;
     static constexpr double kSpeedStep      = 0.05;
