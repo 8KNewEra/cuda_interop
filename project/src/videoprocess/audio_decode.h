@@ -140,6 +140,39 @@ private:
 
     QElapsedTimer since_resync_;
 
+    // =========================================================================
+    // ★ 映像の実効速度への追従
+    //
+    //   映像主導なので、デコーダが設定どおりに回らない（60fps の素材が 40fps
+    //   しか出ない）と映像の位置は実時間の 2/3 でしか進まない。音声を設定速度
+    //   のまま鳴らすと毎秒 0.33 秒ずつ先行し、合わせ直しで「巻き戻って同じ所を
+    //   繰り返す」になる。映像の進み方を実測し、その速度で鳴らす。
+    // =========================================================================
+    void   updateVideoRate(double v);   // pump ごとに呼ぶ
+    void   resetVideoRate();            // シーク・再生開始で測り直す
+
+    double setting_speed_ = 1.0;   // ユーザー設定（video_speed_ratio）の控え
+    QElapsedTimer rate_clock_;     // 計測区間の開始
+    double rate_v0_    = -1.0;     // 計測区間の開始時の映像位置
+    double last_v_     = -1.0;     // 直前の pump で見た映像位置（飛びの検出）
+    double rate_ema_   = 0.0;      // 実効速度（素材秒 / 実秒）の平滑値。0 = 未計測
+    int    rate_votes_ = 0;        // 速度を変えるべき計測が何回続いたか
+
+    // 計測区間（ms）。映像位置はコマ単位でしか進まないので短すぎると揺れる。
+    static const int kRateWindowMs = 500;
+
+    // 速度を変える閾値（設定速度に対する比）と刻み。細かく変えると swr の
+    // 作り直しが続くので、刻んで揃え、2 回続いたときだけ変える。
+    static constexpr double kSpeedTolerance = 0.05;
+    static constexpr double kSpeedStep      = 0.05;
+
+    // ★ 先行がこれ未満なら巻き戻さずに待つ（秒）。これ以上は意図的な後方
+    //   シークかループの折り返しとみなしてシークする。
+    static constexpr double kWaitMaxSec = 1.5;
+
+    // 映像待ちで書き込みを止めているか（枯渇の計数から外す）
+    bool waiting_ = false;
+
     // デバイスに入りきらなかった端数。捨てるとそこが穴になるので持ち越す。
     QByteArray carry_;
 

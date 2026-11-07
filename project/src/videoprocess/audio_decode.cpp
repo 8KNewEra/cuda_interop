@@ -87,6 +87,13 @@ void audio_decode::shutdown()
                    .arg(kPumpMs).arg(dec, 0, 'f', 1).arg(kBufferMs);
     }
 
+    if (pump_n_) {
+        qDebug().noquote()
+            << QString("[audio] 映像の実効速度 %1 (設定 %2)  最後に鳴らしていた速度 %3")
+                   .arg(rate_ema_, 0, 'f', 3).arg(setting_speed_, 0, 'f', 3)
+                   .arg(speed_, 0, 'f', 3);
+    }
+
     if (sink_) { sink_->stop(); delete sink_; sink_ = nullptr; dev_ = nullptr; }
     closeFile();
     emit finished();
@@ -193,7 +200,8 @@ bool audio_decode::openFile()
     av_channel_layout_copy(&in_ch_, &ctx_->ch_layout);
     av_channel_layout_default(&out_ch_, channels);
 
-    if (!buildSwr(g_AppSettings.video_speed_ratio)) {
+    setting_speed_ = g_AppSettings.video_speed_ratio;
+    if (!buildSwr(setting_speed_)) {
         qWarning() << "[audio] swr_init failed"; return false;
     }
 
@@ -207,9 +215,10 @@ bool audio_decode::openFile()
 //   デバイスのレートはそのままで速く鳴る。音程も上がるが、これは従来と同じ。
 //   保ちたいなら libavfilter の atempo が要る。
 //
-//   ★ 出すのは「設定どおりの速度」だけ。デコーダが設定どおりに回らない場合
-//     （16K の 2 倍速など）は音声が先行し、合わせ直しが入る。映像主導である
-//     以上これは仕様で、飽和時に崩れるのは音声の方になる。
+//   ★ speed は設定値そのままとは限らない。デコーダが設定どおりに回らない
+//     （60fps の素材が 40fps しか出ない）ときは、updateVideoRate() が映像の
+//     実効速度を測ってここへ入れる。設定値で鳴らし続けると音声が毎秒先行し、
+//     合わせ直しのたびに巻き戻って同じ所を繰り返していた。
 // =============================================================================
 bool audio_decode::buildSwr(double speed)
 {
@@ -346,6 +355,93 @@ bool audio_decode::decodeOne(QByteArray& pcm)
 }
 
 // =============================================================================
+// ★ 映像の実効速度（素材秒 / 実秒）を測って、鳴らす速度をそれに合わせる
+//
+//   映像の位置は fps_thread の周期ではなく「デコードできたコマ」でしか進まない。
+//   デコーダが飽和すると設定速度より遅くなるので、その速さで鳴らせば
+//   ズレがそもそも溜まらない。
+//
+//   ★ 速度を変えるときにシークしないこと。積んである音はそのまま鳴らし、
+//     ここから先を新しい速度で作る（シークすると切り替えのたびに音が途切れる）。
+//   ★ 音程は速度に比例して下がる（0.67 倍なら約 7 半音）。保ちたいなら
+//     swr ではなく libavfilter の atempo を使う。
+// =============================================================================
+void audio_decode::resetVideoRate()
+{
+    rate_v0_    = -1.0;
+    last_v_     = -1.0;
+    rate_votes_ = 0;
+    rate_clock_.invalidate();
+    // rate_ema_ は残す。シークしてもデコーダの性能は変わらないので、
+    // 測り直しが済むまでは前の値のほうが当たっている。
+}
+
+void audio_decode::updateVideoRate(double v)
+{
+    if (v < 0.0) return;
+
+    // ---- 飛び（シーク・コマ送り・終端の折り返し）を跨いで測らない ----
+    //   kPumpMs(10ms) の間に 0.5 秒以上進む、または戻るのは再生ではない。
+    if (last_v_ >= 0.0) {
+        const double dv = v - last_v_;
+        if (dv < -1e-6 || dv > 0.5) {
+            resetVideoRate();
+            last_v_ = v;
+            return;
+        }
+    }
+    last_v_ = v;
+
+    if (rate_v0_ < 0.0 || !rate_clock_.isValid()) {
+        rate_v0_ = v;
+        rate_clock_.start();
+        return;
+    }
+
+    const qint64 ms = rate_clock_.elapsed();
+    if (ms < kRateWindowMs) return;
+
+    const double rate = (v - rate_v0_) * 1000.0 / (double)ms;
+    rate_v0_ = v;
+    rate_clock_.restart();
+
+    // 映像が止まっていた区間（停止へ入る直前など）は使わない
+    if (!(rate > 0.05)) return;
+
+    rate_ema_ = (rate_ema_ > 0.0) ? (rate_ema_ * 0.5 + rate * 0.5) : rate;
+
+    // ---- 目標速度 ----
+    //   設定より速くはしない（映像が設定より速く進むことは無い。あれば計測の揺れ）。
+    //   ほぼ設定どおりなら設定値そのもの。外れていれば kSpeedStep に丸める。
+    double target;
+    if (rate_ema_ >= setting_speed_ * (1.0 - kSpeedTolerance)) {
+        target = setting_speed_;
+    } else {
+        target = std::round(rate_ema_ / kSpeedStep) * kSpeedStep;
+        // ★ std::clamp は lo > hi で未定義なので使わない（設定が極端に遅い場合）
+        target = std::max((double)kSpeedStep, std::min(target, setting_speed_));
+    }
+
+    if (std::fabs(target - speed_) < 1e-6) { rate_votes_ = 0; return; }
+
+    // 1 回の計測だけでは変えない（重い GOP を 1 回踏んだだけで下げない）
+    if (++rate_votes_ < 2) return;
+    rate_votes_ = 0;
+
+    const double from = speed_;
+    if (buildSwr(target)) {
+        qDebug().noquote()
+            << QString("[audio] 映像の実効速度 %1 に合わせて %2 -> %3 で鳴らします (設定 %4)")
+                   .arg(rate_ema_, 0, 'f', 3).arg(from, 0, 'f', 2)
+                   .arg(target, 0, 'f', 2).arg(setting_speed_, 0, 'f', 2);
+
+        // ★ queuedSeconds() * speed_ は、積んである古い速度の音を新しい速度で
+        //   素材時間に直してしまう。積み直しが済むまで合わせ直しを止める。
+        since_resync_.restart();
+    }
+}
+
+// =============================================================================
 // ★ 本体。デバイスの空きを見て、空いているぶんだけ詰める。
 // =============================================================================
 void audio_decode::pump()
@@ -374,14 +470,21 @@ void audio_decode::pump()
     // ---- 再生へ入った瞬間は、映像の位置から始める ----
     if (!was_playing_) {
         was_playing_ = true;
+        waiting_     = false;
+        resetVideoRate();
         const double v = videoSeconds();
         if (v >= 0.0) seekToSeconds(v);
     }
 
-    // ---- 再生速度が変わっていたら swr を作り直す ----
+    // ---- ユーザーが再生速度を変えたら swr を作り直す ----
     //   変えた直後はキューの中身が古い速度のものなので捨てる。
-    if (std::fabs(g_AppSettings.video_speed_ratio - speed_) > 1e-6) {
-        if (buildSwr(g_AppSettings.video_speed_ratio)) {
+    //   ★ speed_ とではなく設定の控えと比べること。speed_ は実効速度への
+    //     追従で設定値から外れるので、比べると毎周ここで作り直してしまう。
+    if (std::fabs(g_AppSettings.video_speed_ratio - setting_speed_) > 1e-6) {
+        setting_speed_ = g_AppSettings.video_speed_ratio;
+        rate_ema_      = 0.0;      // 速度が変われば実効速度も変わるので測り直す
+        resetVideoRate();
+        if (buildSwr(setting_speed_)) {
             const double at = videoSeconds();
             seekToSeconds(at >= 0.0 ? at : cur_sec_);
             return;
@@ -392,12 +495,34 @@ void audio_decode::pump()
     //   シーク・コマ送り・終端の折り返しは全部ここで吸収される。
     //   cur_sec_ はデコード済みの位置なので、まだ鳴っていないキューを引く。
     const double v = videoSeconds();
+
+    // ---- 映像の実効速度に合わせる（デコーダが飽和しているとき）----
+    updateVideoRate(v);
+
     const bool   settled = !since_resync_.isValid() ||
                            since_resync_.elapsed() > kResyncHoldMs;
     if (v >= 0.0 && settled) {
         // ★ queuedSeconds() は実時間。素材の時間に直すには speed を掛ける。
         const double heard = cur_sec_ - queuedSeconds() * speed_;
         const double err   = heard - v;
+
+        // ★ 先行は巻き戻さずに待つ。
+        //   映像が遅れているだけなら、後ろへシークすると今聞いた所をもう一度
+        //   鳴らすことになる（デコーダ飽和時に 1 秒周期で繰り返していた原因）。
+        //   書き込みを止めれば積んだぶんが鳴り切り、映像が追いついた所から
+        //   続きを鳴らせる。途切れはするが、同じ音は二度鳴らない。
+        //   kWaitMaxSec を超える先行はユーザーの後方シークかループの折り返しな
+        //   ので、従来どおり下でシークする。
+        if (!waiting_ && err > kResyncSec && err < kWaitMaxSec)
+            waiting_ = true;
+
+        if (waiting_) {
+            if (err > 0.0 && err < kWaitMaxSec)
+                return;                      // まだ先行している。書かない
+            waiting_ = false;
+            // 再開直後はデバイスが空なので、枯渇として数えないよう少し待たせる
+            if (err <= 0.0) since_resync_.restart();
+        }
 
         if (std::fabs(err) > kResyncSec) {
             resync_++;
