@@ -917,7 +917,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 QFileInfo info(filePath);
                 QString ext = info.suffix().toLower();
 
-                if (ext == "mp4" || ext == "avi")
+                if (ext == "mp4" || ext == "avi" || ext == "mkv" || ext == "mov")
                 {
                     e->acceptProposedAction();
                     return true;
@@ -936,7 +936,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 QFileInfo info(filePath);
                 QString ext = info.suffix().toLower();
 
-                if (ext == "mp4" || ext == "avi")
+                if (ext == "mp4" || ext == "avi" || ext == "mkv" || ext == "mov")
                 {
                     //対応ファイルを開く
                     qDebug() << "Dropped file:" << filePath;
