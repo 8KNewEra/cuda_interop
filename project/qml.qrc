@@ -1,0 +1,17 @@
+<RCC>
+    <qresource prefix="/">
+        <file>qml/qmldir</file>
+        <file>qml/Theme.qml</file>
+        <file>qml/Main.qml</file>
+        <file>qml/Icon.qml</file>
+        <file>qml/IconButton.qml</file>
+        <file>qml/ChipButton.qml</file>
+        <file>qml/ToggleSwitch.qml</file>
+        <file>qml/InfoPanel.qml</file>
+        <file>qml/HistogramPanel.qml</file>
+        <file>qml/ZoomNavigator.qml</file>
+        <file>qml/FilterPanel.qml</file>
+        <file>qml/RangeBar.qml</file>
+        <file>qml/ControlPanel.qml</file>
+    </qresource>
+</RCC>

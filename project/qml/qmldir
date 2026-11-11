@@ -1,0 +1,11 @@
+singleton Theme 1.0 Theme.qml
+Icon 1.0 Icon.qml
+IconButton 1.0 IconButton.qml
+ChipButton 1.0 ChipButton.qml
+ToggleSwitch 1.0 ToggleSwitch.qml
+InfoPanel 1.0 InfoPanel.qml
+HistogramPanel 1.0 HistogramPanel.qml
+ZoomNavigator 1.0 ZoomNavigator.qml
+FilterPanel 1.0 FilterPanel.qml
+RangeBar 1.0 RangeBar.qml
+ControlPanel 1.0 ControlPanel.qml

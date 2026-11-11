@@ -12,6 +12,8 @@ LIBS += -lopengl32
 QT += widgets gui opengl
 QT += multimedia
 QT += concurrent
+# Qt Quick 版 UI（--qml で起動）
+QT += quick qml quickcontrols2
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -46,6 +48,10 @@ SOURCES += \
     $$PWD/src/main/glwidget.cpp \
     $$PWD/src/main/main.cpp \
     $$PWD/src/main/mainwindow.cpp \
+    $$PWD/src/qmlui/videoengine.cpp \
+    $$PWD/src/qmlui/videoitem.cpp \
+    $$PWD/src/qmlui/playercontroller.cpp \
+    $$PWD/src/qmlui/windowchrome.cpp \
 
 HEADERS += \
     $$PWD/src/__global__.h \
@@ -68,6 +74,10 @@ HEADERS += \
     $$PWD/src/main/fps_thread.h \
     $$PWD/src/main/glwidget.h \
     $$PWD/src/main/mainwindow.h \
+    $$PWD/src/qmlui/videoengine.h \
+    $$PWD/src/qmlui/videoitem.h \
+    $$PWD/src/qmlui/playercontroller.h \
+    $$PWD/src/qmlui/windowchrome.h \
     src/main/__global__.h
 
 FORMS += \
@@ -77,6 +87,10 @@ FORMS += \
     $$PWD/form/mainwindow.ui \
     $$PWD/form/video_speed.ui \
     $$PWD/form/save_screenshot.ui \
+
+# Qt Quick 版 UI の QML
+RESOURCES += \
+    $$PWD/qml.qrc
 
 TRANSLATIONS += \
     cuda_interop_ja_JP.ts
