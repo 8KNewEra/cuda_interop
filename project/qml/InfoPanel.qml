@@ -125,7 +125,7 @@ Rectangle {
                 Text {
                     textFormat: Text.StyledText
                     text: root.playing
-                          ? '<font color="' + root.renderColor + '">' + Number(root.renderFps).toFixed(1) + '</font>'
+                          ? '<font color="' + root.renderColor + '">' + Number(root.renderFps).toFixed(2) + '</font>'
                             + ' / ' + Number(root.targetFps).toFixed(2) + ' fps'
                           : '一時停止中'
                     color: Theme.muted2; font.family: Theme.mono; font.pixelSize: 12

@@ -27,7 +27,7 @@ class decode_thread;
 class fps_thread;
 class info_thread;
 class logfile_control;
-class encode_setting;
+class EncodeController;
 class save_screenshot;
 
 class PlayerController : public QObject
@@ -83,6 +83,9 @@ public:
     // GL / CUDA の初期化。QML を読み込む前に呼ぶ。
     bool initialize();
 
+    // エンコード設定（QML には "encoder" として公開する）
+    EncodeController* encoder() const { return encoder_; }
+
     bool ready() const           { return ready_; }
     bool fileOpen() const        { return run_decode_thread; }
     bool controlsEnabled() const { return controls_enabled_; }
@@ -94,7 +97,9 @@ public:
     // ★ 高精度シーク中は、デコードが目標に着くまで目標の番号を見せる
     //   （途中のコマや古いコマの番号で表示が揺れないように）
     int     frameNo() const    { return seek_hold_ ? seek_target_ : FrameNo; }
-    QString playTime() const   { return seek_hold_ ? formatFrames(seek_target_) : play_time_; }
+    // ★ 時刻は開始・終了と同じくフレーム番号から出す（シーク保持の解除前後で
+    //   計算方法が変わると、同じコマでも秒の繰り上がりがずれて表示が揺れる）
+    QString playTime() const   { return formatFrames(frameNo()); }
     int     maxFrames() const;
     int     rangeStart() const { return range_start_; }
     int     rangeEnd() const   { return range_end_; }
@@ -170,6 +175,8 @@ signals:
     void infoChanged();
     void histogramChanged();
     void screenshotStateChanged(bool busy);
+    // エンコード設定を開いた（QML がパネルを出す）
+    void encodeSettingsOpened();
 
     // decode_thread へ（MainWindow と同じ）
     void send_manual_back1frame();
@@ -207,7 +214,7 @@ private:
     // ---- 部品 ----
     VideoEngine*     engine_ = nullptr;
     logfile_control* logFile = nullptr;
-    encode_setting*  encodeSetting = nullptr;
+    EncodeController* encoder_ = nullptr;   // エンコード設定（QML 版）
     save_screenshot* saveScreenshot = nullptr;
 
     decode_thread* decodestream = nullptr;
@@ -232,6 +239,9 @@ private:
     //   シークやコマ送りでも pause=false のフレームが流れるので、
     //   描画 fps の表示はフレームの状態ではなくこちらを条件にする。
     bool play_intent_ = false;
+    // エンコード設定を開いた時点の位置と再生状態（閉じたらここへ戻す）
+    int  resume_frame_   = -1;
+    bool resume_playing_ = false;
     void setPlayIntent(bool on);
 
     // ★ 高精度シークの表示保持

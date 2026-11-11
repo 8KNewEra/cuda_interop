@@ -13,5 +13,11 @@
         <file>qml/FilterPanel.qml</file>
         <file>qml/RangeBar.qml</file>
         <file>qml/ControlPanel.qml</file>
+        <file>qml/Select.qml</file>
+        <file>qml/ValueRow.qml</file>
+        <file>qml/NumberSpin.qml</file>
+        <file>qml/EncodePanel.qml</file>
+        <file>qml/AppMenu.qml</file>
+        <file>qml/AppMenuSeparator.qml</file>
     </qresource>
 </RCC>

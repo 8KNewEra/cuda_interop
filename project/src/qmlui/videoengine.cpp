@@ -1049,6 +1049,14 @@ void VideoEngine::drawHistogram()
     glLoadIdentity();
 
     glEnable(GL_BLEND);
+    // ★ 線の太さを小数で効かせるためにアンチエイリアス線にする
+    //   （非 AA の線は整数ピクセルに丸められ、小さい表示で太く見える）
+    glEnable(GL_LINE_SMOOTH);
+    glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
+
+    // ★ 線の太さは表示サイズに比例させる（論理幅 300px で 0.8、600px 以上で 1.6）
+    const float plotW = float(histSize_.width() / histDpr_);
+    const float lineScale = std::clamp(plotW / 375.0f, 0.8f, 1.6f);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
     const float maxY = (float)h_hist_stats.max_y_axis;
@@ -1057,7 +1065,7 @@ void VideoEngine::drawHistogram()
     const float l2 = (float)hist_labels_[2] / maxY;
 
     // --- グリッド ---
-    glLineWidth(float(1.0 * histDpr_));
+    glLineWidth(float(0.6 * lineScale * histDpr_));
     glColor4f(1.0f, 1.0f, 1.0f, 0.14f);
     glBegin(GL_LINES);
     const float xs[] = { 0.25f, 0.5f, 0.75f };
@@ -1071,7 +1079,7 @@ void VideoEngine::drawHistogram()
     glEnableClientState(GL_VERTEX_ARRAY);
     glVertexPointer(3, GL_FLOAT, 0, 0);
 
-    glLineWidth(float(1.6 * histDpr_));
+    glLineWidth(float(lineScale * histDpr_));
     glColor4f(1.00f, 0.48f, 0.48f, 0.95f);
     glDrawArrays(GL_LINE_STRIP, 0, num_bins);
     glColor4f(0.43f, 0.91f, 0.63f, 0.95f);
@@ -1081,6 +1089,7 @@ void VideoEngine::drawHistogram()
 
     glDisableClientState(GL_VERTEX_ARRAY);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glDisable(GL_LINE_SMOOTH);
     glDisable(GL_BLEND);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 

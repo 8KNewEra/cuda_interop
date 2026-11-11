@@ -8,7 +8,7 @@
 #include "src/main/fps_thread.h"
 #include "src/info/info_thread.h"
 #include "src/info/logfile_control.h"
-#include "src/ui_control/encode_setting.h"
+#include "src/qmlui/encodecontroller.h"
 #include "src/ui_control/save_screenshot.h"
 
 #include <QCoreApplication>
@@ -32,12 +32,15 @@ PlayerController::PlayerController(QObject* parent)
 
     // 高精度シークで目標のコマが来なかった場合（範囲外への指定など）の保険
     seekHoldTimer_.setSingleShot(true);
-    seekHoldTimer_.setInterval(1500);
+    //   ★ 通常はデコーダの「重い処理の終了」通知で外す。これは最後の保険なので長め
+    //     （16K の高精度シークは 1 秒を超えることがあり、短いと途中で古い番号が見える）
+    seekHoldTimer_.setInterval(10000);
     connect(&seekHoldTimer_, &QTimer::timeout, this, [this] { clearSeekHold(); });
 
     infoTimer_.setInterval(500);
     connect(&infoTimer_, &QTimer::timeout, this, [this] {
-        if (g_AppSettings.videoInfo_flag) emit infoChanged();
+        // エンコード中は動画情報も更新しない（後ろは隠れている）
+        if (g_AppSettings.videoInfo_flag && encode_state != STATE_ENCODING) emit infoChanged();
     });
 }
 
@@ -47,7 +50,7 @@ PlayerController::~PlayerController()
     stop_info_thread();
     infoTimer_.stop();
 
-    delete encodeSetting;  encodeSetting = nullptr;
+    delete encoder_;       encoder_ = nullptr;
     delete saveScreenshot; saveScreenshot = nullptr;
     delete engine_;        engine_ = nullptr;
 
@@ -71,13 +74,11 @@ bool PlayerController::initialize()
     start_info_thread();
     infoTimer_.start();
 
-    // エンコード設定（当面は既存の Widgets ウィンドウ）
-    encodeSetting = new encode_setting();
-    encodeSetting->setWindowModality(Qt::ApplicationModal);
-    encodeSetting->hide();
-    connect(encodeSetting, &encode_setting::signal_encode_start,
+    // エンコード設定（QML 版。GPU 情報が確定してから作る）
+    encoder_ = new EncodeController();
+    connect(encoder_, &EncodeController::encodeStartRequested,
             this, &PlayerController::start_encode, Qt::QueuedConnection);
-    connect(encodeSetting, &encode_setting::signal_encode_finished,
+    connect(encoder_, &EncodeController::closed,
             this, &PlayerController::finished_encode, Qt::QueuedConnection);
 
     // スクリーンショット保存先（同上）
@@ -250,13 +251,22 @@ QVariantMap PlayerController::videoInfo() const
     return m;
 }
 
+// 表示用の GPU 名（CUDA 必須アプリなので先頭の "NVIDIA " は省く）
+static QString displayGpuName(QString name)
+{
+    name = name.trimmed();
+    if (name.startsWith(QLatin1String("NVIDIA "), Qt::CaseInsensitive))
+        name.remove(0, 7);
+    return name;
+}
+
 QVariantList PlayerController::gpus() const
 {
     QVariantList list;
     for (const GPUInfo& g : g_GPUInfo) {
         QVariantMap m;
         m["id"]       = g.deviceID;
-        m["name"]     = g.deviceName;
+        m["name"]     = displayGpuName(g.deviceName);
         m["sm"]       = QString("sm_%1%2").arg(g.CC_major).arg(g.CC_minor);
         m["usage"]    = g.GPU_Usage;
         m["memUsed"]  = g.Memory_Usage;
@@ -373,7 +383,13 @@ void PlayerController::start_decode_thread(const QString& filePath)
 
     connect(decodestream, &decode_thread::send_decode_image, this, &PlayerController::decode_view, Qt::QueuedConnection);
     connect(decodestream, &decode_thread::send_slider_info, this, &PlayerController::init_decodethread_complete);
-    connect(decodestream, &decode_thread::heavy_process_signal, this, &PlayerController::setControlsEnabled);
+    connect(decodestream, &decode_thread::heavy_process_signal, this, [this](bool done) {
+        setControlsEnabled(done);
+        // ★ 高精度シークの終了。デコーダは最後のコマを送ってからこれを出すので
+        //   （同じスレッドからの Queued なので順序どおり届く）、ここで表示の
+        //   保持を外せば、次に見える番号は着地したコマになる。
+        if (done) clearSeekHold();
+    });
 
     connect(this, &PlayerController::send_manual_resumeplayback, decodestream, &decode_thread::resumePlayback);
     connect(this, &PlayerController::send_manual_pause,          decodestream, &decode_thread::pausePlayback);
@@ -487,7 +503,11 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
                      ? QString::asprintf("%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second)
                      : QString::asprintf("%02d:%02d", Frame.minute, Frame.second);
     slider_No = Frame.FrameNo;
-    emit frameChanged();
+    // ★ エンコード中は後ろの画面（スライダー・時刻・動画情報）を動かさない。
+    //   毎フレーム通知するとシーングラフが毎回描き直し、NVENC と GPU を取り合う。
+    //   終わったら finished_encode() でまとめて 1 回通知する。
+    if (encode_state != STATE_ENCODING)
+        emit frameChanged();
     // ★ コマ送りでも 1 枚だけ pause=false のフレームが来るので、
     //   数枚続いたときだけ「再生中」とみなす（止まるほうは即座に反映）
     //   さらに、ユーザーが再生を指示していない（シーク中など）ときは数えない。
@@ -783,7 +803,11 @@ void PlayerController::stop_info_thread()
 // ==============================================================
 void PlayerController::openEncodeSettings()
 {
-    if (!run_decode_thread || !encodeSetting) return;
+    if (!run_decode_thread || !encoder_) return;
+
+    // ★ 閉じたときに戻る場所を覚えておく（エンコードで再生位置が範囲の終端まで進むため）
+    resume_frame_   = frameNo();
+    resume_playing_ = play_intent_ && !pause_flag && !reverse_flag;
 
     encode_state = STATE_ENCODE_READY;
     engine_->encode_mode(encode_state);
@@ -795,8 +819,8 @@ void PlayerController::openEncodeSettings()
     setPlayIntent(false);
     emit send_manual_pause();
 
-    encodeSetting->slider(0, VideoInfo.end_range_framesNo - VideoInfo.start_range_framesNo);
-    encodeSetting->show();
+    encoder_->prepare(VideoInfo.end_range_framesNo - VideoInfo.start_range_framesNo);
+    emit encodeSettingsOpened();
 }
 
 void PlayerController::start_encode()
@@ -808,7 +832,7 @@ void PlayerController::start_encode()
     timer.start();
 
     wasCanceled = false;
-    connect(encodeSetting, &encode_setting::signal_encode_stop, this, [this]() {
+    connect(encoder_, &EncodeController::encodeStopRequested, this, [this]() {
         wasCanceled = true;
     }, Qt::SingleShotConnection);
     connect(decodestream, &decode_thread::decode_end, this, [this]() {
@@ -839,14 +863,15 @@ void PlayerController::start_encode()
         if (decodestream) decodestream->encode_state = encode_state;
         engine_->encode_mode(encode_state);
         emit stateChanged();
+        emit frameChanged();
 
         const double seconds = timer.nsecsElapsed() / 1e9;
-        encodeSetting->encode_end(QString::number(seconds, 'f', 3) + "秒");
+        encoder_->encodeEnded(QString::number(seconds, 'f', 3) + " 秒");
     }, Qt::SingleShotConnection);
 
     // 進捗の更新（MainWindow と同じくイベントを回しながら待つ）
     while (true) {
-        encodeSetting->progress_bar(engine_->encode_FrameCount);
+        encoder_->setProgress(engine_->encode_FrameCount);
         if (wasCanceled) {
             engine_->MaxFrame = slider_No;
             break;
@@ -871,15 +896,16 @@ void PlayerController::encode_error_handler(const QString& error)
     emit stateChanged();
 
     qWarning() << "[PlayerController] encode error:" << error;
-    QMessageBox::warning(nullptr, tr("エンコード開始エラー"),
-                         tr("エンコーダの初期化に失敗しました。\n\n%1\n\n"
-                            "解像度・分割数・B-frame 数を下げると改善する場合があります。").arg(error),
-                         QMessageBox::Ok);
+    // ★ 設定画面の中に出す（解像度・分割数・B フレームを下げると改善することがある）
+    if (encoder_)
+        encoder_->encodeFailed(error + "（分割数・B フレームを下げると改善する場合があります）");
 }
 
 void PlayerController::finished_encode()
 {
     encode_state = STATE_NOT_ENCODE;
+    emit frameChanged();          // エンコード中に止めていた表示をまとめて更新
+    emit infoChanged();
     if (fpsstream) fpsstream->change_speed(g_AppSettings.video_speed_ratio * VideoInfo.fps);
     engine_->encode_mode(encode_state);
     if (decodestream) decodestream->encode_state = encode_state;
@@ -889,7 +915,12 @@ void PlayerController::finished_encode()
 
     // ★ 通常再生に戻すのでタイマー駆動を復帰させる
     set_fps_driving(true);
-    setPlayIntent(true);
-    emit send_manual_resumeplayback();
+
+    // ★ 設定を開いた時点のフレームへ戻し、再生状態も開く前に合わせる
+    if (resume_frame_ >= 0)
+        highResSeek(resume_frame_);
+    resume_frame_ = -1;
+    if (resume_playing_) { setPlayIntent(true);  emit send_manual_resumeplayback(); }
+    else                 { setPlayIntent(false); emit send_manual_pause(); }
     emit decode_please();
 }

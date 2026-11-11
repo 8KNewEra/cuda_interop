@@ -2,6 +2,8 @@
 #include "qtimer.h"
 #include <nvml.h>
 #include <QDebug>
+#include <algorithm>
+#include <cstdio>
 
 info_thread::info_thread(QObject *parent)
     : QThread(parent) {
@@ -30,47 +32,38 @@ void info_thread::run() {
     timer.disconnect();
 }
 
+// ★ CUDA のデバイス番号と NVML の番号は並び順が違うことがある
+//   （CUDA は既定で速い順、NVML は PCI 順）。PCI バス ID で同じ GPU を引く。
+static bool nvmlHandleFor(const GPUInfo& g, nvmlDevice_t* out)
+{
+    char busId[32];
+    std::snprintf(busId, sizeof(busId), "%08x:%02x:%02x.0", g.pciDomain, g.pciBus, g.pciDevice);
+    if (nvmlDeviceGetHandleByPciBusId_v2(busId, out) == NVML_SUCCESS) return true;
+    return nvmlDeviceGetHandleByIndex(g.deviceID, out) == NVML_SUCCESS;   // 予備
+}
+
 void info_thread::check_gpu_usage() {
-    nvmlDevice_t device;
-    nvmlUtilization_t utilization;
-    nvmlMemory_t memInfo;
-    unsigned int encUtil = 0, encSampling = 0;
-    unsigned int decUtil = 0, decSampling = 0;
-
-    for(int i=0;i<g_GPUInfo.size();i++){
-        // 最初の GPU の使用率を取得
-        nvmlReturn_t result = nvmlDeviceGetHandleByIndex(g_GPUInfo[i].deviceID, &device);
-        if (result != NVML_SUCCESS) {
-            qDebug() << "Failed to get device handle:" << nvmlErrorString(result);
-            return;
+    for (size_t i = 0; i < g_GPUInfo.size(); i++) {
+        nvmlDevice_t device;
+        if (!nvmlHandleFor(g_GPUInfo[i], &device)) {
+            qDebug() << "Failed to get device handle for" << g_GPUInfo[i].deviceName;
+            continue;   // ★ 1 枚失敗しても他の GPU は更新する
         }
 
-        result = nvmlDeviceGetUtilizationRates(device, &utilization);
-        if (result != NVML_SUCCESS) {
-            qDebug() << "Failed to get utilization rates:" << nvmlErrorString(result);
-            return;
-        }
+        // 取れなかった項目は 0 扱い（古い GPU / ドライバでも止まらないように）
+        nvmlUtilization_t utilization{};
+        unsigned int encUtil = 0, encSampling = 0;
+        unsigned int decUtil = 0, decSampling = 0;
+        nvmlMemory_t memInfo{};
+        nvmlDeviceGetUtilizationRates(device, &utilization);
+        nvmlDeviceGetEncoderUtilization(device, &encUtil, &encSampling);
+        nvmlDeviceGetDecoderUtilization(device, &decUtil, &decSampling);
+        const bool memOk = nvmlDeviceGetMemoryInfo(device, &memInfo) == NVML_SUCCESS;
 
-        result = nvmlDeviceGetEncoderUtilization(device, &encUtil, &encSampling);
-        if (result != NVML_SUCCESS) {
-            qDebug() << "Failed to get encoder utilization:" << nvmlErrorString(result);
-            return;
-        }
-
-        result = nvmlDeviceGetDecoderUtilization(device, &decUtil, &decSampling);
-        if (result != NVML_SUCCESS) {
-            qDebug() << "Failed to get decoder utilization:" << nvmlErrorString(result);
-            return;
-        }
-        unsigned int totalLike = std::max({ utilization.gpu, encUtil, decUtil });
-
-        result = nvmlDeviceGetMemoryInfo(device, &memInfo);
-        if (result != NVML_SUCCESS) {
-            qDebug() << "Failed to get decoder utilization:" << nvmlErrorString(result);
-            return;
-        }
-
-        g_GPUInfo[i].GPU_Usage = totalLike;
-        g_GPUInfo[i].Memory_Usage = (int)(memInfo.used / (1024 * 1024)); // MB
+        g_GPUInfo[i].GPU_Usage     = (int)std::max({ utilization.gpu, encUtil, decUtil });
+        g_GPUInfo[i].Encoder_Usage = (int)encUtil;
+        g_GPUInfo[i].Decoder_Usage = (int)decUtil;
+        if (memOk)
+            g_GPUInfo[i].Memory_Usage = (int)(memInfo.used / (1024 * 1024)); // MB
     }
 }

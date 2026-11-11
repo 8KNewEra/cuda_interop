@@ -3,6 +3,7 @@
 #include "src/qmlui/videoengine.h"
 #include "src/qmlui/videoitem.h"
 #include "src/qmlui/windowchrome.h"
+#include "src/qmlui/encodecontroller.h"
 
 #include <QApplication>
 #include <QLocale>
@@ -81,6 +82,7 @@ static int runQmlUi(QApplication& app)
     QQmlApplicationEngine qml;
     qml.rootContext()->setContextProperty("player", &player);
     qml.rootContext()->setContextProperty("chrome", &chrome);
+    qml.rootContext()->setContextProperty("encoder", player.encoder());
     qml.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (qml.rootObjects().isEmpty())
         return -1;

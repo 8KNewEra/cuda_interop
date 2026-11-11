@@ -9,3 +9,9 @@ ZoomNavigator 1.0 ZoomNavigator.qml
 FilterPanel 1.0 FilterPanel.qml
 RangeBar 1.0 RangeBar.qml
 ControlPanel 1.0 ControlPanel.qml
+Select 1.0 Select.qml
+ValueRow 1.0 ValueRow.qml
+EncodePanel 1.0 EncodePanel.qml
+NumberSpin 1.0 NumberSpin.qml
+AppMenu 1.0 AppMenu.qml
+AppMenuSeparator 1.0 AppMenuSeparator.qml

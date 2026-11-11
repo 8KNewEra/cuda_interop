@@ -49,14 +49,20 @@ ApplicationWindow {
         else win.showNormal()
     }
 
-    Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; onActivated: player.togglePlay() }
-    Shortcut { sequence: "F11";   context: Qt.ApplicationShortcut; onActivated: win.toggleFullscreenVideo() }
+    // ★ エンコード設定を開いている間は再生系のショートカットを止める
+    Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; enabled: !win.encodeOpen; onActivated: player.togglePlay() }
+    Shortcut { sequence: "F11";   context: Qt.ApplicationShortcut; enabled: !win.encodeOpen; onActivated: win.toggleFullscreenVideo() }
     Shortcut {
         sequence: "Esc"; context: Qt.ApplicationShortcut
         enabled: win.fullscreenVideo
         onActivated: win.toggleFullscreenVideo()
     }
-    Shortcut { sequences: [StandardKey.Open]; onActivated: player.openFileDialog() }
+    Shortcut { sequences: [StandardKey.Open]; enabled: !win.encodeOpen; onActivated: player.openFileDialog() }
+
+    // ---- エンコード設定（再生画面の上に重ねる）----
+    property bool encodeOpen: false
+    Connections { target: player;  function onEncodeSettingsOpened() { win.encodeOpen = true } }
+    Connections { target: encoder; function onClosed() { win.encodeOpen = false } }
 
     ColumnLayout {
         anchors.fill: parent
@@ -108,6 +114,8 @@ ApplicationWindow {
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
                 anchors.right: windowButtons.visible ? windowButtons.left : parent.right
+                // ★ エンコード設定中はヘッダーの操作も止める（ウィンドウ操作ボタンとドラッグは残す）
+                enabled: !win.encodeOpen
                 anchors.leftMargin: 16
                 anchors.rightMargin: windowButtons.visible ? 12 : 16
                 spacing: 16
@@ -142,18 +150,19 @@ ApplicationWindow {
                         verticalAlignment: Text.AlignVCenter
                         color: Theme.text2; font.pixelSize: 13; font.weight: Font.Medium
                     }
-                    Menu {
+                    AppMenu {
                         id: fileMenu
                         y: fileMenuBtn.height + 4
-                        MenuItem { text: "ファイルを開く…"; enabled: player.ready; onTriggered: player.openFileDialog() }
-                        MenuItem {
+                        // hint = 右端に出すキー表示（実際のキーは上の Shortcut で処理）
+                        Action { property string hint: "Ctrl+O"; text: "ファイルを開く…"; enabled: player.ready; onTriggered: player.openFileDialog() }
+                        Action {
                             text: "ファイルを保存…"
                             enabled: player.fileOpen && player.controlsEnabled && !player.encoding
                             onTriggered: player.openEncodeSettings()
                         }
-                        MenuItem { text: "ファイルを閉じる"; enabled: player.fileOpen; onTriggered: player.closeFile() }
-                        MenuSeparator {}
-                        MenuItem { text: "全画面（F11）"; onTriggered: win.toggleFullscreenVideo() }
+                        Action { text: "ファイルを閉じる"; enabled: player.fileOpen; onTriggered: player.closeFile() }
+                        AppMenuSeparator {}
+                        Action { property string hint: "F11"; text: "全画面"; onTriggered: win.toggleFullscreenVideo() }
                     }
                 }
 
@@ -235,6 +244,20 @@ ApplicationWindow {
                 }
             }
         }
+
+        // ===== 本体（映像 + 操作パネル）=====
+        //   ★ エンコード設定を開いている間は、開いた瞬間の見た目を 1 枚の
+        //     テクスチャに焼いて表示し、本体は描かない（hideSource）。
+        //     後ろでスライダーや映像が動かず、追加の描画も起きない。
+        Item {
+            id: bodyHost
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+
+        ColumnLayout {
+            id: body
+            anchors.fill: parent
+            spacing: 0
 
         // ===== 映像 + 画像処理パネル =====
         RowLayout {
@@ -364,5 +387,28 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.margins: 12
         }
+        }   // body
+
+            // 開くたびに作り直す → その時点の画面を 1 回だけ撮って固定
+            Loader {
+                anchors.fill: parent
+                active: win.encodeOpen
+                sourceComponent: ShaderEffectSource {
+                    sourceItem: body
+                    live: false          // 以後は再描画しない
+                    hideSource: true     // 本体は描かない
+                    smooth: true
+                }
+            }
+        }   // bodyHost
+    }
+
+    EncodePanel {
+        // ヘッダー（タイトルバー）は覆わない：移動・最小化・閉じるは使えるように
+        anchors.fill: parent
+        anchors.topMargin: titleBar.visible ? titleBar.height : 0
+        visible: win.encodeOpen
+        focus: visible
+        onCloseRequested: encoder.close()
     }
 }

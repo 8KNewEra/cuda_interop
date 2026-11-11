@@ -147,6 +147,7 @@ inline int encode_pool_mb(int tile_w, int tile_h, int ring, int tiles)
 
 // ★書き込みを許可したいクラスをここで「前方宣言」
 class encode_setting;
+class EncodeController;
 
 // 設定を管理するシングルトンクラス
 class EncodeSettingsManager
@@ -170,6 +171,7 @@ private:
     // 3. ★書き込みクラスとして 'encode_setting' を指定
     friend class logfile_control;
     friend class encode_setting;
+    friend class EncodeController;   // Qt Quick 版のエンコード設定
 
     // 4.【書き込み用】
     //    'encode_setting' クラスだけが呼び出せる
@@ -394,6 +396,8 @@ struct GPUInfo {
     int Max_Memory_Usage = 0;
     int Memory_Usage = 0;
     int GPU_Usage = 0;
+    int Encoder_Usage = 0;   // NVENC 使用率（%）
+    int Decoder_Usage = 0;   // NVDEC 使用率（%）
     //エンコード設定用
     int tile_weight = 10;
     int backup_tile_weight = -1;
