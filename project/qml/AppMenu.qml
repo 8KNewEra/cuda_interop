@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 
 // アプリ共通のドロップダウンメニュー（パネルと同じ色・角丸・文字）
-//   項目は Action で並べる（delegate が効くように）。区切りは MenuSeparator。
+//   項目は Action で並べる（delegate を効かせるため）。区切りは AppMenuSeparator
 Menu {
     id: menu
     padding: 6

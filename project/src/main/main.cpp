@@ -4,6 +4,7 @@
 #include "src/qmlui/videoitem.h"
 #include "src/qmlui/windowchrome.h"
 #include "src/qmlui/encodecontroller.h"
+#include "src/qmlui/screenshotsettings.h"
 
 #include <QApplication>
 #include <QLocale>
@@ -20,8 +21,8 @@ std::vector<GPUInfo> g_GPUInfo;
 AppSettings g_AppSettings{};
 int g_openglDeviceID=0;
 
-// ★ --qml で Qt Quick 版 UI、引数なしなら従来の Widgets 版。
-//   環境変数 CUDA_VIEWER_UI=qml でも切り替えられる（Qt Creator の実行設定用）。
+// --qml で Qt Quick 版 UI、引数なしなら従来の Widgets 版
+//   環境変数 CUDA_VIEWER_UI=qml でも切り替えられる（Qt Creator の実行設定用）
 static bool useQmlUi(int argc, char *argv[])
 {
     for (int i = 1; i < argc; i++) {
@@ -34,12 +35,11 @@ static bool useQmlUi(int argc, char *argv[])
 // Qt Quick 版のための設定。QApplication を作る前に済ませること。
 static void prepareQmlUi()
 {
-    // ★ VideoEngine のコンテキストとシーングラフのコンテキストで
-    //   テクスチャを共有するために必須
+    // VideoEngine とシーングラフのコンテキストでテクスチャを共有するために必須
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
 
-    // ★ 既定フォーマット。VideoEngine もシーングラフもこれで作る。
-    //   ヒストグラムの描画が固定機能（glBegin など）を使うので Compatibility。
+    // 既定フォーマット。VideoEngine もシーングラフもこれで作る
+    //   ヒストグラムの描画が固定機能（glBegin など）を使うので Compatibility
     QSurfaceFormat fmt;
     fmt.setRenderableType(QSurfaceFormat::OpenGL);
     fmt.setVersion(4, 5);
@@ -49,12 +49,11 @@ static void prepareQmlUi()
     fmt.setSwapInterval(1);
     QSurfaceFormat::setDefaultFormat(fmt);
 
-    // ★ Windows の Qt 6 は既定で D3D11 なので OpenGL を明示する
+    // Windows の Qt 6 は既定で D3D11 なので OpenGL を明示する
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
 
-    // ★ GUI スレッドで描画する（QOpenGLWindow 版と同じスレッド構成）。
-    //   デコードとのハンドシェイク・CUDA interop がすべて GUI スレッドに
-    //   揃うので、スレッド間の受け渡しを増やさずに済む。
+    // GUI スレッドで描画する（basic render loop）。デコードとのハンドシェイク・
+    //   CUDA interop がすべて GUI スレッドに揃い、スレッド間の受け渡しが増えない
     if (qEnvironmentVariableIsEmpty("QSG_RENDER_LOOP"))
         qputenv("QSG_RENDER_LOOP", "basic");
 
@@ -75,7 +74,7 @@ static int runQmlUi(QApplication& app)
     qmlRegisterType<VideoItem>("CudaViewer", 1, 0, "VideoItem");
     qmlRegisterType<HistogramItem>("CudaViewer", 1, 0, "HistogramItem");
 
-    // ★ player より後に宣言する（QML を先に破棄し、その後に engine を破棄する）
+    // player より後に宣言する（QML を先に破棄し、その後に engine を破棄する）
     // OS のタイトルバーを消してヘッダーをタイトルバーにする
     WindowChrome chrome;
 
@@ -83,13 +82,14 @@ static int runQmlUi(QApplication& app)
     qml.rootContext()->setContextProperty("player", &player);
     qml.rootContext()->setContextProperty("chrome", &chrome);
     qml.rootContext()->setContextProperty("encoder", player.encoder());
+    qml.rootContext()->setContextProperty("shotSettings", player.screenshotSettings());
     qml.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (qml.rootObjects().isEmpty())
         return -1;
 
     auto* window = qobject_cast<QQuickWindow*>(qml.rootObjects().first());
     if (window) {
-        // ★ シーングラフが描き終えたことを engine に伝える（FBO 上書き前に待つ）
+        // シーングラフが描き終えたことを engine に伝える（FBO 上書き前に待つ）
         QObject::connect(window, &QQuickWindow::frameSwapped, window, [] {
             if (VideoEngine* eng = VideoEngine::instance())
                 eng->signalDisplayDone();

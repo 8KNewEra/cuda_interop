@@ -39,6 +39,60 @@ struct AppSettings
     bool sobelfilterEnabled = false;
     bool gaussianfilterEnabled = false;
     bool averagingfilterEnabled = false;
+    // ---- 以下は QML 版の画像処理・表示ツール（ini の [Filter] に保存。logfile_control.cpp）----
+    // フィルタの係数パラメータ（直接編集した係数は保存しない）
+    int  gaussian_kernel_size = 7;      // 3 / 5 / 7 / 9
+    int  gaussian_sigma100 = 84;        // σ × 100（既定は旧固定 7x7 カーネルに近い値）
+    bool gaussian_normalize = true;
+    int  gaussian_mode = 0;             // 0 = ぼかし、1 = シャープ化（アンシャープマスク）
+    int  sharpen_amount = 100;          // シャープ化の強さ %（0..500）
+    int  averaging_kernel_size = 7;
+    bool averaging_normalize = true;
+    // ソーベル: 0 = エッジのみ、1 = ピーキング（シェーダの u_mode には 1 / 2 で渡す）
+    int  sobel_mode = 0;
+    int  peaking_threshold = 25;        // 0..100
+    int  peaking_color = 0;             // 0 赤 / 1 緑 / 2 青 / 3 黄 / 4 白
+    // 画像補正（明るさ・コントラスト・シャドウ・ハイライト: -100..100、ガンマ ×100）
+    bool colorEnabled = false;          // 画像補正の ON/OFF（変数名・ini キーは互換のため colorEnabled のまま）
+    int  color_brightness = 0;
+    int  color_contrast = 0;
+    int  color_shadows = 0;             // -100..100（＋で暗部を持ち上げる）
+    int  color_highlights = 0;          // -100..100（－で明部を抑える）
+    int  color_gamma100 = 100;
+    int  color_saturation = 100;        // 彩度 %（0..200）。UI では「色補正」側の項目
+    // 色補正: 色温度・ティント・彩度 ＋ R/G/B ごとのゲイン %（0..200）、オフセット（-100..100）、ガンマ ×100（10..300）
+    bool rgbEnabled = false;
+    int  color_temperature = 0;         // -100..100（＋で暖色、－で寒色）
+    int  color_tint = 0;                // -100..100（＋でマゼンタ寄り、－でグリーン寄り）
+    int  rgb_gain[3]    = {100, 100, 100};
+    int  rgb_offset[3]  = {0, 0, 0};
+    int  rgb_gamma100[3] = {100, 100, 100};
+    // チャンネル表示（表示専用）：0 = R、1 = G、2 = B、3 = 輝度
+    bool channelEnabled = false;
+    int  channel_mode = 3;
+    // トーンカーブ：0 = RGB 全体、1 = R、2 = G、3 = B。点は "入力:出力,..."（0..255）
+    bool curveEnabled = false;
+    QString curve_pts[4] = { "0:0,255:255", "0:0,255:255", "0:0,255:255", "0:0,255:255" };
+    // 比較表示（表示専用）：方向 0 = 左右（左が補正前）、1 = 上下（上が補正前）、位置 0.1% 単位（0..1000）
+    bool compareEnabled = false;
+    int  compare_dir = 0;
+    int  compare_pos10 = 500;
+    // タイル境界チェック（表示専用）：境界線・段差の強調、しきい値は 8bit 階調（1..64）
+    bool seamEnabled = false;
+    bool seam_grid = true;
+    bool seam_highlight = true;
+    int  seam_threshold = 8;
+    int  seam_grid_color = 0;           // 0 水色 / 1 マゼンタ / 2 赤 / 3 緑 / 4 黄 / 5 白
+    int  seam_highlight_color = 1;
+    // スポイト（表示専用）：表示する値 0 = 補正後、1 = 補正前、2 = 両方
+    bool eyedropperEnabled = false;
+    int  eyedropper_mode = 2;
+    // ゼブラ（表示専用。ヒストグラム・画像保存・エンコードには入らない）
+    bool zebraEnabled = false;
+    bool zebra_high_on = true;
+    int  zebra_high_level = 95;         // 輝度 %（以上で縞）
+    bool zebra_low_on = false;
+    int  zebra_low_level = 5;           // 輝度 %（以下で縞）
 
     QString screenshot_format = "png";
     QString screenshot_mode = "high";
@@ -398,6 +452,8 @@ struct GPUInfo {
     int GPU_Usage = 0;
     int Encoder_Usage = 0;   // NVENC 使用率（%）
     int Decoder_Usage = 0;   // NVDEC 使用率（%）
+    int Graphics3D_Usage = -1; // 3D エンジン使用率（%、タスクマネージャーの「3D」）。取れない環境は -1
+    int Cuda_Usage = -1;       // CUDA エンジン使用率（%、タスクマネージャーの「Cuda」「Compute_n」）。取れない環境は -1
     //エンコード設定用
     int tile_weight = 10;
     int backup_tile_weight = -1;

@@ -1,8 +1,8 @@
 import QtQuick
 import QtQuick.Controls
 
-// 選択肢 [{text, value}] と現在値 value で動くコンボボックス。
-//   選べない候補は C++ 側でリストから外してあるので、ここは表示だけ。
+// 選択肢 [{text, value}] と現在値 value で動くコンボボックス
+//   選べない候補は C++ 側でリストから外してあるので、ここは表示だけ
 ComboBox {
     id: root
     property var options: []
@@ -22,7 +22,7 @@ ComboBox {
     onActivated: (i) => { if (i >= 0 && i < options.length) root.picked(options[i].value) }
 
     implicitHeight: 36
-    // ★ 幅は選択中の文字で変えない（レイアウト側で決める）。長い文字は省略表示。
+    // 幅は選択中の文字で変えない（レイアウト側で決める）。長い文字は省略表示
     implicitWidth: 140
     hoverEnabled: true
     font.family: Theme.font

@@ -3,7 +3,7 @@ import QtQuick.Layouts
 import CudaViewer
 
 // ヒストグラム。プロットは VideoEngine が GL で描いたテクスチャ（HistogramItem）、
-// 目盛りと統計値はここ（旧: paintGL の QPainter テキスト）。
+// 目盛りと統計値はここで描く
 Rectangle {
     id: root
     property var stats: ({})
@@ -42,10 +42,10 @@ Rectangle {
         Item {
             id: plotArea
             Layout.fillWidth: true
-            // ★ 目盛りの文字はパネル幅に合わせて大きくする（12〜15px）
+            // 目盛りの文字はパネル幅に合わせて 12〜15px
             readonly property int tickPx: Math.max(12, Math.min(15, Math.round(root.width / 42)))
             readonly property int gutter: tickPx * 5 + 4
-            // ★ プロットはパネル幅に合わせて 3:2 で伸ばす（大きな画面で小さくならないように）
+            // プロットはパネル幅に合わせて 3:2 で伸ばす
             readonly property real plotH: Math.round((width - gutter) / 1.5)
             Layout.preferredHeight: plotH + tickPx + 8
 

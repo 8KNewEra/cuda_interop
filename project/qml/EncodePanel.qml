@@ -2,9 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// エンコード設定（再生画面の上に重ねて出す）
-//   値と制約はすべて EncodeController（context property "encoder"）が持つ。
-//   ここは表示と入力だけ。
+// エンコード設定。画面全体に重ねるダイアログ
+//   値と制約はすべて EncodeController（context property "encoder"）が持ち、ここは表示と入力だけ
 Item {
     id: root
     signal closeRequested()
@@ -94,7 +93,7 @@ Item {
         property alias value: sel.value
         property alias selectEnabled: sel.enabled
         signal picked(var v)
-        // ★ 2 列を常に同じ幅にする（選んだ文字の長さで列幅が変わらないように）
+        // 2 列を常に同じ幅にする（選んだ文字の長さで列幅が変わらないように）
         Layout.fillWidth: true
         Layout.preferredWidth: 100
         Layout.minimumWidth: 100
@@ -113,6 +112,42 @@ Item {
 
     component Th: Text { color: Theme.muted; font.family: Theme.font; font.pixelSize: 12 }
 
+    // GPU 表の使用率 1 項目（ラベル ＋ 推移グラフ ＋ 今の値）
+    component UsageCell: RowLayout {
+        id: uc
+        property string label
+        property var    values: []
+        property string valueText
+        property real   valueWidth: 56
+        property color  lineColor: Theme.accent
+        Layout.fillWidth: true
+        spacing: 6
+        Text { text: uc.label; color: Theme.muted2; font.family: Theme.font; font.pixelSize: 11; Layout.preferredWidth: 48 }
+        Sparkline { Layout.fillWidth: true; Layout.preferredHeight: 16; values: uc.values; lineColor: uc.lineColor }
+        Text { text: uc.valueText; color: Theme.text2; font.family: Theme.mono; font.pixelSize: 11; horizontalAlignment: Text.AlignRight; Layout.preferredWidth: uc.valueWidth }
+    }
+
+    // ---- GPU ごとの使用率の推移（1 秒ごと、直近 60 秒。開くたびにやり直す）----
+    //   id → {usage, enc, proc, mem}（%）。proc = 3D と CUDA の大きい方（取れない環境は欠け）
+    property var gpuHist: ({})
+    function pushed(a, v) { const b = a ? a.slice(-59) : []; b.push(v); return b }
+    function sampleStats() {
+        const h = {}
+        for (const st of (encoder.gpuStats || [])) {
+            const o = root.gpuHist[st.id] || {}
+            const proc = Math.max(st.g3d ?? -1, st.cuda ?? -1)
+            h[st.id] = {
+                usage: pushed(o.usage, st.gpuUsage ?? 0),
+                enc:   pushed(o.enc,   st.encUsage ?? 0),
+                proc:  pushed(o.proc,  proc >= 0 ? proc : null),
+                mem:   pushed(o.mem,   st.memMax > 0 ? 100 * st.memUsed / st.memMax : 0)
+            }
+        }
+        root.gpuHist = h
+    }
+    Connections { target: encoder; function onStatsChanged() { root.sampleStats() } }
+    function gb(mb) { return (mb / 1024).toFixed(1) }
+
     // ---- 暗幕（後ろの再生画面は触れない）----
     Rectangle {
         anchors.fill: parent
@@ -122,13 +157,12 @@ Item {
 
     Keys.onEscapePressed: if (!root.locked) root.closeRequested()
 
-    // 開くたびに高さの記録をやり直す（素材が変わると GPU 表やタイルの項目が変わる）
-    //   ★ 列数（幅で 1 列 / 2 列が変わる）が変わったときも測り直す。
-    //     開いた直後はレイアウトが何度か組み直され、途中で実際より高い値が
-    //     出る。少し待って落ち着いてから測り直す（それまでは今の高さに追従）。
+    // 開くたびに高さの記録をやり直す（素材によって GPU 表やタイルの項目が変わる）
+    //   列数（幅で 1 列 / 2 列）が変わったときも測り直す。開いた直後はレイアウトが何度か
+    //   組み直され一時的に高い値が出るので、少し待ってから測る
     function resetPeak() { sheet.peakBody = body.implicitHeight }
     Timer { id: settleTimer; interval: 150; onTriggered: root.resetPeak() }
-    onVisibleChanged: if (visible) { resetPeak(); settleTimer.restart() }
+    onVisibleChanged: if (visible) { resetPeak(); settleTimer.restart(); gpuHist = ({}) }
     Connections {
         target: body
         function onImplicitHeightChanged() {
@@ -141,11 +175,8 @@ Item {
     // ---- 本体 ----
     Rectangle {
         id: sheet
-        // ★ 縦は「中身が全部入る高さ」で止める（大きな画面で下に空白を作らない）。
-        //   入りきらないときだけウィンドウいっぱいまで使い、中をスクロールさせる。
-        //   中身の高さはレート制御などで行が出入りすると変わるので、開いている間の
-        //   最大値（peakBody）で決める。設定を切り替えるたびに枠が伸び縮みしない。
-        //   位置は縦方向も中央。高さは最大値でしか変わらないので、ほぼ動かない。
+        // 高さは「中身が全部入る高さ」で止め、入りきらないときだけウィンドウいっぱいでスクロール。
+        //   行の出入り（レート制御など）で枠が伸び縮みしないよう、開いている間の最大値（peakBody）を使う
         property real peakBody: 0
         readonly property real chromeH: 60 + 72 + 40      // ヘッダー + フッター + 余白
         anchors.horizontalCenter: parent.horizontalCenter
@@ -259,7 +290,7 @@ Item {
                                 font.pixelSize: 13
                                 ToolTip.visible: hovered
                                 ToolTip.delay: 600
-                                ToolTip.text: "out.mp4 → out.tile0.mp4 / out.tile1.mp4 …  音声はタイル 0 のファイルに入ります"
+                                ToolTip.text: "例: out.mp4 → out.tile0.mp4, out.tile1.mp4 …（音声はタイル 0 のファイルに含まれます）"
                                 indicator: Rectangle {
                                     x: sepBox.leftPadding
                                     y: (sepBox.height - height) / 2
@@ -280,21 +311,21 @@ Item {
 
                         Card {
                             title: "一般設定"
-                            // ★ 録画フォーマット → コーデックの順（コンテナで選べるコーデックが変わる）
+                            // 録画フォーマット → コーデックの順（コンテナで選べるコーデックが変わる）
                             RowLayout { Layout.fillWidth: true; spacing: 12
-                                KeyLabel { text: "録画フォーマット"; tip: "出力ファイルの拡張子で muxer が決まります" }
+                                KeyLabel { text: "録画フォーマット"; tip: "出力ファイルのコンテナ形式です。" }
                                 Select { Layout.fillWidth: true; options: encoder.containerOptions; value: encoder.container; onPicked: (v) => encoder.setValue("container", v) } }
                             RowLayout { Layout.fillWidth: true; spacing: 12
-                                KeyLabel { text: "コーデック"; tip: "-c:v" }
+                                KeyLabel { text: "コーデック"; tip: "映像の圧縮方式です。" }
                                 Select { Layout.fillWidth: true; options: encoder.codecOptions; value: encoder.codec; tip: "-c:v"; onPicked: (v) => encoder.setValue("codec", v) } }
                             RowLayout { Layout.fillWidth: true; spacing: 12
-                                KeyLabel { text: "フレームレート"; tip: "-r" }
+                                KeyLabel { text: "フレームレート"; tip: "出力ファイルのフレームレートです。" }
                                 Select { Layout.fillWidth: true; options: encoder.framerateOptions; value: encoder.framerate; tip: "-r"; onPicked: (v) => encoder.setValue("framerate", v) } }
                             RowLayout { Layout.fillWidth: true; spacing: 12
-                                KeyLabel { text: "分割エンコード"; tip: "-split_encode_mode" }
+                                KeyLabel { text: "分割エンコード"; tip: "1 フレームを複数の NVENC で分担してエンコードします（対応 GPU のみ）。" }
                                 Select { Layout.fillWidth: true; options: encoder.splitOptions; value: encoder.split; tip: "-split_encode_mode"; onPicked: (v) => encoder.setValue("split", v) } }
                             RowLayout { Layout.fillWidth: true; spacing: 12
-                                KeyLabel { text: "タイル分割"; tip: "キャンバスを分割して複数の NVENC で並列にエンコードします" }
+                                KeyLabel { text: "タイル分割"; tip: "映像を複数のタイルに分割し、複数の NVENC で並列にエンコードします。" }
                                 Select { Layout.fillWidth: true; options: encoder.tileOptions; value: encoder.tile; onPicked: (v) => encoder.setValue("tile", v) } }
                         }
 
@@ -321,12 +352,12 @@ Item {
                                 enabled: encoder.audioEnabled
                                 opacity: enabled ? 1.0 : 0.45
                                 RowLayout { Layout.fillWidth: true; spacing: 12
-                                    KeyLabel { text: "音声コーデック"; tip: "-c:a" }
+                                    KeyLabel { text: "音声コーデック"; tip: "音声の圧縮方式です。" }
                                     Select { Layout.fillWidth: true; options: encoder.audioCodecOptions; value: encoder.audioCodec; onPicked: (v) => encoder.setValue("audioCodec", v) } }
                                 ValueRow {
                                     Layout.fillWidth: true
                                     visible: !encoder.audioLossless
-                                    label: "音声ビットレート"; tip: "-b:a"
+                                    label: "音声ビットレート"; tip: "音声のビットレートです。"
                                     from: 64; to: 512; stepSize: 16
                                     value: encoder.audioBitrate
                                     unit: "kbps"
@@ -334,7 +365,7 @@ Item {
                                 }
                                 ValueRow {
                                     Layout.fillWidth: true
-                                    label: "ゲイン"; tip: "0 で素通し。float のうちに掛けます"
+                                    label: "ゲイン"; tip: "音量を調整します（0 dB で変更なし）。"
                                     from: -30; to: 30; stepSize: 1
                                     value: encoder.audioGain
                                     unit: "dB"
@@ -355,12 +386,12 @@ Item {
                             columns: 2
                             columnSpacing: 20
                             rowSpacing: 10
-                            Labeled { label: "プリセット"; tip: "-preset"; options: encoder.presetOptions; value: encoder.preset; onPicked: (v) => encoder.setValue("preset", v) }
-                            Labeled { label: "チューニング"; tip: "-tune"; options: encoder.tuneOptions; value: encoder.tune; onPicked: (v) => encoder.setValue("tune", v) }
-                            Labeled { label: "キーフレーム間隔"; tip: "-g"; options: encoder.gopOptions; value: encoder.gop; onPicked: (v) => encoder.setValue("gop", v) }
-                            Labeled { label: "B フレーム"; tip: encoder.bframeEditable ? "-bf" : "-bf（この GPU は B フレーム非対応）"; options: encoder.bframeOptions; value: encoder.bframes; selectEnabled: encoder.bframeEditable; onPicked: (v) => encoder.setValue("bframes", v) }
-                            Labeled { label: "レート制御"; tip: "-rc"; options: encoder.rcOptions; value: encoder.rc; onPicked: (v) => encoder.setValue("rc", v) }
-                            Labeled { label: "マルチパス"; tip: "-multipass"; options: encoder.passOptions; value: encoder.pass; onPicked: (v) => encoder.setValue("pass", v) }
+                            Labeled { label: "プリセット"; tip: "エンコード速度と画質のバランスです。p1 が最速、p7 が最高画質です。"; options: encoder.presetOptions; value: encoder.preset; onPicked: (v) => encoder.setValue("preset", v) }
+                            Labeled { label: "チューニング"; tip: "用途に応じた最適化の種類です。"; options: encoder.tuneOptions; value: encoder.tune; onPicked: (v) => encoder.setValue("tune", v) }
+                            Labeled { label: "キーフレーム間隔"; tip: "キーフレームの間隔（フレーム数）です。短いほどシークしやすく、ファイルサイズは大きくなります。"; options: encoder.gopOptions; value: encoder.gop; onPicked: (v) => encoder.setValue("gop", v) }
+                            Labeled { label: "B フレーム"; tip: encoder.bframeEditable ? "B フレームの枚数です。" : "この GPU は B フレームに対応していません。"; options: encoder.bframeOptions; value: encoder.bframes; selectEnabled: encoder.bframeEditable; onPicked: (v) => encoder.setValue("bframes", v) }
+                            Labeled { label: "レート制御"; tip: "ビットレートの制御方式です。"; options: encoder.rcOptions; value: encoder.rc; onPicked: (v) => encoder.setValue("rc", v) }
+                            Labeled { label: "マルチパス"; tip: "解析パスを追加して画質を高めます。エンコード時間は長くなります。"; options: encoder.passOptions; value: encoder.pass; onPicked: (v) => encoder.setValue("pass", v) }
                         }
 
                         Rectangle { Layout.fillWidth: true; Layout.topMargin: 6; Layout.bottomMargin: 2; height: 1; color: Theme.borderSoft }
@@ -370,14 +401,14 @@ Item {
                             Text { text: "ビットレート / 品質"; color: Theme.text; font.family: Theme.font; font.pixelSize: 13; font.bold: true }
                             Item { Layout.fillWidth: true }
                             KeyLabel { visible: encoder.showBasis; text: "ビットレート基準"; Layout.preferredWidth: -1
-                                       tip: "ビットレートを 1 ストリームあたりで指定するか、ファイル全体の合計で指定するか" }
+                                       tip: "ビットレートを 1 ストリームあたりで指定するか、ファイル全体の合計で指定するかを選択します。" }
                             Select { visible: encoder.showBasis; Layout.preferredWidth: 200; options: encoder.basisOptions; value: encoder.basis; onPicked: (v) => encoder.setValue("basis", v) }
                         }
 
                         ValueRow {
                             Layout.fillWidth: true
                             visible: encoder.showTarget
-                            label: "目標ビットレート"; tip: "-b:v"
+                            label: "目標ビットレート"; tip: "平均ビットレートの目標値です。"
                             from: encoder.targetMin; to: encoder.targetMax
                             value: encoder.targetRate
                             unit: encoder.rateUnit
@@ -386,7 +417,7 @@ Item {
                         ValueRow {
                             Layout.fillWidth: true
                             visible: encoder.showMax
-                            label: "最大ビットレート"; tip: "-maxrate"
+                            label: "最大ビットレート"; tip: "ビットレートの上限です。"
                             from: encoder.maxMin; to: encoder.maxMax
                             value: encoder.maxRate
                             unit: encoder.rateUnit
@@ -428,7 +459,7 @@ Item {
                         enabled: encoder.multiGpu
                         opacity: enabled || root.locked ? 1.0 : 0.6
                         headerExtra: Text {
-                            text: encoder.multiGpu || root.locked ? "重みに応じてタイルを各 GPU の NVENC に割り当てます" : "GPU が 1 枚のため使用しません"
+                            text: encoder.multiGpu || root.locked ? "重みに応じて各 GPU の NVENC にタイルを割り当てます" : "GPU が 1 基のため使用できません"
                             color: Theme.muted; font.family: Theme.font; font.pixelSize: 12
                         }
 
@@ -437,20 +468,21 @@ Item {
                             Layout.fillWidth: true
                             spacing: 12
                             Th { text: "GPU Name"; Layout.fillWidth: true }
-                            Th { text: "Encoder Usage"; Layout.preferredWidth: 200 }
-                            Th { text: "Memory(MB)"; Layout.preferredWidth: 140; horizontalAlignment: Text.AlignRight }
-                            Th { text: "Detail"; Layout.preferredWidth: 150; Layout.leftMargin: 24 }   // Memory の数字と離す
+                            Th { text: "Usage（直近 60 秒）"; Layout.preferredWidth: 440 }
+                            Th { text: "Detail"; Layout.preferredWidth: 130; Layout.leftMargin: 24 }   // グラフの数字と離す
                             Th { text: "Weight"; Layout.preferredWidth: 130 }
-                            Th { text: "Tiles"; Layout.preferredWidth: 170; horizontalAlignment: Text.AlignRight }
+                            Th { text: "Tiles"; Layout.preferredWidth: 130; horizontalAlignment: Text.AlignRight }
                         }
                         Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
 
                         Repeater {
-                            model: encoder.gpus
+                            // モデルは台数だけにする（encoder.gpus は設定を変えるたびに新しい配列になるので、
+                            //   そのまま渡すと行が作り直されて推移グラフがちらつく）。中身は gpus[index] から読む
+                            model: encoder.gpus.length
                             delegate: ColumnLayout {
                                 id: gpuRow
-                                required property var modelData
                                 required property int index
+                                readonly property var modelData: encoder.gpus[index] || ({})
                                 // 1 秒ごとに更新される実測値（行そのものは作り直さない）
                                 readonly property var stats: (encoder.gpuStats && encoder.gpuStats[index]) || ({})
                                 Layout.fillWidth: true
@@ -462,42 +494,34 @@ Item {
                                     spacing: 12
                                     opacity: modelData.used ? 1.0 : 0.5
                                     Text { Layout.fillWidth: true; text: modelData.name + " (" + modelData.id + ")"; elide: Text.ElideRight; color: Theme.text; font.family: Theme.font; font.pixelSize: 13 }
-                                    // エンコーダ（NVENC）使用率：動画情報の GPU バーと同じ見た目
-                                    RowLayout {
-                                        // 中のバーが fillWidth なので、列幅を明示的に固定する
+                                    // 使用率の推移（2×2）: GPU 全体 | NVENC / 3D+CUDA | VRAM
+                                    //   NVENC に余裕があり GPU 全体が高いなら、エンコーダより手前（デコード・処理・変換）が詰まっている
+                                    GridLayout {
+                                        id: usageGrid
+                                        readonly property var hs: root.gpuHist[gpuRow.stats.id] || ({})
+                                        readonly property int proc: Math.max(gpuRow.stats.g3d ?? -1, gpuRow.stats.cuda ?? -1)
                                         Layout.fillWidth: false
-                                        Layout.preferredWidth: 200
-                                        Layout.maximumWidth: 200
-                                        spacing: 10
-                                        ToolTip.visible: usageHover.hovered
-                                        ToolTip.delay: 400
-                                        ToolTip.text: "NVENC " + (gpuRow.stats.encUsage ?? 0) + "% / GPU 全体 " + (gpuRow.stats.gpuUsage ?? 0) + "%"
-                                        HoverHandler { id: usageHover }
-                                        Rectangle {
-                                            Layout.fillWidth: true
-                                            height: 4; radius: 2
-                                            color: Theme.hover
-                                            Rectangle {
-                                                width: parent.width * Math.min(1, (gpuRow.stats.encUsage ?? 0) / 100)
-                                                height: parent.height; radius: 2
-                                                color: Theme.accent
-                                                Behavior on width { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
-                                            }
+                                        Layout.preferredWidth: 440
+                                        Layout.maximumWidth: 440
+                                        columns: 2
+                                        columnSpacing: 14
+                                        rowSpacing: 4
+                                        // 4 つとも同じ幅（グラフの長さをそろえる）
+                                        readonly property real cellW: (width - columnSpacing) / 2
+                                        UsageCell { Layout.preferredWidth: usageGrid.cellW; label: "GPU";     values: usageGrid.hs.usage || []; valueText: (gpuRow.stats.gpuUsage ?? 0) + "%" }
+                                        UsageCell { Layout.preferredWidth: usageGrid.cellW; label: "NVENC";   values: usageGrid.hs.enc || [];   valueText: (gpuRow.stats.encUsage ?? 0) + "%" }
+                                        UsageCell { Layout.preferredWidth: usageGrid.cellW; label: "3D+CUDA"; values: usageGrid.hs.proc || [];  valueText: usageGrid.proc >= 0 ? usageGrid.proc + "%" : "-" }
+                                        UsageCell {
+                                            Layout.preferredWidth: usageGrid.cellW
+                                            label: "VRAM"; lineColor: Theme.muted2
+                                            values: usageGrid.hs.mem || []
+                                            // 使用量 / 搭載量（GB）。例: 11.4/16G
+                                            valueText: gpuRow.stats.memUsed !== undefined
+                                                       ? root.gb(gpuRow.stats.memUsed) + "/" + Math.round(gpuRow.stats.memMax / 1024) + "G" : "-"
                                         }
-                                        Text {
-                                            Layout.preferredWidth: 40
-                                            horizontalAlignment: Text.AlignRight
-                                            text: (gpuRow.stats.encUsage ?? 0) + "%"
-                                            color: Theme.text2; font.family: Theme.mono; font.pixelSize: 12
-                                        }
-                                    }
-                                    Text {
-                                        Layout.preferredWidth: 140; horizontalAlignment: Text.AlignRight
-                                        text: gpuRow.stats.memUsed !== undefined ? gpuRow.stats.memUsed + " / " + gpuRow.stats.memMax : modelData.memory
-                                        color: Theme.text2; font.family: Theme.mono; font.pixelSize: 12
                                     }
                                     Item {
-                                        Layout.preferredWidth: 150
+                                        Layout.preferredWidth: 130
                                         Layout.leftMargin: 24   // 見出しと揃える
                                         implicitHeight: 22
                                         Rectangle {
@@ -546,7 +570,7 @@ Item {
                                             }
                                         }
                                     }
-                                    Text { Layout.preferredWidth: 170; horizontalAlignment: Text.AlignRight; text: modelData.status; color: modelData.used ? Theme.text : Theme.muted; font.family: Theme.mono; font.pixelSize: 12 }
+                                    Text { Layout.preferredWidth: 130; horizontalAlignment: Text.AlignRight; text: modelData.status; color: modelData.used ? Theme.text : Theme.muted; font.family: Theme.mono; font.pixelSize: 12 }
                                 }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.borderSoft }
                             }

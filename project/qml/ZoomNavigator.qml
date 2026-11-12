@@ -1,10 +1,10 @@
 import QtQuick
 
-// ズーム位置（旧: drawZoomNavigator）。外枠=全体、内枠=表示範囲
+// ズーム位置の表示。外枠 = 映像全体、内枠 = 表示範囲
 Rectangle {
     id: root
     property real   zoom: 1.0
-    property rect   view: Qt.rect(0, 0, 1, 1)   // 0..1
+    property rect   view: Qt.rect(0, 0, 1, 1)   // 表示範囲（映像全体に対する 0..1）
     property size   source: Qt.size(16, 9)
 
     readonly property real aspect: source.height > 0 ? source.width / source.height : 16 / 9

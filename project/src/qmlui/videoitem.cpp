@@ -53,13 +53,13 @@ void VideoItem::onFrameReady()
     const QSize s = sourceSize();
     if (s != lastSize_) {
         lastSize_ = s;
-        resetZoom();            // 解像度が変わったら等倍へ（GLWidget と同じ）
+        resetZoom();            // 解像度が変わったら等倍へ
     }
     emit frameChanged();
     update();
 }
 
-// 表示枠（アスペクト比を保って中央寄せ。GLWidget::GLresize 相当）
+// 表示枠（アスペクト比を保って中央寄せ）
 QRectF VideoItem::videoRect() const
 {
     const QSize s = sourceSize();
@@ -89,7 +89,12 @@ double VideoItem::zoomMax() const
 {
     const QSize s = sourceSize();
     if (s.width() <= 0 || s.height() <= 0) return 1.0;
-    return std::max(1.0, std::min(s.width() / 320.0, s.height() / 240.0));
+    // 最大倍率: 1 画素が画面上で 32px になるまで（スポイトで画素を狙えるように）
+    const QRectF vr = videoRect();
+    const double fit = vr.width() > 0 ? vr.width() / s.width() : 1.0;   // 等倍表示での 1 画素の大きさ
+    const double byPixel = 32.0 / std::max(1e-6, fit);
+    const double legacy  = std::min(s.width() / 320.0, s.height() / 240.0);
+    return std::max(1.0, std::max(byPixel, legacy));
 }
 
 void VideoItem::resetZoom()
@@ -181,7 +186,7 @@ void VideoItem::mousePressEvent(QMouseEvent* event)
         event->accept();
         return;
     }
-    // ★ ダブルクリックを受けるため、左ボタンは受け取っておく
+    // ダブルクリックを受けるため左ボタンも受け取る
     event->setAccepted(event->button() == Qt::LeftButton);
 }
 
@@ -236,7 +241,7 @@ QSGNode* VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
         return nullptr;
     }
 
-    // ★ engine が FBO を描き終えるのを GPU 側で待つ（CPU は止めない）
+    // engine が FBO を描き終えるのを GPU 側で待つ（CPU は止めない）
     eng->waitFrameFence();
 
     auto* node = static_cast<QSGImageNode*>(oldNode);
@@ -252,7 +257,7 @@ QSGNode* VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
     const GLuint id = eng->displayTexture();
     const QSize  sz = eng->displaySize();
     if (id != texId_ || sz != texSize_) {
-        // ★ 解像度変更で engine がテクスチャを作り直したら包み直す
+        // 解像度変更で engine がテクスチャを作り直したら包み直す
         QSGTexture* t = QNativeInterface::QSGOpenGLTexture::fromNative(id, window(), sz);
         node->setTexture(t);
         texId_ = id;
@@ -264,8 +269,10 @@ QSGNode* VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
     visibleSrcRect(sx, sy, sw, sh);
     node->setSourceRect(QRectF(sx, sz.height() - (sy + sh), sw, sh));
     node->setRect(dst);
-    // ★ 拡大して画素を見るときはぼかさない
-    node->setFiltering(zoomFactor >= 2.0 ? QSGTexture::Nearest : QSGTexture::Linear);
+    // 拡大表示（1 画素 > 画面 1px）は Nearest でぼかさない。
+    //   縮小表示（16K を窓に収めるときなど）は Linear（Nearest だとちらつく）
+    const double pxPerSrc = (sw > 0 ? dst.width() / sw : 1.0) * (window() ? window()->effectiveDevicePixelRatio() : 1.0);
+    node->setFiltering(pxPerSrc >= 1.5 ? QSGTexture::Nearest : QSGTexture::Linear);
     node->markDirty(QSGNode::DirtyMaterial);
     return node;
 }
@@ -332,7 +339,7 @@ QSGNode* HistogramItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
         node->setTextureCoordinatesTransform(QSGImageNode::MirrorVertically);
         texId_ = 0;
     }
-    // ★ サイズが変わると engine がテクスチャを作り直す（同じ番号が再利用されうるので寸法も見る）
+    // サイズが変わると engine がテクスチャを作り直す（同じ番号が再利用されうるので寸法も見る）
     if (eng->histTexture() != texId_ || eng->histSize() != texSize_) {
         QSGTexture* t = QNativeInterface::QSGOpenGLTexture::fromNative(
             eng->histTexture(), window(), eng->histSize(), QQuickWindow::TextureHasAlphaChannel);

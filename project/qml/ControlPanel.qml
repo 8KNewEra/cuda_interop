@@ -12,7 +12,7 @@ Rectangle {
 
     readonly property bool active: player.fileOpen && player.controlsEnabled && !player.encoding
 
-    // モックのアイコン（24x24 の SVG パス）
+    // アイコン（24x24 の SVG パス）
     readonly property var icCutStart: ["M10 4H6v16h4", "M13 12h6"]
     readonly property var icToStart:  ["M6 5v14", "M18 5l-9 7 9 7z"]
     readonly property var icBack:     ["M15 5l-9 7 9 7z", "M19 5v14"]
@@ -112,9 +112,8 @@ Rectangle {
         }
 
         // ---- 操作行 ----
-        //   ★ トランスポートは常に中央に固定する。左右のグループの幅
-        //     （ジャンプ単位の文字数など）が変わっても動かないよう、
-        //     Layout の幅配分ではなくアンカーで置く。
+        //   再生ボタン群は常に中央に固定する。左右のグループの幅（ジャンプ単位の文字数など）が
+        //   変わっても動かないよう、Layout の幅配分ではなくアンカーで置く
         Item {
             Layout.fillWidth: true
             implicitHeight: transportBox.implicitHeight
@@ -244,10 +243,10 @@ Rectangle {
                 }
             }
 
-            // 中央: トランスポート
+            // 中央: 再生ボタン群
             Rectangle {
                 id: transportBox
-                // ★ 基本は中央固定。狭くて左のグループに重なるときだけ右へ逃がす
+                // 基本は中央固定。狭くて左のグループに重なるときだけ右へ逃がす
                 x: Math.max(leftGroup.width + 12, (parent.width - width) / 2)
                 anchors.verticalCenter: parent.verticalCenter
                 implicitWidth: transport.implicitWidth + 8

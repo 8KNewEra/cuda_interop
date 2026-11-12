@@ -19,5 +19,22 @@
         <file>qml/EncodePanel.qml</file>
         <file>qml/AppMenu.qml</file>
         <file>qml/AppMenuSeparator.qml</file>
+        <file>qml/ScreenshotPanel.qml</file>
+        <file>qml/PropertiesPanel.qml</file>
+        <file>qml/Sparkline.qml</file>
+        <file>qml/KernelParams.qml</file>
+        <file>qml/KernelEditor.qml</file>
+        <file>qml/Segmented.qml</file>
+        <file>qml/MiniSlider.qml</file>
+        <file>qml/PeakingParams.qml</file>
+        <file>qml/ZebraParams.qml</file>
+        <file>qml/ImageAdjustParams.qml</file>
+        <file>qml/ColorParams.qml</file>
+        <file>qml/ChannelParams.qml</file>
+        <file>qml/CompareParams.qml</file>
+        <file>qml/ToneCurveParams.qml</file>
+        <file>qml/TileSeamParams.qml</file>
+        <file>qml/ColorSwatches.qml</file>
+        <file>qml/EyedropperParams.qml</file>
     </qresource>
 </RCC>

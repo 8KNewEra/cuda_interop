@@ -13,12 +13,17 @@ Rectangle {
     property int    to: 100
     property int    stepSize: 1
     property string unit: ""
+    // 小数の扱い: value は 10^decimals 倍した整数のまま。表示と入力だけ小数にする
+    //   （例: decimals 2 で value 85 →「0.85」）
+    property int    decimals: 0
+    readonly property real factor: Math.pow(10, decimals)
+    function show(v) { return decimals > 0 ? (v / factor).toFixed(decimals) : String(v) }
     signal moved(int v)
 
     function stepBy(n) {
         const v = Math.max(from, Math.min(to, value + n * stepSize))
         if (v !== value) moved(v)
-        field.text = Qt.binding(() => root.value)
+        field.text = Qt.binding(() => root.show(root.value))
     }
 
     implicitWidth: 168
@@ -72,25 +77,25 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     width: Math.max(20, contentWidth)
                     horizontalAlignment: TextInput.AlignRight
-                    text: root.value
-                    validator: IntValidator { bottom: Math.min(0, root.from); top: Math.max(0, root.to) }
+                    text: root.show(root.value)
+                    validator: RegularExpressionValidator { regularExpression: root.decimals > 0 ? /-?\d*\.?\d*/ : /-?\d*/ }
                     color: Theme.text
                     selectionColor: Theme.accent
                     selectByMouse: true
                     font.family: Theme.mono
                     font.pixelSize: 13
                     function commit() {
-                        const v = parseInt(text)
+                        const v = Math.round(parseFloat(text) * root.factor)
                         if (!isNaN(v)) {
                             const c = Math.max(root.from, Math.min(root.to, v))
                             if (c !== root.value) root.moved(c)
                         }
-                        text = Qt.binding(() => root.value)
+                        text = Qt.binding(() => root.show(root.value))
                     }
                     onEditingFinished: commit()
                     Keys.onUpPressed:   (e) => root.stepBy((e.modifiers & Qt.ShiftModifier) ? 10 : 1)
                     Keys.onDownPressed: (e) => root.stepBy((e.modifiers & Qt.ShiftModifier) ? -10 : -1)
-                    Keys.onEscapePressed: { text = Qt.binding(() => root.value); focus = false }
+                    Keys.onEscapePressed: { text = Qt.binding(() => root.show(root.value)); focus = false }
                 }
                 Text {
                     anchors.verticalCenter: parent.verticalCenter

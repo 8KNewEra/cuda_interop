@@ -1,7 +1,7 @@
 pragma Singleton
 import QtQuick
 
-// モック（Design キャンバス）の色・文字をそのまま定数にしたもの
+// 共通の色・フォント定数（シングルトン）
 QtObject {
     readonly property color bg:        "#0B0C0E"
     readonly property color bar:       "#111316"
@@ -33,4 +33,11 @@ QtObject {
     readonly property string mono:     "Consolas"
 
     readonly property int radius:      12
+
+    // タイル境界チェックの線・強調の色（C++ の kSeamColors と同じ順）
+    readonly property var seamColors: [
+        { text: "水色",     value: 0, c: "#4FD1C5" }, { text: "マゼンタ", value: 1, c: "#FF1AE6" },
+        { text: "赤",       value: 2, c: "#FF3B30" }, { text: "緑",       value: 3, c: "#34C759" },
+        { text: "黄",       value: 4, c: "#FFD60A" }, { text: "白",       value: 5, c: "#FFFFFF" }
+    ]
 }

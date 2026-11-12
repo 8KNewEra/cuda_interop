@@ -52,7 +52,7 @@ void WindowChrome::attach(QQuickWindow* window)
 
     qApp->installNativeEventFilter(this);
 
-    // ★ 非クライアント領域を消しても DWM の影を残すため、1px だけ枠を
+    // 非クライアント領域を消しても DWM の影を残すため、1px だけ枠を
     //   クライアント領域に延ばしておく（中身で上書きされるので見えない）
     const MARGINS shadow = { 0, 0, 1, 0 };
     DwmExtendFrameIntoClientArea(hwnd, &shadow);
@@ -145,9 +145,8 @@ bool WindowChrome::nativeEventFilter(const QByteArray& eventType, void* message,
         if (msg->wParam != TRUE) break;
         if (window_ && window_->visibility() == QWindow::FullScreen) break;   // Qt に任せる
 
-        // ★ タイトルバー（上辺）だけをクライアントにする。
-        //   左右と下の枠は Windows 10/11 では透明なリサイズ用の帯で、影もここに
-        //   出る。既定処理に任せてそのまま残す（Windows Terminal と同じやり方）。
+        // タイトルバー（上辺）だけをクライアントにする。左右と下の枠は透明なリサイズ用の帯で
+        //   影もここに出るので既定処理に任せる（Windows Terminal と同じやり方）
         auto* p = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam);
         const LONG originalTop = p->rgrc[0].top;
         const LRESULT r = DefWindowProcW(hwnd, WM_NCCALCSIZE, msg->wParam, msg->lParam);
@@ -170,7 +169,7 @@ bool WindowChrome::nativeEventFilter(const QByteArray& eventType, void* message,
         return true;
 
     case WM_NCACTIVATE:
-        // ★ 非アクティブ化のたびに既定の枠を描き直させない（上端がちらつく）
+        // 非アクティブ化のたびに既定の枠を描き直させない（上端がちらつく）
         *result = DefWindowProcW(hwnd, WM_NCACTIVATE, msg->wParam, -1);
         return true;
 

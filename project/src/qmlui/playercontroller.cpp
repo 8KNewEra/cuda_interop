@@ -9,7 +9,10 @@
 #include "src/info/info_thread.h"
 #include "src/info/logfile_control.h"
 #include "src/qmlui/encodecontroller.h"
-#include "src/ui_control/save_screenshot.h"
+#include "src/qmlui/screenshotsettings.h"
+#include "src/qmlui/filterkernel.h"
+#include "src/qmlui/tonecurve.h"
+#include "src/qmlui/mediaprobe.h"
 
 #include <QCoreApplication>
 #include <QFileDialog>
@@ -22,18 +25,20 @@
 
 extern "C" {
 #include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/pixdesc.h>
 }
 
 PlayerController::PlayerController(QObject* parent)
     : QObject(parent)
 {
-    // ★ ini は GPU 情報の突き合わせより先に読む（MainWindow と同じ順序）
+    // ini は GPU 情報の突き合わせより先に読む（MainWindow と同じ順序）
     logFile = new logfile_control();
 
     // 高精度シークで目標のコマが来なかった場合（範囲外への指定など）の保険
     seekHoldTimer_.setSingleShot(true);
-    //   ★ 通常はデコーダの「重い処理の終了」通知で外す。これは最後の保険なので長め
-    //     （16K の高精度シークは 1 秒を超えることがあり、短いと途中で古い番号が見える）
+    //   通常はデコーダの「重い処理の終了」通知で外す。これは最後の保険なので長め
+    //   （16K の高精度シークは 1 秒を超えることがある）
     seekHoldTimer_.setInterval(10000);
     connect(&seekHoldTimer_, &QTimer::timeout, this, [this] { clearSeekHold(); });
 
@@ -51,10 +56,10 @@ PlayerController::~PlayerController()
     infoTimer_.stop();
 
     delete encoder_;       encoder_ = nullptr;
-    delete saveScreenshot; saveScreenshot = nullptr;
+    delete shotSettings_; shotSettings_ = nullptr;
     delete engine_;        engine_ = nullptr;
 
-    // ★ 最後に ini を保存（logfile_control のデストラクタが書く）
+    // 最後に ini を保存（logfile_control のデストラクタが書く）
     delete logFile;        logFile = nullptr;
 }
 
@@ -66,10 +71,24 @@ bool PlayerController::initialize()
         return false;
     }
 
-    // ★ Queued にしておく（encode_mode() は start_encode() の途中から呼ばれる）
+    // Queued にする（encode_mode() は start_encode() の途中から呼ばれる）
     connect(engine_, &VideoEngine::encode_error, this,
             &PlayerController::encode_error_handler, Qt::QueuedConnection);
     connect(engine_, &VideoEngine::histogramChanged, this, &PlayerController::histogramChanged);
+    connect(engine_, &VideoEngine::pickUpdated,      this, &PlayerController::pickChanged);
+
+    // フィルタ係数。変わったら次の描画でシェーダへ送る（一時停止中も同じフレームを描き直す）
+    mediaInfo_   = new MediaProbe(this);
+    gaussKernel_ = new FilterKernel(FilterKernel::Kind::Gaussian, this);
+    avgKernel_   = new FilterKernel(FilterKernel::Kind::Box, this);
+    auto pushKernel = [this](FilterKernel* k) {
+        const QVector<float> e = k->effective();
+        engine_->setFilterKernel(k == gaussKernel_, k->size(), std::vector<float>(e.begin(), e.end()));
+    };
+    connect(gaussKernel_, &FilterKernel::changed, this, [=] { pushKernel(gaussKernel_); });
+    connect(avgKernel_,   &FilterKernel::changed, this, [=] { pushKernel(avgKernel_); });
+    pushKernel(gaussKernel_);
+    pushKernel(avgKernel_);
 
     start_info_thread();
     infoTimer_.start();
@@ -81,10 +100,8 @@ bool PlayerController::initialize()
     connect(encoder_, &EncodeController::closed,
             this, &PlayerController::finished_encode, Qt::QueuedConnection);
 
-    // スクリーンショット保存先（同上）
-    saveScreenshot = new save_screenshot();
-    saveScreenshot->setWindowModality(Qt::ApplicationModal);
-    saveScreenshot->hide();
+    // 画像保存設定（QML 版。作った時点で ini の値を正規化して g_AppSettings に戻す）
+    shotSettings_ = new ScreenshotSettings();
 
     ready_ = true;
     emit stateChanged();
@@ -133,11 +150,257 @@ void PlayerController::setAveraging(bool on)
     emit filterChanged();
 }
 
+void PlayerController::setZebra(bool on)
+{
+    if (g_AppSettings.zebraEnabled == on) return;
+    g_AppSettings.zebraEnabled = on;
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+void PlayerController::setImageAdjust(bool on)
+{
+    if (g_AppSettings.colorEnabled == on) return;
+    g_AppSettings.colorEnabled = on;
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+void PlayerController::setColorCorrect(bool on)
+{
+    if (g_AppSettings.rgbEnabled == on) return;
+    g_AppSettings.rgbEnabled = on;
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+void PlayerController::setEyedropper(bool on)
+{
+    if (g_AppSettings.eyedropperEnabled == on) return;
+    g_AppSettings.eyedropperEnabled = on;
+    if (!on && engine_) engine_->setPickRequest(-1, -1);   // 毎フレームの読み取りを止める
+    emit filterChanged();
+    emit pickChanged();
+}
+
+QVariantMap PlayerController::pick() const
+{
+    return engine_ ? engine_->lastPick() : QVariantMap();
+}
+
+QVariantMap PlayerController::pickPixel(double nx, double ny)
+{
+    if (!engine_) return {};
+    if (!run_decode_thread || encode_state != STATE_NOT_ENCODE) { engine_->setPickRequest(-1, -1); return {}; }
+    const QSize s = engine_->displaySize();
+    if (s.isEmpty()) return {};
+    // 位置を渡すだけ。実際の読み取りは描画フレームごとに VideoEngine が行う
+    if (nx < 0 || ny < 0 || nx >= 1 || ny >= 1) { engine_->setPickRequest(-1, -1); emit pickChanged(); }   // 映像の外・停止
+    else engine_->setPickRequest(int(nx * s.width()), int(ny * s.height()));
+    return engine_->pickResult();
+}
+
+void PlayerController::setTileSeam(bool on)
+{
+    if (g_AppSettings.seamEnabled == on) return;
+    g_AppSettings.seamEnabled = on;
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+void PlayerController::setCompare(bool on)
+{
+    if (g_AppSettings.compareEnabled == on) return;
+    g_AppSettings.compareEnabled = on;
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+void PlayerController::setToneCurve(bool on)
+{
+    if (g_AppSettings.curveEnabled == on) return;
+    g_AppSettings.curveEnabled = on;
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+QVariantList PlayerController::curves() const
+{
+    QVariantList all;
+    for (int i = 0; i < 4; ++i) {
+        QVariantList pts;
+        for (const QPoint& p : ToneCurve::parse(g_AppSettings.curve_pts[i]))
+            pts << QVariantMap{ {"x", p.x()}, {"y", p.y()} };
+        all << QVariant(pts);
+    }
+    return all;
+}
+
+void PlayerController::setCurvePoints(int ch, const QVariantList& list)
+{
+    if (ch < 0 || ch > 3) return;
+    QVector<QPoint> pts;
+    for (const QVariant& v : list) {
+        const QVariantMap m = v.toMap();
+        pts << QPoint(qRound(m.value("x").toDouble()), qRound(m.value("y").toDouble()));
+    }
+    const QString s = ToneCurve::serialize(ToneCurve::normalize(pts));
+    if (s == g_AppSettings.curve_pts[ch]) return;
+    g_AppSettings.curve_pts[ch] = s;
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+void PlayerController::resetCurve(int ch)
+{
+    if (ch < 0 || ch > 3) return;
+    g_AppSettings.curve_pts[ch] = ToneCurve::serialize(ToneCurve::identity());
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+void PlayerController::resetAllCurves()
+{
+    for (int i = 0; i < 4; ++i) g_AppSettings.curve_pts[i] = ToneCurve::serialize(ToneCurve::identity());
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+QVariantList PlayerController::curveLut(int ch) const
+{
+    QVariantList out;
+    if (ch < 0 || ch > 3) return out;
+    const auto l = ToneCurve::lut(ToneCurve::parse(g_AppSettings.curve_pts[ch]));
+    for (float v : l) out << double(v * 255.0f);
+    return out;
+}
+
+void PlayerController::setChannelView(bool on)
+{
+    if (g_AppSettings.channelEnabled == on) return;
+    g_AppSettings.channelEnabled = on;
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+void PlayerController::resetImageAdjust()
+{
+    const AppSettings def;
+    g_AppSettings.color_brightness = def.color_brightness;
+    g_AppSettings.color_contrast   = def.color_contrast;
+    g_AppSettings.color_shadows    = def.color_shadows;
+    g_AppSettings.color_highlights = def.color_highlights;
+    g_AppSettings.color_gamma100   = def.color_gamma100;
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+void PlayerController::resetColorCorrect()
+{
+    const AppSettings def;
+    g_AppSettings.color_saturation  = def.color_saturation;
+    g_AppSettings.color_temperature = def.color_temperature;
+    g_AppSettings.color_tint        = def.color_tint;
+    for (int i = 0; i < 3; ++i) {
+        g_AppSettings.rgb_gain[i]     = def.rgb_gain[i];
+        g_AppSettings.rgb_offset[i]   = def.rgb_offset[i];
+        g_AppSettings.rgb_gamma100[i] = def.rgb_gamma100[i];
+    }
+    if (engine_) engine_->filter_change_flag = true;
+    emit filterChanged();
+}
+
+QVariantMap PlayerController::filterParams() const
+{
+    const AppSettings& a = g_AppSettings;
+    return {
+        {"sobelMode",        a.sobel_mode},
+        {"peakingThreshold", a.peaking_threshold},
+        {"peakingColor",     a.peaking_color},
+        {"zebraHighOn",      a.zebra_high_on},
+        {"zebraHighLevel",   a.zebra_high_level},
+        {"zebraLowOn",       a.zebra_low_on},
+        {"zebraLowLevel",    a.zebra_low_level},
+        {"gaussianMode",     a.gaussian_mode},
+        {"sharpenAmount",    a.sharpen_amount},
+        {"channelMode",      a.channel_mode},
+        {"compareDir",       a.compare_dir},
+        {"seamGrid",         a.seam_grid},
+        {"eyedropperMode",   a.eyedropper_mode},
+        {"seamHighlight",    a.seam_highlight},
+        {"seamThreshold",    a.seam_threshold},
+        {"seamGridColor",    a.seam_grid_color},
+        {"seamHighlightColor", a.seam_highlight_color},
+        {"comparePos",       a.compare_pos10},     // 0.1% 単位（0..1000）
+        {"brightness",       a.color_brightness},
+        {"contrast",         a.color_contrast},
+        {"shadows",          a.color_shadows},
+        {"highlights",       a.color_highlights},
+        {"gamma100",         a.color_gamma100},
+        {"saturation",       a.color_saturation},
+        {"temperature",      a.color_temperature},
+        {"tint",             a.color_tint},
+        {"gainR",   a.rgb_gain[0]},     {"gainG",   a.rgb_gain[1]},     {"gainB",   a.rgb_gain[2]},
+        {"offsetR", a.rgb_offset[0]},   {"offsetG", a.rgb_offset[1]},   {"offsetB", a.rgb_offset[2]},
+        {"gammaR",  a.rgb_gamma100[0]}, {"gammaG",  a.rgb_gamma100[1]}, {"gammaB",  a.rgb_gamma100[2]},
+    };
+}
+
+void PlayerController::setFilterParam(const QString& key, const QVariant& value)
+{
+    AppSettings& a = g_AppSettings;
+    if      (key == "sobelMode")        a.sobel_mode        = std::clamp(value.toInt(), 0, 1);
+    else if (key == "peakingThreshold") a.peaking_threshold = std::clamp(value.toInt(), 0, 100);
+    else if (key == "peakingColor")     a.peaking_color     = std::clamp(value.toInt(), 0, 4);
+    else if (key == "zebraHighOn")      a.zebra_high_on     = value.toBool();
+    else if (key == "zebraHighLevel")   a.zebra_high_level  = std::clamp(value.toInt(), 0, 100);
+    else if (key == "zebraLowOn")       a.zebra_low_on      = value.toBool();
+    else if (key == "zebraLowLevel")    a.zebra_low_level   = std::clamp(value.toInt(), 0, 100);
+    else if (key == "gaussianMode")     a.gaussian_mode     = std::clamp(value.toInt(), 0, 1);
+    else if (key == "sharpenAmount")    a.sharpen_amount    = std::clamp(value.toInt(), 0, 500);
+    else if (key == "channelMode")      a.channel_mode      = std::clamp(value.toInt(), 0, 3);
+    else if (key == "compareDir")       a.compare_dir       = std::clamp(value.toInt(), 0, 1);
+    else if (key == "seamGrid")         a.seam_grid         = value.toBool();
+    else if (key == "eyedropperMode")   a.eyedropper_mode   = std::clamp(value.toInt(), 0, 2);
+    else if (key == "seamHighlight")    a.seam_highlight    = value.toBool();
+    else if (key == "seamThreshold")    a.seam_threshold    = std::clamp(value.toInt(), 1, 64);
+    else if (key == "seamGridColor")    a.seam_grid_color   = std::clamp(value.toInt(), 0, 5);
+    else if (key == "seamHighlightColor") a.seam_highlight_color = std::clamp(value.toInt(), 0, 5);
+    else if (key == "comparePos")       a.compare_pos10     = std::clamp(value.toInt(), 0, 1000);
+    else if (key == "brightness")       a.color_brightness  = std::clamp(value.toInt(), -100, 100);
+    else if (key == "contrast")         a.color_contrast    = std::clamp(value.toInt(), -100, 100);
+    else if (key == "shadows")          a.color_shadows     = std::clamp(value.toInt(), -100, 100);
+    else if (key == "highlights")       a.color_highlights  = std::clamp(value.toInt(), -100, 100);
+    else if (key == "gamma100")         a.color_gamma100    = std::clamp(value.toInt(), 10, 300);
+    else if (key == "saturation")       a.color_saturation  = std::clamp(value.toInt(), 0, 200);
+    else if (key == "temperature")      a.color_temperature = std::clamp(value.toInt(), -100, 100);
+    else if (key == "tint")             a.color_tint        = std::clamp(value.toInt(), -100, 100);
+    // R/G/B: キーの最後の 1 文字でチャンネルを決める（gainR / offsetG / gammaB など）
+    else if ((key.startsWith("gain") || key.startsWith("offset") || key.startsWith("gamma")) && key.size() >= 5
+             && QStringLiteral("RGB").contains(key.back())) {
+        const int ch = QStringLiteral("RGB").indexOf(key.back());
+        if      (key.startsWith("gain"))   a.rgb_gain[ch]     = std::clamp(value.toInt(), 0, 200);
+        else if (key.startsWith("offset")) a.rgb_offset[ch]   = std::clamp(value.toInt(), -100, 100);
+        else                               a.rgb_gamma100[ch] = std::clamp(value.toInt(), 10, 300);
+    }
+    else return;
+    if (engine_) engine_->filter_change_flag = true;   // 次の描画で uniform を送り直す
+    emit filterChanged();
+}
+
 void PlayerController::allFiltersOff()
 {
     g_AppSettings.gaussianfilterEnabled  = false;
     g_AppSettings.sobelfilterEnabled     = false;
     g_AppSettings.averagingfilterEnabled = false;
+    g_AppSettings.zebraEnabled           = false;
+    g_AppSettings.colorEnabled           = false;
+    g_AppSettings.rgbEnabled             = false;
+    g_AppSettings.channelEnabled         = false;
+    g_AppSettings.compareEnabled         = false;
+    g_AppSettings.seamEnabled            = false;
+    g_AppSettings.eyedropperEnabled      = false;
+    g_AppSettings.curveEnabled           = false;
     if (engine_) engine_->filter_change_flag = true;
     emit filterChanged();
 }
@@ -238,6 +501,8 @@ QVariantMap PlayerController::videoInfo() const
     m["fileName"]      = QString::fromStdString(VideoInfo.Name);
     m["decoder"]       = QString::fromStdString(VideoInfo.Codec);
     m["decodeMode"]    = VideoInfo.decode_mode.trimmed();
+    m["tileCols"]      = std::max(1, VideoInfo.width_scale);    // タイルの列数・行数（タイル分割でなければ 1）
+    m["tileRows"]      = std::max(1, VideoInfo.height_scale);
     const QSize s      = engine_ ? engine_->displaySize() : QSize();
     m["width"]         = s.width();
     m["height"]        = s.height();
@@ -246,6 +511,15 @@ QVariantMap PlayerController::videoInfo() const
     m["frameNo"]       = frameNo();
     m["hasAudio"]      = VideoInfo.audio;
     m["audioChannels"] = VideoInfo.audio_channels;
+    m["pixel"]         = srcPixel_.isEmpty() ? QString("%1bit").arg(VideoInfo.bitdepth) : srcPixel_;
+    // 音声: "AAC LC · 48 kHz · 6ch → 2ch"（ダウンミックスしているときは元と再生のチャンネル数）
+    QString audio = srcAudio_;
+    if (srcAudioCh_ > 0) {
+        audio += (audio.isEmpty() ? "" : " · ") + QString("%1ch").arg(srcAudioCh_);
+        if (VideoInfo.audio_channels > 0 && VideoInfo.audio_channels != srcAudioCh_)
+            audio += QString(" → %1ch").arg(VideoInfo.audio_channels);
+    }
+    m["audio"]         = audio;
     m["renderFps"]     = engine_ ? engine_->fps : 0.0;
     m["bitDepth"]      = VideoInfo.bitdepth;
     return m;
@@ -260,6 +534,16 @@ static QString displayGpuName(QString name)
     return name;
 }
 
+QObject* PlayerController::gaussianKernel() const  { return gaussKernel_; }
+QObject* PlayerController::averagingKernel() const { return avgKernel_; }
+QObject* PlayerController::mediaInfo() const       { return mediaInfo_; }
+
+void PlayerController::showProperties()
+{
+    if (!run_decode_thread || !mediaInfo_) return;
+    mediaInfo_->open(QString::fromStdString(VideoInfo.Path));
+}
+
 QVariantList PlayerController::gpus() const
 {
     QVariantList list;
@@ -268,7 +552,10 @@ QVariantList PlayerController::gpus() const
         m["id"]       = g.deviceID;
         m["name"]     = displayGpuName(g.deviceName);
         m["sm"]       = QString("sm_%1%2").arg(g.CC_major).arg(g.CC_minor);
-        m["usage"]    = g.GPU_Usage;
+        m["usage"]    = g.GPU_Usage;          // 全体（3D・CUDA・NVENC・NVDEC のうち最大）
+        m["g3d"]      = g.Graphics3D_Usage;   // -1 = 取れない環境
+        m["cuda"]     = g.Cuda_Usage;         // -1 = 取れない環境
+        m["dec"]      = g.Decoder_Usage;
         m["memUsed"]  = g.Memory_Usage;
         m["memMax"]   = g.Max_Memory_Usage;
         m["primary"]  = (g.deviceID == g_openglDeviceID);
@@ -328,17 +615,55 @@ void PlayerController::closeFile()
     if (engine_) engine_->reset();
     FrameNo = 0;
     play_time_ = "00:00";
+    srcPixel_.clear();
+    srcAudio_.clear();
+    srcAudioCh_ = 0;
     range_start_ = range_end_ = 0;
     emit frameChanged();
     emit rangeChanged();
     emit stateChanged();
 }
 
+// 映像の画素形式の概要: "10bit 4:2:0 · PQ（表示 8bit）" など
+//   描画は RGBA 8bit なので、9bit 以上の素材は表示が 8bit になることを添える
+static QString describePixel(const AVCodecParameters* par)
+{
+    const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(par->format));
+    if (!d) return {};
+    const int depth = d->comp[0].depth;
+    QString chroma;
+    if (d->flags & AV_PIX_FMT_FLAG_RGB)                       chroma = "RGB";
+    else if (d->nb_components <= 2)                           chroma = "モノクロ";
+    else if (d->log2_chroma_w == 1 && d->log2_chroma_h == 1)  chroma = "4:2:0";
+    else if (d->log2_chroma_w == 1 && d->log2_chroma_h == 0)  chroma = "4:2:2";
+    else if (d->log2_chroma_w == 0 && d->log2_chroma_h == 0)  chroma = "4:4:4";
+    else if (d->log2_chroma_w == 2 && d->log2_chroma_h == 0)  chroma = "4:1:1";
+    QString s = QString("%1bit").arg(depth);
+    if (!chroma.isEmpty()) s += " " + chroma;
+    if (par->color_trc == AVCOL_TRC_SMPTE2084)      s += " · PQ";
+    else if (par->color_trc == AVCOL_TRC_ARIB_STD_B67) s += " · HLG";
+    if (depth > 8) s += "（表示 8bit）";
+    return s;
+}
+
+// 音声の概要: "AAC LC · 48 kHz" など
+static QString describeAudio(const AVCodecParameters* par)
+{
+    const AVCodecDescriptor* cd = avcodec_descriptor_get(par->codec_id);
+    QString s = cd ? QString(cd->name).toUpper() : QString("不明");
+    if (const char* prof = avcodec_profile_name(par->codec_id, par->profile)) s += " " + QString(prof);
+    if (par->sample_rate > 0) s += " · " + QString::number(par->sample_rate / 1000.0, 'g', 4) + " kHz";
+    return s;
+}
+
 // GPU デコードできるか（MainWindow::canUseGpuDecode と同じ判定）
-//   ★ 元の実装は H264/HEVC/AV1 の分岐で avformat_close_input を
-//     呼ばずに return していたので、ここでは必ず閉じる。
+//   MainWindow 版と違い、どの分岐でも avformat_close_input で必ず閉じる
+//   ついでに動画情報に出す映像・音声の概要（srcPixel_ / srcAudio_）もここで読む
 bool PlayerController::canUseGpuDecode(const QString& filename)
 {
+    srcPixel_.clear();
+    srcAudio_.clear();
+    srcAudioCh_ = 0;
     const QByteArray path = filename.toUtf8();
     AVFormatContext* fmt = nullptr;
     if (avformat_open_input(&fmt, path.constData(), nullptr, nullptr) < 0)
@@ -353,7 +678,14 @@ bool PlayerController::canUseGpuDecode(const QString& filename)
                 ok = (par->width <= 4096 && par->height <= 4096);
             else if (par->codec_id == AV_CODEC_ID_HEVC || par->codec_id == AV_CODEC_ID_AV1)
                 ok = (par->width <= 8192 && par->height <= 8192);
+            srcPixel_ = describePixel(par);
             break;
+        }
+        const int ai = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+        if (ai >= 0) {
+            const AVCodecParameters* par = fmt->streams[ai]->codecpar;
+            srcAudio_   = describeAudio(par);
+            srcAudioCh_ = par->ch_layout.nb_channels;
         }
     }
     avformat_close_input(&fmt);
@@ -385,9 +717,8 @@ void PlayerController::start_decode_thread(const QString& filePath)
     connect(decodestream, &decode_thread::send_slider_info, this, &PlayerController::init_decodethread_complete);
     connect(decodestream, &decode_thread::heavy_process_signal, this, [this](bool done) {
         setControlsEnabled(done);
-        // ★ 高精度シークの終了。デコーダは最後のコマを送ってからこれを出すので
-        //   （同じスレッドからの Queued なので順序どおり届く）、ここで表示の
-        //   保持を外せば、次に見える番号は着地したコマになる。
+        // 高精度シークの終了。デコーダは最後のコマを送ってからこれを出す（同じスレッドからの
+        //   Queued なので順序どおり届く）ので、ここで保持を外せば次の番号は着地したコマになる
         if (done) clearSeekHold();
     });
 
@@ -442,7 +773,7 @@ void PlayerController::stop_decode_thread()
 
     stop_fps_thread();
 
-    // ★ 寿命は QThread::finished → deleteLater に任せている
+    // 寿命は QThread::finished → deleteLater に任せている
     decodestream = nullptr;
     decode__thread = nullptr;
     emit stateChanged();
@@ -481,11 +812,9 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
     reverse_flag = reverse;
     FrameNo      = Frame.FrameNo;
 
-    // ★ 範囲つまみで押し出した後は、実際に表示されたコマを「確定位置」にする。
-    //   押し出しは軽いシークなので、狙った番号（つまみの位置）とずれたコマが
-    //   出ることがある。離したときに狙った番号へ高精度シークし直すと、
-    //   表示中の再生位置が後から戻って見えるので、表示されたほうに合わせる。
-    //   （範囲外のコマはシーク前の古いフレームなので採らない）
+    // 範囲つまみで押し出した後は、実際に表示されたコマを確定位置にする。
+    //   押し出しは軽いシークなので狙った番号とずれたコマが出ることがあり、離したときに
+    //   狙った番号へ戻すと再生位置が後から動いて見えるため（範囲外のコマは古いので採らない）
     if (range_pushed_play_ && Frame.FrameNo >= range_start_ && Frame.FrameNo <= range_end_)
         pushed_frame_ = Frame.FrameNo;
 
@@ -495,7 +824,7 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
 
     if (!run_decode_thread) return;
 
-    // ★ 1 表示フレームにつき「1 本だけ」接続する（リング追い越し防止）
+    // 1 表示フレームにつき 1 本だけ接続する（リング追い越し防止）
     connect(this, &PlayerController::decode_please, decodestream,
             &decode_thread::receve_decode_flag, Qt::SingleShotConnection);
 
@@ -503,14 +832,13 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
                      ? QString::asprintf("%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second)
                      : QString::asprintf("%02d:%02d", Frame.minute, Frame.second);
     slider_No = Frame.FrameNo;
-    // ★ エンコード中は後ろの画面（スライダー・時刻・動画情報）を動かさない。
-    //   毎フレーム通知するとシーングラフが毎回描き直し、NVENC と GPU を取り合う。
-    //   終わったら finished_encode() でまとめて 1 回通知する。
+    // エンコード中は後ろの画面（スライダー・時刻・動画情報）を更新しない。
+    //   毎フレーム通知するとシーングラフが描き直して NVENC と GPU を取り合う。
+    //   終わったら finished_encode() でまとめて 1 回通知する
     if (encode_state != STATE_ENCODING)
         emit frameChanged();
-    // ★ コマ送りでも 1 枚だけ pause=false のフレームが来るので、
-    //   数枚続いたときだけ「再生中」とみなす（止まるほうは即座に反映）
-    //   さらに、ユーザーが再生を指示していない（シーク中など）ときは数えない。
+    // コマ送りでも 1 枚だけ pause=false のフレームが来るので、数枚続いたときだけ
+    //   再生中とみなす（止まる側は即反映）。ユーザーが再生を指示していないときは数えない
     const bool activeBefore = render_active_;
     if (pause_flag || !play_intent_ || seek_hold_) {
         steady_play_frames_ = 0;
@@ -522,7 +850,7 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
     if (playingBefore != playing() || reverseBefore != reverse_flag || activeBefore != render_active_)
         emit stateChanged();
 
-    // OpenGL へ画像を渡して描画。一時停止中は再描画だけ（フィルタ変更・スクショ用）
+    // OpenGL へ画像を渡して描画。一時停止中は再描画だけ（フィルタ変更・画像保存用）
     if (!pause_flag && encode_state != STATE_ENCODE_READY) {
         engine_->upload(Frame);
     } else if (encode_state == STATE_NOT_ENCODE) {
@@ -570,7 +898,7 @@ void PlayerController::jumpBy(bool forward)
     setPlayIntent(false);
     emit send_manual_pause();
 
-    // ★ 起点は表示中の番号（シーク中なら目標）。連打しても前の目標から進む
+    // 起点は表示中の番号（シーク中なら目標）。連打しても前の目標から進む
     const int base = frameNo();
 
     switch (g_AppSettings.frame_jump_mode) {
@@ -632,7 +960,7 @@ void PlayerController::cutEnd()
     highResSeek(f);
 }
 
-// ★ 再生位置は再生範囲の中に収める（旧 RangeSlider と同じ）
+// 再生位置は再生範囲の中に収める
 void PlayerController::scrub(int frame)
 {
     if (!run_decode_thread) return;
@@ -648,9 +976,9 @@ void PlayerController::scrubRelease(int frame)
     highResSeek(std::clamp(frame, range_start_, range_end_));
 }
 
-// 範囲を狭めて再生位置が外に出たら、つまみ側へ押し出す。
-//   ドラッグ中は軽いシーク（send_manual_slider）で追従させ、
-//   離したときに rangeDragFinished() で高精度シークして確定する。
+// 範囲を狭めて再生位置が外に出たら、つまみ側へ押し出す
+//   ドラッグ中は軽いシーク（send_manual_slider）で追従し、
+//   離したときに rangeDragFinished() で確定する
 void PlayerController::pushPlayIntoRange()
 {
     int target = FrameNo;
@@ -676,8 +1004,8 @@ void PlayerController::rangeDragFinished()
 
 void PlayerController::highResSeek(int frame)
 {
-    // 送る番号はそのまま（範囲外の扱いはデコーダ側の丸めに任せる）。
-    // 表示はデコーダが丸める先＝範囲内に合わせておく。
+    // 送る番号はそのまま（範囲外の丸めはデコーダ側に任せる）
+    // 表示はデコーダが丸める先 = 範囲内に合わせておく
     seek_target_ = std::clamp(frame, range_start_, range_end_);
     seek_hold_ = (seek_target_ != FrameNo);
     if (seek_hold_) seekHoldTimer_.start();
@@ -742,7 +1070,7 @@ void PlayerController::screenshot()
 
 void PlayerController::openScreenshotSettings()
 {
-    if (saveScreenshot) saveScreenshot->show();
+    if (shotSettings_) shotSettings_->open();   // QML 側は opened() で画面を出す
 }
 
 // ==============================================================
@@ -773,7 +1101,7 @@ void PlayerController::stop_fps_thread()
     if (!fps_view_thread || !fpsstream) return;
 
     fpsstream->stop();
-    fpsstream->wait();          // ★ run() のループが抜けるのを待つ
+    fpsstream->wait();          // run() のループが抜けるのを待つ
     fps_view_thread->quit();
     fps_view_thread->wait();
 
@@ -805,7 +1133,7 @@ void PlayerController::openEncodeSettings()
 {
     if (!run_decode_thread || !encoder_) return;
 
-    // ★ 閉じたときに戻る場所を覚えておく（エンコードで再生位置が範囲の終端まで進むため）
+    // 閉じたときに戻る位置を覚えておく（エンコードで再生位置が範囲の終端まで進むため）
     resume_frame_   = frameNo();
     resume_playing_ = play_intent_ && !pause_flag && !reverse_flag;
 
@@ -814,7 +1142,7 @@ void PlayerController::openEncodeSettings()
     decodestream->encode_state = encode_state;
     emit stateChanged();
 
-    // ★ ここから先はタイマー駆動を切り離す（二重駆動の防止）
+    // ここから先はタイマー駆動を切り離す（二重駆動の防止）
     set_fps_driving(false);
     setPlayIntent(false);
     emit send_manual_pause();
@@ -852,7 +1180,7 @@ void PlayerController::start_encode()
     emit send_manual_high_res_slider(VideoInfo.start_range_framesNo);
     emit send_manual_resumeplayback();
 
-    // ★ 起動キックは「再生状態にしてから」1 回だけ
+    // 起動キックは再生状態にしてから 1 回だけ
     emit decode_please();
 
     connect(engine_, &VideoEngine::encode_finished, this, [this, timer]() {
@@ -896,9 +1224,9 @@ void PlayerController::encode_error_handler(const QString& error)
     emit stateChanged();
 
     qWarning() << "[PlayerController] encode error:" << error;
-    // ★ 設定画面の中に出す（解像度・分割数・B フレームを下げると改善することがある）
+    // 設定画面の中に出す（解像度・分割数・B フレームを下げると改善することがある）
     if (encoder_)
-        encoder_->encodeFailed(error + "（分割数・B フレームを下げると改善する場合があります）");
+        encoder_->encodeFailed(error + "（タイル分割数や B フレーム数を減らすと改善する場合があります）");
 }
 
 void PlayerController::finished_encode()
@@ -913,10 +1241,10 @@ void PlayerController::finished_encode()
 
     if (!run_decode_thread) return;
 
-    // ★ 通常再生に戻すのでタイマー駆動を復帰させる
+    // 通常再生に戻すのでタイマー駆動を復帰させる
     set_fps_driving(true);
 
-    // ★ 設定を開いた時点のフレームへ戻し、再生状態も開く前に合わせる
+    // 設定を開いた時点のフレームへ戻し、再生状態も開く前に合わせる
     if (resume_frame_ >= 0)
         highResSeek(resume_frame_);
     resume_frame_ = -1;

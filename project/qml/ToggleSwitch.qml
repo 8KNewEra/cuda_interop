@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// モックのスイッチ（40x24）
+// ON/OFF スイッチ（40x24）
 AbstractButton {
     id: root
     checkable: true
@@ -9,6 +9,7 @@ AbstractButton {
     implicitHeight: 24
     focusPolicy: Qt.NoFocus
     hoverEnabled: true
+    opacity: enabled ? 1.0 : 0.4
 
     background: Rectangle {
         radius: 12

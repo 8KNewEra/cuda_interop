@@ -2,31 +2,55 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 画像処理パネル（モックの右ドロワー）。
-//   フィルタは配列 1 本で持つ。追加するときは filters に 1 行足し、
-//   PlayerController に同名の bool プロパティを生やす。
-//   並びは FBO_Rendering の適用順（Gaussian → Sobel → Averaging）と合わせること。
+// 画像処理パネル（右側のドロワー）
+//   タブで「画像処理」と「表示ツール」を切り替える
+//     画像処理  … 映像そのものを変える（ヒストグラム・画像保存・エンコードにも入る）
+//     表示ツール … 画面表示だけ（ヒストグラム・画像保存・エンコードには入らない）
+//   filters 配列 1 本で管理（group で振り分け）。key は PlayerController の同名 bool プロパティ
+//   画像処理の並びは実際の適用順に合わせる:
+//     画像補正・色補正・トーンカーブ（1 パス）→ ガウシアン → ソーベル → 平均化
 Rectangle {
     id: root
     signal closeRequested()
 
     readonly property var filters: [
-        { key: "gaussian",  name: "ガウシアンフィルタ", kind: "GLSL · ぼかし" },
-        { key: "sobel",     name: "ソーベルフィルタ",   kind: "GLSL · エッジ検出" },
-        { key: "averaging", name: "平均化フィルタ",     kind: "GLSL · 平滑化" }
+        { group: "proc", key: "imageAdjust",  name: "画像補正",           kind: "明るさ・コントラスト・ガンマ" },
+        { group: "proc", key: "colorCorrect", name: "色補正",             kind: "彩度・色温度・RGB バランス" },
+        { group: "proc", key: "toneCurve",    name: "トーンカーブ",       kind: "RGB・チャンネル別の階調補正" },
+        { group: "proc", key: "gaussian",     name: "ガウシアンフィルタ", kind: "ぼかし・シャープ" },
+        { group: "proc", key: "sobel",        name: "ソーベルフィルタ",   kind: "エッジ検出・ピーキング" },
+        { group: "proc", key: "averaging",    name: "平均化フィルタ",     kind: "平滑化" },
+        { group: "view", key: "compare",      name: "比較表示",           kind: "補正前後を並べて表示" },
+        { group: "view", key: "channelView",  name: "チャンネル表示",     kind: "R・G・B・輝度を単色で表示" },
+        { group: "view", key: "tileSeam",     name: "タイル境界チェック", kind: "タイルのつなぎ目を確認" },
+        { group: "view", key: "eyedropper",   name: "スポイト",           kind: "画素の座標と値を表示" },
+        { group: "view", key: "zebra",        name: "ゼブラ表示",         kind: "白飛び・黒つぶれを警告表示" }
     ]
-    readonly property int activeCount: (player.gaussian ? 1 : 0) + (player.sobel ? 1 : 0) + (player.averaging ? 1 : 0)
+    property string tab: "proc"                  // "proc" = 画像処理、"view" = 表示ツール
     property string expandedKey: ""
 
-    // 有効なものの中での適用順（1 始まり）。無効なら 0。
+    function inGroup(g) { return filters.filter(f => f.group === g) }
+    readonly property var shown: inGroup(tab)
+    function countOn(g) {
+        let n = 0
+        for (const f of inGroup(g)) if (player[f.key]) n++
+        return n
+    }
+    readonly property int activeCount: countOn(tab)
+    readonly property int procCount: countOn("proc")
+    readonly property int viewCount: countOn("view")
+
+    // 同じグループで有効なものの中での順番（1 始まり）。無効なら 0
     function orderOf(key) {
-        var n = 0
-        for (var i = 0; i < filters.length; i++) {
-            if (player[filters[i].key]) n++
-            if (filters[i].key === key) return player[key] ? n : 0
+        let n = 0
+        for (const f of shown) {
+            if (player[f.key]) n++
+            if (f.key === key) return player[key] ? n : 0
         }
         return 0
     }
+    // 今のタブのものだけ OFF
+    function tabOff() { for (const f of shown) player[f.key] = false }
 
     width: 300
     radius: Theme.radius
@@ -44,15 +68,52 @@ Rectangle {
             Layout.margins: 14
             Layout.leftMargin: 16
             Layout.bottomMargin: 10
-            ColumnLayout {
-                spacing: 2
-                Text { text: "画像処理"; color: Theme.text; font.family: Theme.font; font.pixelSize: 14; font.bold: true }
-                Text {
-                    text: root.activeCount + " / " + root.filters.length + " 有効 · 上から順に適用"
-                    color: Theme.muted; font.family: Theme.font; font.pixelSize: 12
+            // タブ：画像処理 / 表示ツール（有効数をバッジで）
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 34
+                radius: 9
+                color: Theme.panel2
+                border.color: Theme.border
+                Row {
+                    anchors.fill: parent
+                    anchors.margins: 3
+                    Repeater {
+                        model: [{ key: "proc", text: "画像処理" }, { key: "view", text: "表示ツール" }]
+                        delegate: AbstractButton {
+                            id: tb
+                            required property var modelData
+                            readonly property bool on: root.tab === modelData.key
+                            readonly property int  n: modelData.key === "proc" ? root.procCount : root.viewCount
+                            width: parent.width / 2
+                            height: parent.height
+                            hoverEnabled: true
+                            focusPolicy: Qt.NoFocus
+                            onClicked: { root.tab = modelData.key; root.expandedKey = "" }
+                            background: Rectangle { radius: 6; color: tb.on ? Theme.selected : (tb.hovered ? Theme.hover : "transparent") }
+                            contentItem: Item {
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: 6
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: tb.modelData.text
+                                        color: tb.on ? "#FFFFFF" : Theme.muted2
+                                        font.family: Theme.font; font.pixelSize: 13; font.weight: tb.on ? Font.Bold : Font.Medium
+                                    }
+                                    Rectangle {
+                                        visible: tb.n > 0
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 18; height: 18; radius: 9
+                                        color: Theme.accent
+                                        Text { anchors.centerIn: parent; text: tb.n; color: Theme.accentInk; font.family: Theme.mono; font.pixelSize: 11; font.bold: true }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            Item { Layout.fillWidth: true }
             IconButton {
                 implicitWidth: 36; implicitHeight: 36
                 iconSize: 16
@@ -66,17 +127,26 @@ Rectangle {
             Layout.fillWidth: true
             Layout.leftMargin: 12
             Layout.rightMargin: 12
-            Text { text: "フィルタ（GLSL）"; color: Theme.muted2; font.family: Theme.font; font.pixelSize: 11; font.letterSpacing: 0.6 }
-            Item { Layout.fillWidth: true }
+            // タブごとの説明（エンコード・画像保存に入るかどうか）
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: root.tab === "proc"
+                      ? "映像に適用され、画像保存・エンコードにも反映されます。上から順に処理します。"
+                      : "表示のみに適用されます。画像保存・エンコードには反映されません。"
+                color: root.tab === "proc" ? Theme.muted2 : Theme.accent
+                font.family: Theme.font; font.pixelSize: 11
+                lineHeight: 1.25
+            }
             AbstractButton {
                 id: offBtn
-                text: "すべて OFF"
+                text: "すべてオフ"
                 enabled: player.controlsEnabled && root.activeCount > 0
                 implicitHeight: 28
                 implicitWidth: offLbl.implicitWidth + 16
                 hoverEnabled: true
                 focusPolicy: Qt.NoFocus
-                onClicked: player.allFiltersOff()
+                onClicked: root.tabOff()
                 background: Rectangle { radius: 6; color: offBtn.hovered && offBtn.enabled ? Theme.hover : "transparent" }
                 contentItem: Text {
                     id: offLbl
@@ -103,13 +173,16 @@ Rectangle {
                 spacing: 8
 
                 Repeater {
-                    model: root.filters
+                    model: root.shown
                     delegate: Rectangle {
                         id: card
                         required property var modelData
                         readonly property bool on: player[modelData.key]
                         readonly property bool expanded: root.expandedKey === modelData.key
                         readonly property int  order: root.orderOf(modelData.key)
+                        // 係数を持つフィルタだけ（それ以外は null）
+                        readonly property var  kernel: modelData.key === "gaussian"  ? player.gaussianKernel
+                                                     : modelData.key === "averaging" ? player.averagingKernel : null
 
                         Layout.fillWidth: true
                         implicitHeight: cardCol.implicitHeight
@@ -151,8 +224,8 @@ Rectangle {
                                         ColumnLayout {
                                             spacing: 0
                                             Layout.fillWidth: true
-                                            Text { text: card.modelData.name; color: card.on ? Theme.text : "#AEB4BD"; font.family: Theme.font; font.pixelSize: 13; font.weight: Font.Medium }
-                                            Text { text: card.modelData.kind; color: Theme.muted2; font.family: Theme.font; font.pixelSize: 11 }
+                                            Text { Layout.fillWidth: true; elide: Text.ElideRight; text: card.modelData.name; color: card.on ? Theme.text : "#AEB4BD"; font.family: Theme.font; font.pixelSize: 13; font.weight: Font.Medium }
+                                            Text { Layout.fillWidth: true; elide: Text.ElideRight; text: card.modelData.kind; color: Theme.muted2; font.family: Theme.font; font.pixelSize: 11 }
                                         }
                                         Icon {
                                             size: 14
@@ -177,16 +250,100 @@ Rectangle {
                                 Layout.leftMargin: 12
                                 Layout.rightMargin: 12
                                 Layout.bottomMargin: 12
-                                implicitHeight: paramText.implicitHeight + 20
+                                implicitHeight: (card.kernel ? kp.implicitHeight
+                                                 : card.modelData.key === "sobel" ? pk.implicitHeight
+                                                 : card.modelData.key === "zebra" ? zb.implicitHeight
+                                                 : card.modelData.key === "imageAdjust" ? ia.implicitHeight
+                                                 : card.modelData.key === "colorCorrect" ? cc.implicitHeight
+                                                 : card.modelData.key === "channelView" ? ch.implicitHeight
+                                                 : card.modelData.key === "compare" ? cmp.implicitHeight
+                                                 : card.modelData.key === "toneCurve" ? tc.implicitHeight
+                                                 : card.modelData.key === "tileSeam" ? ts.implicitHeight
+                                                 : card.modelData.key === "eyedropper" ? ed.implicitHeight
+                                                 : paramText.implicitHeight) + 20
                                 radius: 8
                                 color: "#0F1113"
                                 border.color: Theme.border
+                                // 係数を持つフィルタ（ガウシアン / 平均化）
+                                KernelParams {
+                                    id: kp
+                                    visible: card.kernel !== null
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    kernel: card.kernel
+                                    title: card.modelData.name
+                                    enabled: player.controlsEnabled && card.on   // フィルタ OFF の間は設定も触れない
+                                }
+                                PeakingParams {
+                                    id: pk
+                                    visible: card.modelData.key === "sobel"
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    enabled: player.controlsEnabled && card.on   // 同上
+                                }
+                                ZebraParams {
+                                    id: zb
+                                    visible: card.modelData.key === "zebra"
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    enabled: player.controlsEnabled && card.on   // 同上
+                                }
+                                ImageAdjustParams {
+                                    id: ia
+                                    visible: card.modelData.key === "imageAdjust"
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    enabled: player.controlsEnabled && card.on
+                                }
+                                ColorParams {
+                                    id: cc
+                                    visible: card.modelData.key === "colorCorrect"
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    enabled: player.controlsEnabled && card.on
+                                }
+                                EyedropperParams {
+                                    id: ed
+                                    visible: card.modelData.key === "eyedropper"
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    enabled: player.controlsEnabled && card.on
+                                }
+                                TileSeamParams {
+                                    id: ts
+                                    visible: card.modelData.key === "tileSeam"
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    enabled: player.controlsEnabled && card.on
+                                }
+                                ToneCurveParams {
+                                    id: tc
+                                    visible: card.modelData.key === "toneCurve"
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    enabled: player.controlsEnabled && card.on
+                                }
+                                CompareParams {
+                                    id: cmp
+                                    visible: card.modelData.key === "compare"
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    enabled: player.controlsEnabled && card.on
+                                }
+                                ChannelParams {
+                                    id: ch
+                                    visible: card.modelData.key === "channelView"
+                                    x: 10; y: 10
+                                    width: parent.width - 20
+                                    enabled: player.controlsEnabled && card.on
+                                }
                                 Text {
                                     id: paramText
+                                    visible: card.kernel === null && !pk.visible && !zb.visible && !cc.visible && !ch.visible && !ia.visible && !cmp.visible && !tc.visible && !ts.visible && !ed.visible
                                     anchors.fill: parent
                                     anchors.margins: 10
                                     wrapMode: Text.WordWrap
-                                    text: "パラメータ領域。現在は調整項目なし（カーネルサイズや強度などを追加する場合はここに並べる）"
+                                    text: "設定項目はありません"
                                     color: Theme.muted2; font.family: Theme.font; font.pixelSize: 12
                                     lineHeight: 1.3
                                 }
@@ -195,19 +352,6 @@ Rectangle {
                     }
                 }
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.topMargin: 4
-                    implicitHeight: 40
-                    radius: 10
-                    color: "transparent"
-                    border.color: Theme.border
-                    Text {
-                        anchors.centerIn: parent
-                        text: "今後追加する処理（CUDA / GLSL）はここに並ぶ"
-                        color: "#6F7782"; font.family: Theme.font; font.pixelSize: 12
-                    }
-                }
             }
         }
     }

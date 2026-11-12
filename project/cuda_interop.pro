@@ -7,6 +7,7 @@ QT += widgets opengl
 QT += opengl
 QT += openglwidgets
 LIBS += -lopengl32
+win32: LIBS += -lpdh      # GPU の 3D 使用率（info_thread）
 
 
 QT += widgets gui opengl
@@ -53,6 +54,10 @@ SOURCES += \
     $$PWD/src/qmlui/playercontroller.cpp \
     $$PWD/src/qmlui/windowchrome.cpp \
     $$PWD/src/qmlui/encodecontroller.cpp \
+    $$PWD/src/qmlui/screenshotsettings.cpp \
+    $$PWD/src/qmlui/filterkernel.cpp \
+    $$PWD/src/qmlui/tonecurve.cpp \
+    $$PWD/src/qmlui/mediaprobe.cpp \
 
 HEADERS += \
     $$PWD/src/__global__.h \
@@ -80,6 +85,10 @@ HEADERS += \
     $$PWD/src/qmlui/playercontroller.h \
     $$PWD/src/qmlui/windowchrome.h \
     $$PWD/src/qmlui/encodecontroller.h \
+    $$PWD/src/qmlui/screenshotsettings.h \
+    $$PWD/src/qmlui/filterkernel.h \
+    $$PWD/src/qmlui/tonecurve.h \
+    $$PWD/src/qmlui/mediaprobe.h \
     src/main/__global__.h
 
 FORMS += \

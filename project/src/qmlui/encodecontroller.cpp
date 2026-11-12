@@ -35,13 +35,13 @@ EncodeController::EncodeController(QObject* parent)
 }
 
 // ==============================================================
-// 初期化（旧 iniFile_UI_Control）
+// 初期化（Widgets 版 iniFile_UI_Control 相当）
 // ==============================================================
 void EncodeController::loadFromSettings()
 {
     EncodeSettings& s = es();
 
-    // 知らない値は既定へ倒す（旧 foundIndex が -1 のとき先頭にしていたのと同じ）
+    // 知らない値は既定へ倒す
     auto oneOf = [](const QString& v, const QStringList& list, const QString& def) {
         return list.contains(v) ? v : def;
     };
@@ -61,7 +61,7 @@ void EncodeController::loadFromSettings()
     s.cq = std::clamp(s.cq, 1, 51);
     tileSplit(s.encode_tile, s.width_tile, s.height_tile);
 
-    // ★ 保存値は常に 1 本あたり。表示単位へ戻す。
+    // 保存値は常に 1 本あたり。表示単位へ戻す
     target_ = s.target_bit_rate / 1000000 * unit();
     max_    = s.max_bit_rate    / 1000000 * unit();
 
@@ -70,7 +70,7 @@ void EncodeController::loadFromSettings()
 }
 
 // ==============================================================
-// 制約（旧 tile_index_control / combo_index_control2 / applyContainerCodecLimit）
+// 制約（Widgets 版 tile_index_control / combo_index_control2 / applyContainerCodecLimit 相当）
 // ==============================================================
 bool EncodeController::primaryAv1() const
 {
@@ -131,13 +131,13 @@ bool EncodeController::tuneAllowed(const QString& t) const
     return true;
 }
 
-// ★ 選べなくなった値を選べる値へ寄せる。順序に意味がある：
+// 選べなくなった値を選べる値へ寄せる。順序に意味がある:
 //   タイル → (分割数) → コーデック → B フレーム / チューニング → 音声 → GPU → レート
 void EncodeController::normalize()
 {
     EncodeSettings& s = es();
 
-    // タイル：選べなければ、それ以上で最初に選べるもの（旧実装と同じ寄せ方）
+    // タイル: 選べなければ、それ以上で最初に選べるもの（Widgets 版と同じ寄せ方）
     if (!tileAllowed(s.encode_tile)) {
         int pick = 8;
         for (int t : {1, 2, 4, 8}) if (t >= s.encode_tile && tileAllowed(t)) { pick = t; break; }
@@ -145,18 +145,18 @@ void EncodeController::normalize()
     }
     tileSplit(s.encode_tile, s.width_tile, s.height_tile);
 
-    // コーデック：H.264 / AV1 が使えないときは HEVC へ
+    // コーデック: H.264 / AV1 が使えないときは HEVC へ
     if (!codecAllowed(s.codec)) s.codec = "hevc_nvenc";
 
-    // B フレーム：使える範囲の上限まで下げる
+    // B フレーム: 使える範囲の上限まで下げる
     while (s.b_frames > 0 && !bframeAllowed(s.b_frames)) s.b_frames--;
 
-    // チューニング：default/hq は ll へ、lossless は ull へ
+    // チューニング: default/hq は ll へ、lossless は ull へ
     if (!tuneAllowed(s.tune))
         s.tune = (s.tune == "lossless") ? "ull" : "ll";
     if (!tuneAllowed(s.tune)) s.tune = "ull";
 
-    // 音声コーデック：コンテナに入らないものは AAC へ
+    // 音声コーデック: コンテナに入らないものは AAC へ
     {
         const bool pcm_ok  = (s.container != "mp4");
         const bool flac_ok = (s.container != "mov");
@@ -268,8 +268,8 @@ QVariantList EncodeController::basisOptions() const
     return { opt("1 ストリームあたり", "stream"), opt("合計（ファイル全体）", "total") };
 }
 
-// ★ コンテナに入る音声コーデックだけ
-//   MP4 : PCM 不可（ipcm になり再生環境を選ぶ）／ MOV : FLAC 不可
+// コンテナに入る音声コーデックだけ
+//   MP4: PCM 不可（ipcm になり再生環境を選ぶ）／ MOV: FLAC 不可
 QVariantList EncodeController::audioCodecOptions() const
 {
     const QString c = es().container;
@@ -302,7 +302,7 @@ void EncodeController::setValue(const QString& key, const QVariant& value)
     } else if (key == "split") {
         s.split_encode_mode = value.toString();
     } else if (key == "tile") {
-        // ★ 合計基準のときは「合計値は据え置き＝1 本あたりが変わる」
+        // 合計基準のときは合計値を据え置く（= 1 本あたりが変わる）
         s.encode_tile = value.toInt();
     } else if (key == "preset") {
         s.preset = value.toString();
@@ -317,7 +317,7 @@ void EncodeController::setValue(const QString& key, const QVariant& value)
     } else if (key == "pass") {
         s.pass_mode = value.toString();
     } else if (key == "basis") {
-        // ★ 単位を変えても実際のビットレートは変えない。表示値だけ換算する
+        // 単位を変えても実際のビットレートは変えない。表示値だけ換算する
         const QString next = (value.toString() == "total") ? "total" : "stream";
         if (next != s.bitrate_basis) {
             const int tiles = std::max(1, s.encode_tile);
@@ -388,7 +388,7 @@ void EncodeController::setAudioGain(int db)
     emit changed();
 }
 
-// ★ 1 本あたりが常に 1〜1000 Mbps に収まるよう範囲を決め直す（旧 applyBitrateRange）
+// 1 本あたりが常に 1〜1000 Mbps に収まるよう範囲を決め直す（Widgets 版 applyBitrateRange 相当）
 void EncodeController::applyRateRange()
 {
     max_    = std::clamp(max_, rateMin(), rateHi());
@@ -430,7 +430,7 @@ QString EncodeController::rateInfoMax() const
     return showMax() ? rateLine("最大", max_, unit(), std::max(1, es().encode_tile)) : QString();
 }
 
-// ★ 式は __global__.h（save_encode と共有。表示と実体をずらさない）
+// 式は __global__.h（save_encode と共有。表示と実体をずらさない）
 QString EncodeController::vramInfo() const
 {
     const EncodeSettings& s = es();
@@ -478,7 +478,7 @@ void EncodeController::browsePath()
                                                           fi.absoluteFilePath(), filter);
     if (fileName.isEmpty()) return;
     es().encode_path = fileName;
-    // ★ 別の拡張子で保存されたらコンテナをそちらへ合わせる（パスのほうが正）
+    // 別の拡張子で保存されたらコンテナをそちらへ合わせる（パスが正）
     syncContainerFromPath();
     normalize();
     emit changed();
@@ -498,7 +498,7 @@ void EncodeController::syncContainerFromPath()
     else applyContainerToPath();
 }
 
-// ファイルの重複チェック（旧 file_check と同じ）
+// ファイルの重複チェック（Widgets 版 file_check と同じ）
 QString EncodeController::fileCheck(const QString& filePath)
 {
     const QFileInfo fileInfo(filePath);
@@ -523,7 +523,7 @@ QString EncodeController::fileCheck(const QString& filePath)
 }
 
 // ==============================================================
-// マルチ GPU（旧 setGPUTable / updateGpuTileAllocation / buildTileGpuMap）
+// マルチ GPU（Widgets 版 setGPUTable / updateGpuTileAllocation / buildTileGpuMap 相当）
 // ==============================================================
 void EncodeController::applyAv1Restriction()
 {
@@ -591,8 +591,11 @@ QVariantList EncodeController::gpuStats() const
         for (const auto& x : g_GPUInfo) if (x.deviceID == id) { g = &x; break; }
         if (!g) continue;   // gpus() と同じ条件で飛ばす → 並びが一致する
         QVariantMap m;
+        m["id"]       = id;
         m["encUsage"] = g->Encoder_Usage;
         m["gpuUsage"] = g->GPU_Usage;
+        m["g3d"]      = g->Graphics3D_Usage;   // -1 = 取れない環境
+        m["cuda"]     = g->Cuda_Usage;         // -1 = 取れない環境
         m["memUsed"]  = g->Memory_Usage;
         m["memMax"]   = g->Max_Memory_Usage;
         list << m;
@@ -621,8 +624,8 @@ QVariantList EncodeController::gpus() const
 
         QString status;
         bool used = true;
-        if (g->av1_forced_disabled)      { status = "Not Used (AV1 非対応)"; used = false; }
-        else if (g->tile_weight <= 0)    { status = "Not Used"; used = false; }
+        if (g->av1_forced_disabled)      { status = "未使用（AV1 非対応）"; used = false; }
+        else if (g->tile_weight <= 0)    { status = "未使用"; used = false; }
         else if (tiles <= 0)             { status = "0 (0%)"; used = false; }
         else status = QString("%1 (%2%)").arg(tiles).arg(int(double(tiles) / totalTiles * 100.0 + 0.5));
         m["status"] = status;
@@ -681,7 +684,7 @@ void EncodeController::setProgress(int value)
     if (value == progress_) return;
     progress_ = std::clamp(value, 0, progress_max_);
 
-    // ★ エンコード速度：0.5 秒ごとに「その区間で進んだフレーム数 / 経過時間」
+    // エンコード速度: 0.5 秒ごとに「その区間で進んだフレーム数 / 経過時間」
     if (encoding_) {
         if (!fpsTimer_.isValid()) { fpsTimer_.start(); fpsBase_ = progress_; }
         const qint64 ms = fpsTimer_.elapsed();
@@ -699,13 +702,13 @@ void EncodeController::start()
     if (encoding_) return;
     EncodeSettings& s = es();
 
-    // ★ 保存は常に 1 ストリームあたり。合計基準ならタイル数で割り戻す
+    // 保存は常に 1 ストリームあたり。合計基準ならタイル数で割り戻す
     const int u = unit();
     qint64 tgt = (qint64)target_ / u;
     qint64 mx  = (s.rc_mode == "cbr") ? tgt : ((qint64)max_ / u);
     tgt = std::max<qint64>(1, tgt) * 1000 * 1000;
     mx  = std::max<qint64>(1, mx)  * 1000 * 1000;
-    // ★ target と max は別々に通す
+    // target と max は別々に通す
     const qint64 cap = codec_max_bitrate(s.codec);
     s.target_bit_rate = (int)std::min(tgt, cap);
     s.max_bit_rate    = (int)std::min(mx,  cap);
@@ -750,7 +753,7 @@ void EncodeController::cancel()
 
 void EncodeController::encodeEnded(const QString& elapsed)
 {
-    // ★ キャンセルしても途中までのファイルは閉じて書き終える（旧実装と同じ）
+    // キャンセルしても途中までのファイルは閉じて書き終える（Widgets 版と同じ）
     encoding_ = false;
     finished_ok_ = !canceled_;
     if (!canceled_) progress_ = progress_max_;

@@ -4,14 +4,12 @@
 // ==============================================================
 // EncodeController（Qt Quick 版のエンコード設定）
 //
-//   encode_setting（Widgets）のロジックを UI から切り離して移したもの。
+//   Widgets 版 encode_setting のロジックを UI から切り離したもの。
 //   値の持ち方・制約・換算・GPU 割り当ての規則は encode_setting と同じ。
-//
-//   ★ 違うところ
-//     ・コンボの「行を隠す」は、選べる候補だけを並べたリストを渡す形にした。
-//       QML 側は value で選択を持つので、インデックスのずれを気にしなくてよい。
-//     ・制約の連鎖（タイル → コーデック → B フレーム／チューニング …）は
-//       normalize() 1 か所でまとめて解く。
+//   違い:
+//     ・コンボの「行を隠す」代わりに、選べる候補だけのリストを渡す
+//       （QML 側は value で選択を持つのでインデックスのずれを気にしなくてよい）
+//     ・制約の連鎖（タイル → コーデック → B フレーム／チューニング …）は normalize() で一括して解く
 //
 //   QML へは context property "encoder" として公開する。
 // ==============================================================
@@ -101,8 +99,8 @@ class EncodeController : public QObject
 
     // ---- マルチ GPU ----
     Q_PROPERTY(QVariantList gpus  READ gpus  NOTIFY changed)
-    // ★ 使用率・メモリは別プロパティで 1 秒ごとに更新（行を作り直さないので操作中の重みに影響しない）
-    //   gpus と同じ並び。[{encUsage, gpuUsage, memUsed, memMax}]
+    // 使用率・メモリは別プロパティで 1 秒ごとに更新（gpus の行を作り直さないので操作中の重みに影響しない）
+    //   gpus と同じ並び。[{id, encUsage, gpuUsage, g3d, cuda, memUsed, memMax}]（g3d / cuda は取れない環境で -1）
     Q_PROPERTY(QVariantList gpuStats READ gpuStats NOTIFY statsChanged)
     Q_PROPERTY(bool multiGpu      READ multiGpu NOTIFY changed)
 
@@ -110,10 +108,10 @@ public:
     explicit EncodeController(QObject* parent = nullptr);
 
     // ---- PlayerController から ----
-    // 設定画面を開くとき（旧 encode_setting::slider）。進捗の範囲もここで決める。
+    // 設定画面を開くとき（Widgets 版 encode_setting::slider 相当）。進捗の範囲もここで決める
     void prepare(int progressMax);
     void setProgress(int value);
-    // 最後まで終わった（旧 encode_end）
+    // 最後まで終わった（Widgets 版 encode_end 相当）
     void encodeEnded(const QString& elapsed);
     // エンコーダの初期化に失敗した（開始前の状態へ戻す）
     void encodeFailed(const QString& message);
@@ -208,24 +206,24 @@ signals:
     void progressChanged();
     void statsChanged();
 
-    // PlayerController へ（旧 encode_setting の signal と同じ意味）
+    // PlayerController へ（Widgets 版 encode_setting の signal と同じ意味）
     void encodeStartRequested();
     void encodeStopRequested();
     void closed();
 
 private:
-    // ★ 書き込みは EncodeSettingsManager の friend としてだけ行う
+    // 書き込みは EncodeSettingsManager の friend としてだけ行う
     EncodeSettings& es() { return EncodeSettingsManager::getInstance().getSettingsNonConst(); }
     const EncodeSettings& es() const { return EncodeSettingsManager::getInstance().getSettings(); }
     const DecodeInfo& VideoInfo = DecodeInfoManager::getInstance().getSettings();
 
-    void loadFromSettings();       // ini → 表示値（旧 iniFile_UI_Control）
+    void loadFromSettings();       // ini → 表示値（Widgets 版 iniFile_UI_Control 相当）
     void normalize();              // 選べない値を選べる値へ寄せる（制約の連鎖をまとめて解く）
-    void applyRateRange();         // 旧 applyBitrateRange
+    void applyRateRange();         // Widgets 版 applyBitrateRange 相当
     void applyContainerToPath();
     void syncContainerFromPath();
-    void updateTileAllocation();   // 旧 updateGpuTileAllocation
-    void applyAv1Restriction();    // 旧 apply/restoreGpuRestriction
+    void updateTileAllocation();   // Widgets 版 updateGpuTileAllocation 相当
+    void applyAv1Restriction();    // Widgets 版 apply/restoreGpuRestriction 相当
     std::vector<int> buildTileGpuMap() const;
     static QString fileCheck(const QString& filePath);
 
@@ -239,8 +237,8 @@ private:
     bool tuneAllowed(const QString& t) const;
     static void tileSplit(int tiles, int& wt, int& ht);
 
-    // ★ 表示中のビットレート（Mbps）。"total" のときはファイル全体の合計。
-    //   EncodeSettings へは start() で 1 本あたりへ割り戻して入れる。
+    // 表示中のビットレート（Mbps）。"total" のときはファイル全体の合計
+    //   EncodeSettings へは start() で 1 本あたりに割り戻して入れる
     int target_ = 100;
     int max_    = 1000;
 

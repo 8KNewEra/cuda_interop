@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// 44x44 のアイコンボタン（トランスポート用）。caption があれば下に小さく出す。
+// 44x44 のアイコンボタン（再生操作用）。caption があれば下に小さく出す
 AbstractButton {
     id: root
     property var    paths: []

@@ -1,9 +1,9 @@
 import QtQuick
 import QtQuick.Shapes
 
-// 24x24 の SVG パス（モックと同じもの）を線で描くアイコン。
-//   paths   : SVG の d 属性（最大 3 本）
-//   filled  : true なら塗り（再生/一時停止など）
+// 24x24 の SVG パスを線で描くアイコン
+//   paths  : SVG の d 属性（最大 3 本）
+//   filled : true なら塗り（再生/一時停止など）
 Item {
     id: root
     property var    paths: []

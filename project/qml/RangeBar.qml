@@ -1,12 +1,10 @@
 import QtQuick
 
-// 再生位置＋再生範囲のスライダー（旧: RangeSlider）
+// 再生位置＋再生範囲のスライダー
 //   ・トラックをクリック／ドラッグ → scrubbed（操作中）→ released（離したとき）
 //   ・橙のつまみ → 開始 / 終了を動かす
-//
-//   ★ つまみは「開始は左側」「終了は右側」に張り出したタブにしている。
-//     開始＝終了＝再生位置が 1 点に重なっても、左半分を掴めば開始、
-//     右半分なら終了、トラックの上なら再生位置、と取り合いにならない。
+//   つまみは開始＝左、終了＝右に張り出したタブ。3 点が重なっても
+//   左半分を掴めば開始、右半分なら終了、トラック上なら再生位置になる
 Item {
     id: root
     property int  maximum: 1000
@@ -21,10 +19,10 @@ Item {
     signal endMoved(int v)
     signal rangeReleased()
 
-    // ドラッグ中はつまみの位置をこちらで持つ（デコード結果を待たずに追従させる）
+    // ドラッグ中はつまみ位置をここで持つ（デコード結果を待たずに追従）
     property bool dragging: playArea.pressed
     property int  dragValue: 0
-    // ★ 再生位置は常に範囲内に描く（範囲つまみで押し出された直後も追従させる）
+    // 再生位置は常に範囲内に描く（範囲つまみで押し出された直後も追従）
     readonly property int shownValue: Math.max(rangeStart, Math.min(rangeEnd, dragging ? dragValue : value))
 
     // レイアウト（縦）
@@ -121,7 +119,7 @@ Item {
             }
         }
 
-        // ★ 当たり判定はタブより広く、縦線の外側半分まで含める
+        // 当たり判定はタブより広く、縦線の外側半分まで含める
         MouseArea {
             id: grip
             x: m.side < 0 ? m.px - root.tabW - 6 : m.px
@@ -134,7 +132,7 @@ Item {
             preventStealing: true
             property real grabOffset: 0
             onPressed: (mouse) => {
-                // 掴んだ点と線のずれを覚えておき、つまみが指の下から逃げないようにする
+                // 掴んだ点と線のずれを覚えておき、つまみが指から逃げないようにする
                 const p = mapToItem(root, mouse.x, mouse.y)
                 grabOffset = p.x - m.px
             }

@@ -4,14 +4,14 @@
 // ==============================================================
 // VideoItem / HistogramItem
 //
-//   VideoEngine が描いた FBO テクスチャを、コピーせずにシーングラフへ
-//   載せるだけの QQuickItem。
+//   VideoEngine が描いたテクスチャを、コピーせずにシーングラフへ載せる QQuickItem。
 //
-//   ・テクスチャは QNativeInterface::QSGOpenGLTexture::fromNative で包む。
-//     GL の実体は engine が持ち続ける（こちらは削除しない）。
-//   ・FBO は GL の慣例どおり下の行から並んでいるので、表示時に上下反転する。
-//   ・ズーム／パンは GLWidget から移植。左/中ドラッグ=移動、
-//     ホイール=拡大縮小（カーソル位置固定）、ダブルクリック=等倍。
+//   ・テクスチャは QNativeInterface::QSGOpenGLTexture::fromNative で包むだけ
+//     （GL の実体は engine が持つ。こちらでは削除しない）
+//   ・表示するのは engine->displayTexture()（表示ツールがあれば tempTexture、なければ fbo）
+//   ・FBO は GL の慣例どおり下の行から並ぶので、表示時に上下反転する
+//   ・ズーム／パン: 左/中ドラッグ = 移動、ホイール = 拡大縮小（カーソル位置固定）、
+//     ダブルクリック = 等倍。最大は 1 画素 = 32px
 // ==============================================================
 
 #include <QQuickItem>
@@ -75,7 +75,7 @@ private:
 
     QSize  lastSize_;           // 解像度が変わったらズームを戻す
 
-    // レンダースレッド側（basic loop なので実際は GUI スレッド）
+    // レンダースレッド側（basic render loop なので実際は GUI スレッド）
     unsigned int texId_ = 0;
     QSize        texSize_;
 };
