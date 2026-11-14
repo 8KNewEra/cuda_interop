@@ -102,6 +102,10 @@ struct AppSettings
     int screenshot_jpeg_quality = 90;
     // JPEG の色差サンプリング: "444" / "422" / "420"
     QString screenshot_jpeg_subsampling = "420";
+    // PNG / TIFF のビット深度: "16"（10bit 以上の動画は 16bit で保存）/ "8"（常に 8bit）。JPEG / BMP は常に 8bit
+    QString screenshot_depth = "16";
+    // 10bit 以上の動画を 8bit で保存するときのディザ: "on"（縞を抑える）/ "off"（値そのまま。解析向け）
+    QString screenshot_dither = "on";
 };
 
 // エンコード設定の構造体
@@ -151,7 +155,20 @@ struct EncodeSettings {
     int width_tile = 1;
     int height_tile = 1;
     std::vector<int> tile_gpu_map;
+
+    // 書き出しのビット深度の希望（8 / 10）。10 でも実際に 10bit（P010）で出すのは
+    //   「素材が 10bit 経路（RGBA16）」かつ「HEVC / AV1」のときだけ（encode_out_10bit）
+    int output_depth = 10;
+    // 10bit 経路の素材を 8bit（NV12）で書き出すときのディザ（true = 縞を抑える / false = 値そのまま）
+    bool dither = true;
 };
+
+// 実際に 10bit（P010）で書き出すか。save_encode と設定画面で同じ判定を使う
+//   srcHighBit: 素材を 10bit 経路（RGBA16）で処理しているか（QML 版のみ。Widgets 版は常に false）
+inline bool encode_out_10bit(const EncodeSettings& s, bool srcHighBit)
+{
+    return srcHighBit && s.output_depth >= 10 && !s.codec.contains("h264");
+}
 
 // ★ ストリーム 1 本あたりのビットレート上限（bps）。コーデックのレベル由来。
 //   target と max は必ず別々に通すこと。
@@ -193,10 +210,11 @@ inline int encode_ring_size(int b_frames)
 }
 
 // プール全体の VRAM（MB）。ring + 4 は FFmpeg の hwframe 側の予備。
-inline int encode_pool_mb(int tile_w, int tile_h, int ring, int tiles)
+//   bytes_per_sample: NV12 は 1、P010（10bit 出力）は 2
+inline int encode_pool_mb(int tile_w, int tile_h, int ring, int tiles, int bytes_per_sample = 1)
 {
     if (tile_w <= 0 || tile_h <= 0 || tiles <= 0) return 0;
-    return (int)((double)tile_w * tile_h * 1.5 * (ring + 4) * tiles / (1024.0 * 1024.0));
+    return (int)((double)tile_w * tile_h * 1.5 * bytes_per_sample * (ring + 4) * tiles / (1024.0 * 1024.0));
 }
 
 // ★書き込みを許可したいクラスをここで「前方宣言」

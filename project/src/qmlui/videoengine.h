@@ -93,6 +93,8 @@ public:
     // 表示するテクスチャ。表示ツールが ON なら tempTexture（fbo に重ねた表示専用）、OFF なら fbo
     GLuint  displayTexture()  const { return displayTex_ ? displayTex_ : fboTextureID; }
     QSize   displaySize()     const { return QSize(width_, height_); }
+    // 10bit 経路か（テクスチャが RGBA16）。10bit 以上の素材のとき upload が自動で切り替える
+    bool    highBitDepth()    const { return rgba16_; }
     // スポイト（フレーム単位）
     //   setPickRequest で位置（左上原点のピクセル、-1 で停止）を指定すると、描画した
     //   フレームごとに CUDA の非同期コピーでその画素（補正後・補正前）を拾う（GPU を待たない）
@@ -175,7 +177,8 @@ private:
     int          pickX_ = -1, pickY_ = -1;      // 要求中の位置（-1 = 停止）
     bool         pickPending_ = false;          // コピーを積んで結果待ち
     int          pickReqX_ = 0, pickReqY_ = 0, pickReqFrame_ = 0;
-    unsigned char* h_pick_ = nullptr;           // ピン留めしたホストメモリ（8 バイト：補正後 RGBA、補正前 RGBA）
+    unsigned char* h_pick_ = nullptr;           // ピン留めしたホストメモリ（16 バイト：補正後 RGBA、補正前 RGBA。8bit 経路は前 8 バイトだけ使う）
+    bool         pickReqRgba16_ = false;          // 要求したときの経路（結果の読み方）
     cudaEvent_t  pickEvent_ = nullptr;
     QVariantMap  pickResult_;
     void pickCollect();                         // 終わったコピーの結果を受け取る（待たない）
@@ -264,6 +267,11 @@ private:
 
     // ---- 動画情報 ----
     int width_ = 0, height_ = 0;
+    // 処理経路: false = 8bit 経路（テクスチャ RGBA8）、true = 10bit 経路（RGBA16）
+    //   入力・fbo・tempfbo の 3 枚がこの形式。CUDA のカーネルも経路ごとに別（cuda_kernels/*_8bit / *_10bit）
+    bool rgba16_ = false;
+    bool wantsRgba16(const VideoFrame& Frame) const;   // この素材は 10bit 経路で処理するか
+    bool p010ToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf);   // 10bit 経路の NVDEC 入力
     int FrameNo = 0;
     bool frame_valid_ = false;
     quint64 frame_serial_ = 0;
@@ -278,7 +286,8 @@ private:
     HistStats* d_hist_stats = nullptr;
     HistStats  h_hist_stats{};
     std::vector<int> hist_labels_;
-    int num_bins = 256;
+    int num_bins = 256;            // 最後に集計した段数（8bit 経路 256、10bit 経路 1024 = HIST10_BINS）
+    HistData10* d_hist_data10 = nullptr;   // 10bit 経路の集計先（1024 段）
 
     // ---- スクリーンショット ----
     uint8_t* d_cudaScreenshot = nullptr;

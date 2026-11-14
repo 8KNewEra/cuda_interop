@@ -10,20 +10,21 @@ import CudaViewer
 //   C++ 側の窓口は context property（player / encoder / shotSettings）
 ApplicationWindow {
     id: win
-    // スポイトの 1 行（色見本・ラベル・R/G/B/輝度）
+    // スポイトの 1 行（色見本・ラベル・R/G/B/輝度）。値は maxv 段階（8bit 経路 255、10bit 経路 1023）
     // 注意: inline component はファイル直下に置く（入れ子にすると Qt 6.9 で解決できない）
     component EyeRow: Row {
         property string label
         property int r; property int g; property int b
+        property int maxv: 255
         spacing: 8
         Rectangle { width: 12; height: 12; radius: 3; anchors.verticalCenter: parent.verticalCenter
-                    color: Qt.rgba(r / 255, g / 255, b / 255, 1); border.color: Theme.border }
+                    color: Qt.rgba(r / maxv, g / maxv, b / maxv, 1); border.color: Theme.border }
         Text { text: label; width: 44; color: Theme.muted; font.family: Theme.font; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
         Text {
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.StyledText
             // 桁をそろえるため &nbsp; で詰める（リッチテキストでは通常の空白が縮む）
-            function p3(v) { const t = String(v); return "&nbsp;".repeat(Math.max(0, 3 - t.length)) + t }
+            function p3(v) { const t = String(v); return "&nbsp;".repeat(Math.max(0, String(maxv).length - t.length)) + t }
             text: '<font color="#FF7A7A">R</font>&nbsp;' + p3(r)
                 + '&nbsp;&nbsp;<font color="#6EE7A0">G</font>&nbsp;' + p3(g)
                 + '&nbsp;&nbsp;<font color="#7AB8FF">B</font>&nbsp;' + p3(b)
@@ -562,10 +563,11 @@ ApplicationWindow {
                             spacing: 4
                             Text {
                                 text: "X " + (eye.px.x ?? 0) + "   Y " + (eye.px.y ?? 0) + "   Frame " + (eye.px.frame ?? 0)
+                                      + (eye.px.bits === 10 ? "   10bit" : "")
                                 color: Theme.text2; font.family: Theme.mono; font.pixelSize: 12
                             }
-                            EyeRow { visible: eye.mode !== 1; label: "補正後"; r: eye.px.r ?? 0; g: eye.px.g ?? 0; b: eye.px.b ?? 0 }
-                            EyeRow { visible: eye.mode !== 0; label: "補正前"; r: eye.px.r0 ?? 0; g: eye.px.g0 ?? 0; b: eye.px.b0 ?? 0 }
+                            EyeRow { visible: eye.mode !== 1; label: "補正後"; maxv: eye.px.bits === 10 ? 1023 : 255; r: eye.px.r ?? 0; g: eye.px.g ?? 0; b: eye.px.b ?? 0 }
+                            EyeRow { visible: eye.mode !== 0; label: "補正前"; maxv: eye.px.bits === 10 ? 1023 : 255; r: eye.px.r0 ?? 0; g: eye.px.g0 ?? 0; b: eye.px.b0 ?? 0 }
                         }
                     }
                 }

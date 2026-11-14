@@ -389,10 +389,15 @@ void VideoEngine::upload(const VideoFrame& Frame)
     if (!initialize_completed_flag) return;
     if (!makeCurrent()) return;
 
-    // 解像度の変更に対応（寸法は 1 度だけ計算して使い回す）
+    // 解像度・処理経路（8bit / 10bit）の変更に対応（寸法は 1 度だけ計算して使い回す）
+    //   10bit 以上の素材は 10bit 経路（テクスチャ RGBA16）、それ以外は 8bit 経路（RGBA8）
     const int want_w = VideoInfo.width  * VideoInfo.width_scale;
     const int want_h = VideoInfo.height * VideoInfo.height_scale;
-    if (want_w != width_ || want_h != height_) {
+    const bool want16 = wantsRgba16(Frame);
+    if (want_w != width_ || want_h != height_ || want16 != rgba16_) {
+        if (want16 != rgba16_)
+            qDebug() << "[VideoEngine] 処理経路:" << (want16 ? "10bit（RGBA16）" : "8bit（RGBA8）");
+        rgba16_ = want16;
         initCudaTexture(want_w, want_h);
         initTextureCuda(want_w, want_h);
         initCudaScreenshot(want_w, want_h);
@@ -401,7 +406,8 @@ void VideoEngine::upload(const VideoFrame& Frame)
         width_  = want_w;
         height_ = want_h;
         frame_valid_ = false;
-        return;
+        // 作り直したテクスチャにこのフレームをそのまま書いて描画する（捨てると、一時停止中に
+        //   1 枚だけ届いた場合に次のフレームまで画面が空になる）
     }
 
     FrameNo = Frame.FrameNo;
@@ -456,7 +462,7 @@ void VideoEngine::upload(const VideoFrame& Frame)
         }
 
         if (Frame.src_mode == SRC_NV12_TILE)
-            mergeToSurface(Frame, surf);
+            rgba16_ ? p010ToSurface(Frame, surf) : mergeToSurface(Frame, surf);
         else
             yuvToSurface(Frame, surf);
 
@@ -784,8 +790,18 @@ void VideoEngine::pickCollect()
     QVariantMap m;
     m["frame"] = pickReqFrame_;
     m["x"] = pickReqX_;  m["y"] = pickReqY_;
-    m["r"]  = h_pick_[0]; m["g"]  = h_pick_[1]; m["b"]  = h_pick_[2];
-    m["r0"] = h_pick_[4]; m["g0"] = h_pick_[5]; m["b0"] = h_pick_[6];
+    if (pickReqRgba16_) {
+        // 10bit 経路: RGBA16 を 10bit（0..1023）に直して返す
+        const uint16_t* p = reinterpret_cast<const uint16_t*>(h_pick_);
+        auto to10 = [](uint16_t v) { return int((v * 1023u + 32767u) / 65535u); };
+        m["r"]  = to10(p[0]); m["g"]  = to10(p[1]); m["b"]  = to10(p[2]);
+        m["r0"] = to10(p[4]); m["g0"] = to10(p[5]); m["b0"] = to10(p[6]);
+        m["bits"] = 10;
+    } else {
+        m["r"]  = h_pick_[0]; m["g"]  = h_pick_[1]; m["b"]  = h_pick_[2];
+        m["r0"] = h_pick_[4]; m["g0"] = h_pick_[5]; m["b0"] = h_pick_[6];
+        m["bits"] = 8;
+    }
     pickResult_ = m;
     emit pickUpdated();     // 表示もフレームごとに更新する
 }
@@ -798,7 +814,7 @@ void VideoEngine::pickIssue(int frameNo)
     if (!cudaResource1 || !cudaResource2) return;
 
     if (!h_pick_) {
-        if (cudaHostAlloc((void**)&h_pick_, 8, cudaHostAllocDefault) != cudaSuccess) { h_pick_ = nullptr; return; }
+        if (cudaHostAlloc((void**)&h_pick_, 16, cudaHostAllocDefault) != cudaSuccess) { h_pick_ = nullptr; return; }
         cudaEventCreateWithFlags(&pickEvent_, cudaEventDisableTiming);
     }
 
@@ -808,10 +824,13 @@ void VideoEngine::pickIssue(int frameNo)
     if (cudaGraphicsSubResourceGetMappedArray(&aAfter,  cudaResource2, 0, 0) == cudaSuccess &&
         cudaGraphicsSubResourceGetMappedArray(&aBefore, cudaResource1, 0, 0) == cudaSuccess) {
         // 補正後：fbo は GL の向き（下から数える）。補正前：入力テクスチャは上から数える
-        cudaMemcpy2DFromArrayAsync(h_pick_ + 0, 4, aAfter,  size_t(x) * 4, size_t(height_ - 1 - y), 4, 1,
+        //   1 画素は 8bit 経路 4 バイト（RGBA8）、10bit 経路 8 バイト（RGBA16）
+        const size_t bpp = rgba16_ ? 8 : 4;
+        cudaMemcpy2DFromArrayAsync(h_pick_ + 0,   bpp, aAfter,  size_t(x) * bpp, size_t(height_ - 1 - y), bpp, 1,
                                    cudaMemcpyDeviceToHost, interop_stream);
-        cudaMemcpy2DFromArrayAsync(h_pick_ + 4, 4, aBefore, size_t(x) * 4, size_t(y), 4, 1,
+        cudaMemcpy2DFromArrayAsync(h_pick_ + bpp, bpp, aBefore, size_t(x) * bpp, size_t(y), bpp, 1,
                                    cudaMemcpyDeviceToHost, interop_stream);
+        pickReqRgba16_ = rgba16_;
         cudaEventRecord(pickEvent_, interop_stream);
         pickPending_  = true;
         pickReqX_     = x;
@@ -851,7 +870,9 @@ void VideoEngine::initCudaTexture(int width, int height)
 
     glGenTextures(1, &inputTextureID);
     glBindTexture(GL_TEXTURE_2D, inputTextureID);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    // 8bit 経路は RGBA8、10bit 経路は RGBA16（rgba16_）
+    glTexImage2D(GL_TEXTURE_2D, 0, rgba16_ ? GL_RGBA16 : GL_RGBA8, width, height, 0, GL_RGBA,
+                 rgba16_ ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -884,7 +905,9 @@ void VideoEngine::initTextureCuda(int width, int height)
         glBindFramebuffer(GL_FRAMEBUFFER, f);
         glGenTextures(1, &t);
         glBindTexture(GL_TEXTURE_2D, t);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        // 入力テクスチャと同じ形式（8bit 経路 RGBA8 / 10bit 経路 RGBA16）
+        glTexImage2D(GL_TEXTURE_2D, 0, rgba16_ ? GL_RGBA16 : GL_RGBA8, w, h, 0, GL_RGBA,
+                     rgba16_ ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0);
@@ -909,7 +932,8 @@ void VideoEngine::initCudaScreenshot(int width, int height)
     if (d_cudaScreenshot) { cudaFree(d_cudaScreenshot); d_cudaScreenshot = nullptr; }
     if (cudaResource_screenshot) { cudaGraphicsUnregisterResource(cudaResource_screenshot); cudaResource_screenshot = nullptr; }
 
-    cudaError_t err = cudaMallocPitch(&d_cudaScreenshot, &d_cudaScreenshotPitch, width * 4, height);
+    // 1 画素 4 バイト（RGBA8）。10bit 経路は PNG / TIFF を 16bit で保存するので 8 バイト（RGBA16）
+    cudaError_t err = cudaMallocPitch(&d_cudaScreenshot, &d_cudaScreenshotPitch, width * (rgba16_ ? 8 : 4), height);
     if (err != cudaSuccess) {
         qDebug() << "cudaMallocPitch error:" << cudaGetErrorString(err);
         d_cudaScreenshot = nullptr;
@@ -944,10 +968,12 @@ void VideoEngine::initCudaHist()
     if (vbo_hist) { glDeleteBuffers(1, &vbo_hist); vbo_hist = 0; }
     if (d_hist_stats) { cudaFree(d_hist_stats); d_hist_stats = nullptr; }
     if (d_hist_data)  { cudaFree(d_hist_data);  d_hist_data = nullptr; }
+    if (d_hist_data10){ cudaFree(d_hist_data10); d_hist_data10 = nullptr; }
 
     glGenBuffers(1, &vbo_hist);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_hist);
-    glBufferData(GL_ARRAY_BUFFER, num_bins * 3 * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    // 頂点は多い方（10bit 経路の 1024 段）に合わせて確保する
+    glBufferData(GL_ARRAY_BUFFER, HIST10_BINS * 3 * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     cudaError_t err = cudaGraphicsGLRegisterBuffer(&cudaResource_hist_draw, vbo_hist,
@@ -959,6 +985,7 @@ void VideoEngine::initCudaHist()
 
     cudaMalloc(&d_hist_stats, sizeof(HistStats));
     cudaMalloc(&d_hist_data, sizeof(HistData));
+    cudaMalloc(&d_hist_data10, sizeof(HistData10));
 }
 
 void VideoEngine::setHistViewport(const QSize& px, qreal dpr)
@@ -1043,6 +1070,40 @@ bool VideoEngine::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t su
     }
 }
 
+// この素材を 10bit 経路（RGBA16）で処理するか
+//   NVDEC（SRC_NV12_TILE）: 素材のビット深度（VideoInfo.bitdepth）が 9 以上なら P010 で来る
+//   CPU デコード（SRC_YUV_PLANE）: 10bit のプレーン形式なら
+bool VideoEngine::wantsRgba16(const VideoFrame& Frame) const
+{
+    if (Frame.src_mode == SRC_NV12_TILE) return VideoInfo.bitdepth > 8;
+    if (Frame.src_mode == SRC_YUV_PLANE)
+        return Frame.plane_format == YUVFMT_YUV420P_10 || Frame.plane_format == YUVFMT_YUV422P_10
+            || Frame.plane_format == YUVFMT_GBRP_10;
+    return false;
+}
+
+// 10bit 経路: NVDEC の P010 タイル → RGBA16（タイル数によらず 1 本のカーネル）
+bool VideoEngine::p010ToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
+{
+    const int n = Frame.tile_count;
+    if (n != 1 && n != 2 && n != 4 && n != 8) {
+        qWarning() << "[VideoEngine] unsupported tile count:" << n;
+        return false;
+    }
+    P010Tiles t = {};
+    t.count = n;
+    t.cols  = std::max(1, VideoInfo.width_scale);   // 横のタイル数（2×1 / 2×2 / 4×2）
+    t.srcW  = Frame.tile_w;
+    t.srcH  = Frame.tile_h;
+    for (int i = 0; i < n; i++) {
+        t.y  [i] = Frame.d_y[i];
+        t.uv [i] = Frame.d_uv[i];
+        t.yp [i] = Frame.y_pitch[i];
+        t.uvp[i] = Frame.uv_pitch[i];
+    }
+    return CUDA_IMG_Proc->p010_tiles_to_rgba16_surf(surf, t, width_, height_, interop_stream);
+}
+
 bool VideoEngine::yuvToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
 {
     const int W = width_;
@@ -1053,6 +1114,24 @@ bool VideoEngine::yuvToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf
     for (int i = 0; i < 3; i++) {
         p [i] = Frame.d_plane[i];
         pp[i] = Frame.plane_pitch[i];
+    }
+
+    // 10bit 経路（RGBA16）: 10bit のプレーンだけがここに来る（wantsRgba16）
+    if (rgba16_) {
+        switch (Frame.plane_format) {
+        case YUVFMT_YUV420P_10:
+            return CUDA_IMG_Proc->yuv420p10_to_rgba16_surf(surf, p[0], pp[0], p[1], pp[1], p[2], pp[2], W, H,
+                                                           Frame.plane_is_be, interop_stream);
+        case YUVFMT_YUV422P_10:
+            return CUDA_IMG_Proc->yuv422p10_to_rgba16_surf(surf, p[0], pp[0], p[1], pp[1], p[2], pp[2], W, H,
+                                                           Frame.plane_is_be, interop_stream);
+        case YUVFMT_GBRP_10:
+            // data[0]=G, data[1]=B, data[2]=R → カーネルは r, g, b の順
+            return CUDA_IMG_Proc->gbrp10_to_rgba16_surf(surf, p[2], pp[2], p[0], pp[0], p[1], pp[1], W, H, interop_stream);
+        default:
+            qWarning() << "[VideoEngine] unsupported plane format (10bit):" << Frame.plane_format;
+            return false;
+        }
     }
 
     switch (Frame.plane_format) {
@@ -1190,7 +1269,8 @@ void VideoEngine::encode_mode(int flag)
     if (flag == STATE_ENCODING && save_encoder == nullptr) {
         // save_encode のコンストラクタは VRAM 不足などで例外を投げる
         try {
-            save_encoder = new save_encode(height_, width_);
+            // fbo の形式（10bit 経路は RGBA16）。10bit（P010）で出すかは save_encode が設定から決める
+            save_encoder = new save_encode(height_, width_, rgba16_);
         }
         catch (const std::exception& e) {
             save_encoder = nullptr;
@@ -1245,13 +1325,35 @@ void VideoEngine::doScreenshot(const VideoFrame& Frame)
         return;
     }
 
+    // 保存形式（拡張子）を先に決める。10bit 経路の PNG / TIFF は設定（screenshot_depth）が "16" なら 16bit、
+    //   それ以外は 8bit で保存する（JPEG / BMP は形式として 16bit を持てない。16bit は 10bit の値を広げて入れる）
+    QString ext;
+    gpuimg::EncodeParams params = makeScreenshotParams(ext);
+    const bool save16 = rgba16_ && (ext == "png" || ext == "tif") && g_AppSettings.screenshot_depth != "8";
+
     bool ok = false;
     if (cudaGraphicsMapResources(1, &cudaResource_screenshot, screenshotStream) == cudaSuccess) {
         cudaArray_t cudaArray = nullptr;
-        ok = cudaGraphicsSubResourceGetMappedArray(&cudaArray, cudaResource_screenshot, 0, 0) == cudaSuccess
-          && cudaMemcpy2DFromArrayAsync(d_cudaScreenshot, d_cudaScreenshotPitch, cudaArray, 0, 0,
-                                        static_cast<size_t>(width_) * 4, height_,
-                                        cudaMemcpyDeviceToDevice, screenshotStream) == cudaSuccess;
+        if (cudaGraphicsSubResourceGetMappedArray(&cudaArray, cudaResource_screenshot, 0, 0) == cudaSuccess) {
+            if (!rgba16_ || save16) {
+                // fbo をそのままコピー（8bit 経路は RGBA8、10bit 経路の PNG / TIFF は RGBA16）
+                ok = cudaMemcpy2DFromArrayAsync(d_cudaScreenshot, d_cudaScreenshotPitch, cudaArray, 0, 0,
+                                                static_cast<size_t>(width_) * (save16 ? 8 : 4), height_,
+                                                cudaMemcpyDeviceToDevice, screenshotStream) == cudaSuccess;
+            } else {
+                // 10bit 経路で 8bit 保存（JPEG / BMP、8bit を選んだ PNG / TIFF）: fbo（RGBA16）を RGBA8 に四捨五入
+                //   設定（screenshot_dither）が on なら縞を抑えるディザをかける
+                //   texture object は変換が終わるまで消せないので、ここで待ってから消す（保存時だけ）
+                cudaTextureObject_t tex = 0;
+                if (createArrayTexture(cudaArray, tex, "screenshot")) {
+                    ok = CUDA_IMG_Proc->rgba16_to_rgba8_tex(tex, static_cast<uint8_t*>(d_cudaScreenshot),
+                                                            d_cudaScreenshotPitch, width_, height_,
+                                                            g_AppSettings.screenshot_dither != "off", screenshotStream);
+                    cudaStreamSynchronize(screenshotStream);
+                    cudaDestroyTextureObject(tex);
+                }
+            }
+        }
         cudaGraphicsUnmapResources(1, &cudaResource_screenshot, screenshotStream);
     }
     if (!ok) {
@@ -1264,15 +1366,15 @@ void VideoEngine::doScreenshot(const VideoFrame& Frame)
         saveDir = QDir::homePath();
     const QString baseName = QFileInfo(g_AppSettings.decode_path).completeBaseName();
 
-    QString ext;
-    gpuimg::EncodeParams params = makeScreenshotParams(ext);
     params.stream(screenshotStream)   // 上のコピー完了を GPU 側で待ってから圧縮
           .flipVertical();            // OpenGL は下の行から並ぶので上下反転して保存
     const QString savePath = QDir(saveDir).filePath(
         QString("screenshot_%1_No.%2.%3").arg(baseName).arg(Frame.FrameNo).arg(ext));
 
     // pitch は cudaMallocPitch が返した値を使う
-    const gpuimg::Image img = gpuimg::Image::rgba8(d_cudaScreenshot, width_, height_, d_cudaScreenshotPitch);
+    const gpuimg::Image img = save16
+        ? gpuimg::Image::rgba16(d_cudaScreenshot, width_, height_, d_cudaScreenshotPitch)
+        : gpuimg::Image::rgba8 (d_cudaScreenshot, width_, height_, d_cudaScreenshotPitch);
     gpuimg::Encoder* enc = screenshotEncoder.get();
 
     QThreadPool::globalInstance()->start(QRunnable::create(
@@ -1320,13 +1422,21 @@ void VideoEngine::histgram_Analysys()
         }
         histTexRetire.store(hi, htex);
 
-        cudaMemset(d_hist_data, 0, sizeof(HistData));
-        CUDA_IMG_Proc->calc_histgram(d_hist_data, htex, width_, height_);
+        // 8bit 経路は 256 段、10bit 経路は 1024 段（10bit の値ごと）
+        num_bins = rgba16_ ? HIST10_BINS : 256;
+        if (rgba16_) {
+            cudaMemset(d_hist_data10, 0, sizeof(HistData10));
+            CUDA_IMG_Proc->calc_histgram_rgba16(d_hist_data10, htex, width_, height_);
+        } else {
+            cudaMemset(d_hist_data, 0, sizeof(HistData));
+            CUDA_IMG_Proc->calc_histgram(d_hist_data, htex, width_, height_);
+        }
         histTexRetire.retire(hi, 0);
     }
 
     {
-        CUDA_IMG_Proc->histogram_status(d_hist_data, d_hist_stats);
+        if (rgba16_) CUDA_IMG_Proc->histogram_status10(d_hist_data10, d_hist_stats);
+        else         CUDA_IMG_Proc->histogram_status(d_hist_data, d_hist_stats);
         cudaMemcpyAsync(&h_hist_stats, d_hist_stats, sizeof(HistStats), cudaMemcpyDeviceToHost, hist_stream);
         cudaStreamSynchronize(hist_stream);   // 直後に h_hist_stats を読むので同期
     }
@@ -1340,7 +1450,8 @@ void VideoEngine::histgram_Analysys()
             cudaGraphicsUnmapResources(2, resources, 0);
             return;
         }
-        CUDA_IMG_Proc->histgram_normalize(d_vbo_ptr, num_bins, d_hist_data, d_hist_stats);
+        if (rgba16_) CUDA_IMG_Proc->histgram_normalize10(d_vbo_ptr, d_hist_data10, d_hist_stats);
+        else         CUDA_IMG_Proc->histgram_normalize(d_vbo_ptr, num_bins, d_hist_data, d_hist_stats);
     }
 
     err = cudaGraphicsUnmapResources(2, resources, 0);
@@ -1434,6 +1545,7 @@ QVariantMap VideoEngine::histStats() const
     m["minG"] = h_hist_stats.min_g; m["maxG"] = h_hist_stats.max_g; m["avgG"] = h_hist_stats.avg_g;
     m["minB"] = h_hist_stats.min_b; m["maxB"] = h_hist_stats.max_b; m["avgB"] = h_hist_stats.avg_b;
     m["maxY"] = h_hist_stats.max_y_axis;
+    m["bins"] = num_bins;   // 横軸の段数（8bit 経路 256、10bit 経路 1024）
     QVariantList labels;
     for (int i = 0; i < (int)hist_labels_.size() && i < 3; i++)
         if (hist_labels_[i] <= h_hist_stats.max_y_axis) labels << hist_labels_[i];

@@ -27,6 +27,17 @@ const Opt kJpegSubsamplings[] = {
     {"4:2:2",          "422"},
     {"4:2:0 (標準)",   "420"},
 };
+// PNG / TIFF のビット深度。"16" は 10bit の値を 16bit のファイルに入れる（表記は 10bit）
+//   10bit を選べるのは 10bit 以上の動画のときだけ（depthOptions）
+const Opt kDepths[] = {
+    {"10bit", "16"},
+    {"8bit",  "8"},
+};
+// 10bit 以上の動画を 8bit で保存するときのディザ（縞を抑える / 値そのまま）
+const Opt kDithers[] = {
+    {"あり（なめらか）",     "on"},
+    {"なし（値そのまま）",   "off"},
+};
 const Opt kModes[] = {
     {"fast",   "fast"},
     {"normal", "normal"},
@@ -81,6 +92,13 @@ QVariantList ScreenshotSettings::formatOptions() const          { return toOptio
 QVariantList ScreenshotSettings::tiffCompressionOptions() const { return toOptions(kTiffCompressions); }
 QVariantList ScreenshotSettings::jpegSubsamplingOptions() const { return toOptions(kJpegSubsamplings); }
 QVariantList ScreenshotSettings::modeOptions() const            { return toOptions(kModes); }
+QVariantList ScreenshotSettings::ditherOptions() const          { return toOptions(kDithers); }
+// 8bit の動画のときは 8bit だけ（希望の値 depth_ は残すので、10bit の動画では元に戻る）
+QVariantList ScreenshotSettings::depthOptions() const
+{
+    if (srcHighBit_) return toOptions(kDepths);
+    return { QVariantMap{ {"text", "8bit"}, {"value", "8"} } };
+}
 
 void ScreenshotSettings::loadFromGlobal()
 {
@@ -91,6 +109,8 @@ void ScreenshotSettings::loadFromGlobal()
     jpegQuality_     = qBound(0, g_AppSettings.screenshot_jpeg_quality, 100);
     jpegSubsampling_ = normalized(kJpegSubsamplings, g_AppSettings.screenshot_jpeg_subsampling, def.screenshot_jpeg_subsampling);
     mode_            = normalized(kModes,            g_AppSettings.screenshot_mode,             def.screenshot_mode);
+    depth_           = normalized(kDepths,           g_AppSettings.screenshot_depth,            def.screenshot_depth);
+    dither_          = normalized(kDithers,          g_AppSettings.screenshot_dither,           def.screenshot_dither);
 }
 
 void ScreenshotSettings::commitToGlobal()
@@ -101,6 +121,8 @@ void ScreenshotSettings::commitToGlobal()
     g_AppSettings.screenshot_jpeg_quality     = jpegQuality_;
     g_AppSettings.screenshot_jpeg_subsampling = jpegSubsampling_;
     g_AppSettings.screenshot_mode             = mode_;
+    g_AppSettings.screenshot_depth            = depth_;
+    g_AppSettings.screenshot_dither           = dither_;
 }
 
 void ScreenshotSettings::open()
@@ -117,6 +139,8 @@ void ScreenshotSettings::setValue(const QString& key, const QVariant& value)
     else if (key == "tiffCompression" && contains(kTiffCompressions, v)) tiffCompression_ = v;
     else if (key == "jpegSubsampling" && contains(kJpegSubsamplings, v)) jpegSubsampling_ = v;
     else if (key == "mode"            && contains(kModes, v))            mode_ = v;
+    else if (key == "depth"           && contains(kDepths, v))           depth_ = v;
+    else if (key == "dither"          && contains(kDithers, v))          dither_ = v;
     else return;
     emit changed();
 }

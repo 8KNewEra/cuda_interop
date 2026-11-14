@@ -133,12 +133,60 @@ LIBS += -L$$CUDA_DIR/lib/x64 \
 
 LIBS += -L"$$PWD/NVIDIA Corporation/NVSMI" -lnvml
 
-#CUDAの.objファイルを列挙してリンク
-CUDA_OBJ_OUT_DIR = $$PWD/cuda_kernels/obj_out/
-CUDA_OBJ_FILES = $$files($$CUDA_OBJ_OUT_DIR/*.obj)
-for(obj, CUDA_OBJ_FILES) {
-    LIBS += $$obj
+# ---- CUDA カーネル（cuda_kernels/*.cu）を qmake のビルドで nvcc に通す ----
+#   以前は cuda_kernels/*.bat で obj_out/*.obj を作ってリンクしていた（bat は不要になった）。
+#   ・コンパイルするのは下の CUDA_SOURCES に書いたファイルだけ（増やしたらここに足して qmake）
+#     ファイル名の 8bit / 10bit は処理経路（GL テクスチャの形式）を表す
+#       8bit 経路  = RGBA8（8bit 素材。Widgets 版も常にこちら）
+#       10bit 経路 = RGBA16（10bit 以上の素材。QML 版で自動で切り替え）
+#       decode_8bit.cu     : デコード結果（NV12 / YUV / RGB。入力は 8bit / 10bit）→ RGBA8 テクスチャ
+#       encode_8bit.cu     : RGBA8 の FBO → NV12（エンコード入力）
+#       histogram_8bit.cu  : RGBA8 の FBO からヒストグラム
+#       decode_10bit.cu    : P010（NVDEC）/ 10bit プレーン（CPU デコード）→ RGBA16 テクスチャ
+#       encode_10bit.cu    : RGBA16 の FBO → NV12（エンコード入力）/ RGBA8（画像保存）
+#       histogram_10bit.cu : RGBA16 の FBO からヒストグラム（1024 段。集計先の構造体は histogram_10bit.h）
+#       tiles_10bit.h      : 10bit 経路のカーネルへ渡すタイルの構造体（cuda_imageprocess.cpp と共用）
+#     起動口は src/imageprocess/cuda_imageprocess.cpp
+#   ・.cu を変更しただけなら通常のビルドで、変わったものだけ再コンパイルされる
+#   ・cuda_kernels/ の .cuh / .h を変えると、全カーネルを再コンパイルする
+#   ・nvcc はプロジェクト同梱の CUDA_DIR/bin を優先（無ければ PATH の nvcc）
+#   ・cl.exe は Qt Creator の MSVC キットの環境から見つかる
+#   ・対象 GPU: Turing（sm_75）以降。CUDA 13 は Pascal（sm_61）以前を扱えない
+CUDA_SOURCES = \
+    $$PWD/cuda_kernels/decode_8bit.cu \
+    $$PWD/cuda_kernels/encode_8bit.cu \
+    $$PWD/cuda_kernels/histogram_8bit.cu \
+    $$PWD/cuda_kernels/decode_10bit.cu \
+    $$PWD/cuda_kernels/encode_10bit.cu \
+    $$PWD/cuda_kernels/histogram_10bit.cu
+CUDA_HEADERS = $$files($$PWD/cuda_kernels/*.cuh) $$files($$PWD/cuda_kernels/*.h)
+CUDA_ARCHS   = 75 86 89 90 120
+
+NVCC = $$CUDA_DIR/bin/nvcc.exe
+!exists($$NVCC): NVCC = nvcc
+NVCC = $$shell_path($$NVCC)
+
+for(arch, CUDA_ARCHS): CUDA_GENCODE += -gencode arch=compute_$${arch},code=sm_$${arch}
+# ランタイムライブラリは本体のビルド（Debug は /MDd、Release は /MD）に合わせる。
+#   出力先も分ける（同じビルドフォルダで Debug / Release を切り替えても古い obj を使わない）
+CONFIG(debug, debug|release) {
+    CUDA_CRT     = /MDd
+    CUDA_OBJ_DIR = $$OUT_PWD/cuda_obj/debug
+} else {
+    CUDA_CRT     = /MD
+    CUDA_OBJ_DIR = $$OUT_PWD/cuda_obj/release
 }
+!exists($$CUDA_OBJ_DIR): !mkpath($$CUDA_OBJ_DIR): error("CUDA の出力フォルダを作れません: $$CUDA_OBJ_DIR")
+
+cuda.input              = CUDA_SOURCES
+cuda.output             = $$CUDA_OBJ_DIR/${QMAKE_FILE_BASE}_cu.obj
+cuda.commands           = $$NVCC -c ${QMAKE_FILE_NAME} -o ${QMAKE_FILE_OUT} $$CUDA_GENCODE \
+                          -Xcompiler $${CUDA_CRT},/utf-8 --use_fast_math
+cuda.depends            = $$CUDA_HEADERS
+cuda.dependency_type    = TYPE_C
+cuda.variable_out       = OBJECTS
+cuda.name               = nvcc ${QMAKE_FILE_IN}
+QMAKE_EXTRA_COMPILERS  += cuda
 
 #ffmepg
 ffmpeg_DIR = "$$PWD/ffmpeg"

@@ -31,7 +31,7 @@ Rectangle {
     color: Theme.overlay
     border.color: Theme.border
 
-    component Key: Text { color: Theme.muted2; font.family: Theme.font; font.pixelSize: 12; Layout.preferredWidth: 112 }
+    component Key: Text { color: Theme.muted2; font.family: Theme.font; font.pixelSize: 12; Layout.preferredWidth: Math.max(112, implicitWidth) }
     component Val: Text { color: Theme.text2; font.family: Theme.font; font.pixelSize: 12; wrapMode: Text.WrapAnywhere; maximumLineCount: 2; elide: Text.ElideRight; Layout.fillWidth: true }
     component Num: Text { color: Theme.text2; font.family: Theme.mono; font.pixelSize: 12; Layout.fillWidth: true }
 
@@ -119,6 +119,8 @@ Rectangle {
                 Key { text: "Decode Mode" }      Val { text: root.info.decodeMode || "-" }
                 Key { text: "Resolution" }       Num { text: (root.info.width || 0) + "×" + (root.info.height || 0) }
                 Key { text: "Bit Depth" }        Val { text: root.info.pixel || "-" }
+                // 処理（8bit / 10bit 経路）/ 表示（ウィンドウの色バッファ）の深さ。例 "16bit / 10bit"
+                Key { text: "Process/Render Depth" } Val { text: root.info.renderDepth || "-" }
                 Key { text: "Video Framerate" }  Num { text: root.fmtFps(root.info.fps) }
                 Key { text: "Max Frame" }        Num { text: root.info.maxFrame !== undefined ? root.info.maxFrame : "-" }
                 Key { text: "FrameNo" }          Num { text: root.frameNo }

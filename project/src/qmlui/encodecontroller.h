@@ -55,6 +55,13 @@ class EncodeController : public QObject
     Q_PROPERTY(QVariantList passOptions      READ passOptions      NOTIFY changed)
     Q_PROPERTY(QVariantList basisOptions     READ basisOptions     NOTIFY changed)
     Q_PROPERTY(QVariantList audioCodecOptions READ audioCodecOptions NOTIFY changed)
+    // 書き出しのビット深度。10bit を選べるのは 10bit 経路の素材 × HEVC / AV1 のときだけ
+    Q_PROPERTY(QVariantList depthOptions READ depthOptions NOTIFY changed)
+    Q_PROPERTY(QVariant depth READ depth NOTIFY changed)          // 実際に使う値（8 / 10）
+    // 8bit 化のディザ（"1" / "0"）。10bit 経路の素材を 8bit で書き出すときだけ出す
+    Q_PROPERTY(QVariantList ditherOptions READ ditherOptions CONSTANT)
+    Q_PROPERTY(QVariant dither READ dither NOTIFY changed)
+    Q_PROPERTY(bool showDither READ showDither NOTIFY changed)
 
     Q_PROPERTY(QVariant container READ container NOTIFY changed)
     Q_PROPERTY(QVariant codec     READ codec     NOTIFY changed)
@@ -110,6 +117,8 @@ public:
     // ---- PlayerController から ----
     // 設定画面を開くとき（Widgets 版 encode_setting::slider 相当）。進捗の範囲もここで決める
     void prepare(int progressMax);
+    // 素材を 10bit 経路（RGBA16）で処理しているか（prepare の前に PlayerController が渡す）
+    void setSourceHighBit(bool on) { src_high_bit_ = on; }
     void setProgress(int value);
     // 最後まで終わった（Widgets 版 encode_end 相当）
     void encodeEnded(const QString& elapsed);
@@ -156,6 +165,12 @@ public:
     QVariantList passOptions() const;
     QVariantList basisOptions() const;
     QVariantList audioCodecOptions() const;
+    QVariantList depthOptions() const;
+    QVariant depth() const { return out10() ? 10 : 8; }
+    bool out10() const { return encode_out_10bit(es(), src_high_bit_); }
+    QVariantList ditherOptions() const;
+    QVariant dither() const { return es().dither ? "1" : "0"; }
+    bool showDither() const { return src_high_bit_ && !out10(); }
 
     QVariant container() const { return es().container; }
     QVariant codec() const     { return es().codec; }
@@ -242,7 +257,8 @@ private:
     int target_ = 100;
     int max_    = 1000;
 
-    bool bframe_capable_ = true;   // CC 7.5 以上（Turing 以降）
+    bool bframe_capable_ = true;
+    bool src_high_bit_ = false;     // 素材が 10bit 経路（10bit 出力を選べる条件の 1 つ）   // CC 7.5 以上（Turing 以降）
     bool encoding_ = false;
     bool canceled_ = false;
     bool finished_ok_ = false;

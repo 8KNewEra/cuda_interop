@@ -17,17 +17,23 @@ class ScreenshotSettings : public QObject
     Q_PROPERTY(int     jpegQuality     READ jpegQuality     NOTIFY changed)
     Q_PROPERTY(QString jpegSubsampling READ jpegSubsampling NOTIFY changed)
     Q_PROPERTY(QString mode            READ mode            NOTIFY changed)
+    Q_PROPERTY(QString depth           READ depth           NOTIFY changed)   // PNG / TIFF のビット深度 "16"（10bit）/ "8"
+    Q_PROPERTY(QString dither          READ dither          NOTIFY changed)   // 8bit 化のディザ "on" / "off"
 
     // 行の出し入れ（Widgets 版 update_option_visibility と同じ条件）
     Q_PROPERTY(bool showTiffCompression READ showTiffCompression NOTIFY changed)
     Q_PROPERTY(bool showJpeg            READ showJpeg            NOTIFY changed)
     Q_PROPERTY(bool showMode            READ showMode            NOTIFY changed)
+    Q_PROPERTY(bool showDepth           READ showDepth           NOTIFY changed)
+    Q_PROPERTY(bool showDither          READ showDither          NOTIFY changed)
 
     // 選択肢 [{text, value}]（Select.qml にそのまま渡す）
     Q_PROPERTY(QVariantList formatOptions          READ formatOptions          CONSTANT)
     Q_PROPERTY(QVariantList tiffCompressionOptions READ tiffCompressionOptions CONSTANT)
     Q_PROPERTY(QVariantList jpegSubsamplingOptions READ jpegSubsamplingOptions CONSTANT)
     Q_PROPERTY(QVariantList modeOptions            READ modeOptions            CONSTANT)
+    Q_PROPERTY(QVariantList depthOptions           READ depthOptions           NOTIFY changed)
+    Q_PROPERTY(QVariantList ditherOptions          READ ditherOptions          CONSTANT)
 
 public:
     explicit ScreenshotSettings(QObject* parent = nullptr);
@@ -38,15 +44,25 @@ public:
     int     jpegQuality() const     { return jpegQuality_; }
     QString jpegSubsampling() const { return jpegSubsampling_; }
     QString mode() const            { return mode_; }
+    // 表示する値。8bit の動画のときは常に "8"（希望の値 depth_ は書き換えない）
+    QString depth() const           { return srcHighBit_ ? depth_ : QString("8"); }
+    QString dither() const          { return dither_; }
+    // 素材を 10bit 経路（RGBA16）で処理しているか（open の前に PlayerController が渡す）
+    void setSourceHighBit(bool on)  { srcHighBit_ = on; }
 
     bool showTiffCompression() const { return format_ == "tiff"; }
     bool showJpeg() const            { return format_ == "jpg"; }
     bool showMode() const            { return format_ == "png" || (format_ == "tiff" && tiffCompression_ == "deflate"); }
+    bool showDepth() const           { return format_ == "png" || format_ == "tiff"; }   // JPEG / BMP は常に 8bit
+    // ディザは「10bit の動画を 8bit で保存する」ときだけ意味がある（JPEG / BMP、8bit を選んだ PNG / TIFF）
+    bool showDither() const          { return srcHighBit_ && (!showDepth() || depth_ == "8"); }
 
     QVariantList formatOptions() const;
     QVariantList tiffCompressionOptions() const;
     QVariantList jpegSubsamplingOptions() const;
     QVariantList modeOptions() const;
+    QVariantList depthOptions() const;
+    QVariantList ditherOptions() const;
 
     // 開くたびに現在の設定から作り直す（前回キャンセルした編集は残さない）
     void open();
@@ -69,6 +85,9 @@ private:
     int     jpegQuality_ = 90;
     QString jpegSubsampling_;
     QString mode_;
+    QString depth_;
+    QString dither_;
+    bool    srcHighBit_ = false;
 
     void loadFromGlobal();     // g_AppSettings → 編集中の値（知らない値は既定値へ）
     void commitToGlobal();     // 編集中の値 → g_AppSettings

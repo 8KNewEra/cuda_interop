@@ -95,6 +95,8 @@ void logfile_control::load_inifile()
     g_AppSettings.screenshot_tiff_compression = settings.value("Screenshot/screenshot_tiff_compression", g_AppSettings.screenshot_tiff_compression).toString();
     g_AppSettings.screenshot_jpeg_quality = settings.value("Screenshot/screenshot_jpeg_quality", g_AppSettings.screenshot_jpeg_quality).toInt();
     g_AppSettings.screenshot_jpeg_subsampling = settings.value("Screenshot/screenshot_jpeg_subsampling", g_AppSettings.screenshot_jpeg_subsampling).toString();
+    g_AppSettings.screenshot_depth = settings.value("Screenshot/screenshot_depth", g_AppSettings.screenshot_depth).toString();
+    g_AppSettings.screenshot_dither = settings.value("Screenshot/screenshot_dither", g_AppSettings.screenshot_dither).toString();
 
     encodeSettings.encode_path = settings.value("Encodesetting/encode_path", encodeSettings.encode_path).toString();
     encodeSettings.container = settings.value("Encodesetting/container", encodeSettings.container).toString();
@@ -104,6 +106,9 @@ void logfile_control::load_inifile()
     encodeSettings.audio_gain_db = settings.value("Encodesetting/audio_gain_db", encodeSettings.audio_gain_db).toDouble();
     encodeSettings.audio_bitrate = settings.value("Encodesetting/audio_bitrate", encodeSettings.audio_bitrate).toInt();
     encodeSettings.codec = settings.value("Encodesetting/codec", encodeSettings.codec).toString();
+    // 書き出しのビット深度の希望（8 / 10。実際に 10bit になる条件は encode_out_10bit）
+    encodeSettings.output_depth = (settings.value("Encodesetting/output_depth", encodeSettings.output_depth).toInt() >= 10) ? 10 : 8;
+    encodeSettings.dither = settings.value("Encodesetting/dither", encodeSettings.dither).toBool();
     encodeSettings.preset = settings.value("Encodesetting/preset", encodeSettings.preset).toString();
     encodeSettings.tune = settings.value("Encodesetting/tune", encodeSettings.tune).toString();
     encodeSettings.b_frames = settings.value("Encodesetting/b_frames", encodeSettings.b_frames).toInt();
@@ -224,6 +229,8 @@ void logfile_control::save_inifile(){
     settings.setValue("Screenshot/screenshot_tiff_compression", g_AppSettings.screenshot_tiff_compression);
     settings.setValue("Screenshot/screenshot_jpeg_quality", g_AppSettings.screenshot_jpeg_quality);
     settings.setValue("Screenshot/screenshot_jpeg_subsampling", g_AppSettings.screenshot_jpeg_subsampling);
+    settings.setValue("Screenshot/screenshot_depth", g_AppSettings.screenshot_depth);
+    settings.setValue("Screenshot/screenshot_dither", g_AppSettings.screenshot_dither);
 
     settings.setValue("Encodesetting/encode_path", encodeSettings.encode_path);
     settings.setValue("Encodesetting/container", encodeSettings.container);
@@ -233,6 +240,8 @@ void logfile_control::save_inifile(){
     settings.setValue("Encodesetting/audio_gain_db", encodeSettings.audio_gain_db);
     settings.setValue("Encodesetting/audio_bitrate", encodeSettings.audio_bitrate);
     settings.setValue("Encodesetting/codec", encodeSettings.codec);
+    settings.setValue("Encodesetting/output_depth", encodeSettings.output_depth);
+    settings.setValue("Encodesetting/dither", encodeSettings.dither);
     settings.setValue("Encodesetting/preset", encodeSettings.preset);
     settings.setValue("Encodesetting/tune", encodeSettings.tune);
     settings.setValue("Encodesetting/b_frames", encodeSettings.b_frames);

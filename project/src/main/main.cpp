@@ -15,6 +15,8 @@
 #include <QQmlContext>
 #include <QQuickWindow>
 #include <QQuickStyle>
+#include <QOpenGLContext>
+#include <QDebug>
 #include <cstring>
 
 std::vector<GPUInfo> g_GPUInfo;
@@ -47,6 +49,18 @@ static void prepareQmlUi()
     fmt.setDepthBufferSize(24);
     fmt.setStencilBufferSize(8);
     fmt.setSwapInterval(1);
+    // 表示の 10bit 化: ウィンドウの色バッファを 10:10:10 で要求する（10bit の動画は RGBA16 のまま
+    //   シーングラフが描くので、ここが 10bit なら 10bit のまま画面に出る）。
+    //   取れない環境（GPU・ドライバ・モニタが非対応）では 8bit の形式に落ちるだけで、動作は変わらない。
+    //   実際に取れた深さは動画情報の「Process/Render Depth」の後ろ側に出す（PlayerController::setDisplayBits）。
+    //   環境変数 CUDA_VIEWER_DISPLAY_BITS=8 で従来の 8bit に戻せる（問題が出たとき用）
+    //   VideoEngine・共有コンテキスト・ウィンドウはすべてこの既定フォーマットで作る（共有には同じ形式が必要）
+    if (qgetenv("CUDA_VIEWER_DISPLAY_BITS") != "8") {
+        fmt.setRedBufferSize(10);
+        fmt.setGreenBufferSize(10);
+        fmt.setBlueBufferSize(10);
+        fmt.setAlphaBufferSize(2);
+    }
     QSurfaceFormat::setDefaultFormat(fmt);
 
     // Windows の Qt 6 は既定で D3D11 なので OpenGL を明示する
@@ -96,6 +110,16 @@ static int runQmlUi(QApplication& app)
         }, Qt::DirectConnection);
 
         chrome.attach(window);
+
+        // 実際に取れた表示の色深度（10 / 8）を動画情報へ。コンテキストができた時点の値を読む
+        auto reportBits = [window, &player] {
+            QOpenGLContext* c = QOpenGLContext::currentContext();
+            const int bits = c ? c->format().redBufferSize() : window->format().redBufferSize();
+            player.setDisplayBits(bits);
+            qDebug() << "[main] 表示の色深度:" << bits << "bit";
+        };
+        if (window->isSceneGraphInitialized()) reportBits();
+        else QObject::connect(window, &QQuickWindow::sceneGraphInitialized, window, reportBits, Qt::DirectConnection);
 
         // ダーク（タイトルバーは消しているが、システムメニュー等の配色用に残す）
         HWND hwnd = (HWND)window->winId();

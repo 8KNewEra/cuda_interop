@@ -1,21 +1,16 @@
 // ==============================================================
-// RGBA(OpenGL FBO) → NV12 タイル分割
-//   入力を linear バッファではなく texture object から直読みする版
+// 8bit 経路: RGBA8（OpenGL FBO）→ NV12（エンコード入力。タイル分割 x1 / x2 / x4 / x8）
+//   FBO（cudaArray）を texture object 経由で直接読む（リニアへのコピーなし）
+//   起動口は CUDA_ImageProcess（src/imageprocess/cuda_imageprocess.cpp）
 //
-//  従来: FBO → cudaMemcpy2DFromArray → d_encode_rgba(linear) → 変換カーネル
-//  今回: 変換カーネルが FBO(cudaArray) から直接読む
-//
-//  ★ cudaArray は block-linear レイアウトなので、リニアへのコピーは
-//     スウィズル解除が入って遅い。テクスチャユニット経由で読めばその不利が消える。
-//
-//  ★ flip: FBO は GL のテクスチャ座標の都合で上下反転しているため通常 1。
-//     GL をバイパスして直接 NV12 化する経路を作る場合は 0 を渡す。
+//   flip: FBO は GL の向き（下の行から）なので通常 1。
+//         GL を通さず直接 NV12 化する経路を作る場合は 0 を渡す。
 // ==============================================================
 #include <cuda_runtime.h>
 #include <texture_indirect_functions.h>
 
 // --------------------------------------------------------------
-// 共通: RGBA → YUV（BT.601 limited range、既存カーネルと同一係数）
+// 共通: RGBA → YUV（BT.709 limited range。デコード側と同じ行列）
 // --------------------------------------------------------------
 __device__ __forceinline__ void rgba_to_yuv_8bit(
     uchar4 rgba, uint8_t& Y, uint8_t& U, uint8_t& V)
@@ -24,13 +19,13 @@ __device__ __forceinline__ void rgba_to_yuv_8bit(
     float G = rgba.y;
     float B = rgba.z;
 
-    float yf =  0.257f * R + 0.504f * G + 0.098f * B + 16.0f;
-    float uf = -0.148f * R - 0.291f * G + 0.439f * B + 128.0f;
-    float vf =  0.439f * R - 0.368f * G - 0.071f * B + 128.0f;
+    float yf =  0.1826f * R + 0.6142f * G + 0.0620f * B + 16.0f;
+    float uf = -0.1006f * R - 0.3386f * G + 0.4392f * B + 128.0f;
+    float vf =  0.4392f * R - 0.3989f * G - 0.0403f * B + 128.0f;
 
-    Y = (uint8_t)fminf(fmaxf(yf, 0.0f), 255.0f);
-    U = (uint8_t)fminf(fmaxf(uf, 0.0f), 255.0f);
-    V = (uint8_t)fminf(fmaxf(vf, 0.0f), 255.0f);
+    Y = (uint8_t)(fminf(fmaxf(yf, 0.0f), 255.0f) + 0.5f);   // 四捨五入
+    U = (uint8_t)(fminf(fmaxf(uf, 0.0f), 255.0f) + 0.5f);
+    V = (uint8_t)(fminf(fmaxf(vf, 0.0f), 255.0f) + 0.5f);
 }
 
 // --------------------------------------------------------------
@@ -39,6 +34,30 @@ __device__ __forceinline__ void rgba_to_yuv_8bit(
 __device__ __forceinline__ uchar4 fetch_rgba(cudaTextureObject_t In, int x, int y)
 {
     return tex2D<uchar4>(In, (float)x + 0.5f, (float)y + 0.5f);
+}
+
+// --------------------------------------------------------------
+// 共通: 色差（U / V）を 2×2 の平均から作る（P010 出力の encode_10bit.cu と同じ作り）
+//   (sx, sy) は 2×2 の左上（出力の向き）。右・下の画素は画像の端で止める。
+//   タイル幅・高さは偶数なので 2×2 がタイルをまたぐことはない
+// --------------------------------------------------------------
+__device__ __forceinline__ void uv_avg_8bit(
+    cudaTextureObject_t In, int sx, int sy, int srcW, int srcH, int flip,
+    uint8_t& U, uint8_t& V)
+{
+    const int x1 = min(sx + 1, srcW - 1);
+    const int y1 = min(sy + 1, srcH - 1);
+    const int f0 = flip ? (srcH - 1 - sy) : sy;
+    const int f1 = flip ? (srcH - 1 - y1) : y1;
+    const uchar4 a = fetch_rgba(In, sx, f0), b = fetch_rgba(In, x1, f0);
+    const uchar4 c = fetch_rgba(In, sx, f1), d = fetch_rgba(In, x1, f1);
+    const float R = (a.x + b.x + c.x + d.x) * 0.25f;
+    const float G = (a.y + b.y + c.y + d.y) * 0.25f;
+    const float B = (a.z + b.z + c.z + d.z) * 0.25f;
+    const float uf = -0.1006f * R - 0.3386f * G + 0.4392f * B + 128.0f;
+    const float vf =  0.4392f * R - 0.3989f * G - 0.0403f * B + 128.0f;
+    U = (uint8_t)(fminf(fmaxf(uf, 0.0f), 255.0f) + 0.5f);
+    V = (uint8_t)(fminf(fmaxf(vf, 0.0f), 255.0f) + 0.5f);
 }
 
 // ==============================================================
@@ -65,6 +84,7 @@ __global__ void rgba_to_nv12x1_split_tex_kernel(
     y_plane[y * y_step + x] = Y;
 
     if ((x % 2 == 0) && (y % 2 == 0)) {
+        uv_avg_8bit(In, x, y, width, height, flip, U, V);
         int uv_index = (y / 2) * uv_step + (x / 2) * 2;
         uv_plane[uv_index]     = U;
         uv_plane[uv_index + 1] = V;
@@ -107,6 +127,7 @@ __global__ void rgba_to_nv12x2_split_tex_kernel(
     Yp[dy * pitchY + dx] = Y;
 
     if ((dx & 1) == 0 && (dy & 1) == 0) {
+        uv_avg_8bit(In, sx, sy, srcW, srcH, flip, U, V);
         uint8_t* uv = UVp + (dy >> 1) * pitchUV + dx;
         uv[0] = U;
         uv[1] = V;
@@ -157,6 +178,7 @@ __global__ void rgba_to_nv12x4_split_tex_kernel(
     Yp[dy * pitchY + dx] = Y;
 
     if ((dx & 1) == 0 && (dy & 1) == 0) {
+        uv_avg_8bit(In, sx, sy, srcW, srcH, flip, U, V);
         uint8_t* uv = UVp + (dy >> 1) * pitchUV + dx;
         uv[0] = U;
         uv[1] = V;
@@ -218,6 +240,7 @@ __global__ void rgba_to_nv12x8_split_tex_kernel(
     Yp[dy * pitchY + dx] = Y;
 
     if ((dx & 1) == 0 && (dy & 1) == 0) {
+        uv_avg_8bit(In, sx, sy, srcW, srcH, flip, U, V);
         uint8_t* uv = UVp + (dy >> 1) * pitchUV + dx;
         uv[0] = U;
         uv[1] = V;

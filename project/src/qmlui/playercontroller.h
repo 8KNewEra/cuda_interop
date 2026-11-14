@@ -107,6 +107,8 @@ public:
 
     // GL / CUDA の初期化。QML を読み込む前に呼ぶ
     bool initialize();
+    // 表示（ウィンドウの色バッファ）の色深度。main がシーングラフの初期化後に渡す（10 / 8）
+    void setDisplayBits(int bits) { displayBits_ = bits; emit infoChanged(); }
 
     // エンコード設定（QML には "encoder" として公開する）
     QObject* gaussianKernel() const;
@@ -322,7 +324,8 @@ private:
     void pushPlayIntoRange();
     QString play_time_ = "00:00";
     // 開いたファイルの映像・音声の概要（動画情報に出す。canUseGpuDecode で読む）
-    QString srcPixel_;          // "10bit 4:2:0 · PQ（表示 8bit）" など
+    QString srcPixel_;          // "10bit 4:2:0 · PQ" など
+    int     displayBits_ = 0;   // 表示の色深度（setDisplayBits。0 = まだ分からない）
     QString srcAudio_;          // "AAC LC · 48 kHz" など
     int     srcAudioCh_ = 0;    // 元のチャンネル数
 

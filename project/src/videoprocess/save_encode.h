@@ -99,7 +99,8 @@ struct AudioJob
 class save_encode
 {
 public:
-    save_encode(int h,int w);
+    // srcRgba16: 入力（FBO）が RGBA16 か（10bit 経路。QML 版の VideoEngine が渡す。Widgets 版は省略 = false）
+    save_encode(int h,int w,bool srcRgba16 = false);
     ~save_encode();
 
     // ★ ゼロコピー化 + 完全非同期化
@@ -119,6 +120,11 @@ public:
                 cudaTextureObject_t srcTex,
                 cudaEvent_t  glWaitEvent = nullptr,
                 cudaEvent_t* convertDone = nullptr);
+
+    // 入力（srcTex の FBO）が RGBA16 か（10bit 経路）。false なら RGBA8（8bit 経路）。コンストラクタで決まる
+    bool srcRgba16 = false;
+    // 10bit（P010）で書き出すか（encode_out_10bit。HEVC Main10 / AV1 10bit）。コンストラクタで決まる
+    bool out10 = false;
 
 private:
     void initialized_ffmpeg_hardware_context(int i);

@@ -200,6 +200,26 @@ QVariantList EncodeController::framerateOptions() const
     return l;
 }
 
+// 書き出しのプロファイル（= ビット深度。値は 8 / 10）。表記はコーデックのプロファイル名に合わせる
+//   HEVC: Main / Main 10、AV1: Main（8bit）/ Main（10bit。AV1 は 10bit も Main プロファイル）、H.264: 8bit のみ
+//   10bit は「10bit 経路の素材 × HEVC / AV1」のときだけ並べる。
+//   希望（output_depth）は残すので、H.264 に切り替えて戻すと 10bit に戻る
+QVariantList EncodeController::depthOptions() const
+{
+    const QString c = es().codec;
+    if (c.contains("h264")) return { opt("8bit", 8) };
+    const bool av1 = c.contains("av1");
+    QVariantList l{ opt("Main（8bit）", 8) };
+    if (src_high_bit_) l << opt(av1 ? "Main（10bit）" : "Main 10（10bit）", 10);
+    return l;
+}
+
+// 8bit 化のディザ（10bit 経路の素材を NV12 で書き出すとき。縞を抑える / 値そのまま）
+QVariantList EncodeController::ditherOptions() const
+{
+    return { opt("あり（なめらか）", "1"), opt("なし（値そのまま）", "0") };
+}
+
 QVariantList EncodeController::splitOptions() const
 {
     return { opt("Disable", "0"), opt("Enable", "1") };
@@ -327,6 +347,10 @@ void EncodeController::setValue(const QString& key, const QVariant& value)
         }
     } else if (key == "audioCodec") {
         s.audio_codec = value.toString();
+    } else if (key == "depth") {
+        s.output_depth = (value.toInt() >= 10) ? 10 : 8;
+    } else if (key == "dither") {
+        s.dither = (value.toString() != "0");
     } else {
         qWarning() << "[EncodeController] unknown key" << key;
         return;
@@ -439,7 +463,7 @@ QString EncodeController::vramInfo() const
     const int ring = encode_ring_size(bf);
     const int tw   = canvasW() / std::max(1, s.width_tile);
     const int th   = canvasH() / std::max(1, s.height_tile);
-    const int mb   = encode_pool_mb(tw, th, ring, tiles);
+    const int mb   = encode_pool_mb(tw, th, ring, tiles, out10() ? 2 : 1);   // P010 は 1 サンプル 2 バイト
     return QString("想定使用 VRAM %1 MB   (%2 x %3 x %4 面 x %5 タイル)")
         .arg(mb).arg(tw).arg(th).arg(ring + 4).arg(tiles);
 }
@@ -449,9 +473,9 @@ QString EncodeController::summary() const
     const EncodeSettings& s = es();
     const int tw = canvasW() / std::max(1, s.width_tile);
     const int th = canvasH() / std::max(1, s.height_tile);
-    return QString("%1×%2 · %3fps  →  %4 · %5 タイル · %6×%7/本")
+    return QString("%1×%2 · %3fps  →  %4 · %5bit · %6 タイル · %7×%8/本")
         .arg(canvasW()).arg(canvasH()).arg(VideoInfo.fps)
-        .arg(s.codec).arg(s.encode_tile).arg(tw).arg(th);
+        .arg(s.codec).arg(out10() ? 10 : 8).arg(s.encode_tile).arg(tw).arg(th);
 }
 
 // ==============================================================

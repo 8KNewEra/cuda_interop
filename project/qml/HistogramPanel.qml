@@ -84,14 +84,16 @@ Rectangle {
                 }
             }
 
-            // X 目盛り（グリッド線の位置に合わせる）
+            // X 目盛り（グリッド線の位置に合わせる）。段数は 8bit 経路 256、10bit 経路 1024
             Repeater {
-                model: [0, 64, 128, 192, 256]
+                id: xTicks
+                readonly property int bins: root.stats.bins || 256
+                model: [0, bins / 4, bins / 2, bins * 3 / 4, bins]
                 delegate: Text {
                     required property int modelData
                     y: plotBg.height + 3
                     x: Math.max(plotBg.x, Math.min(plotBg.x + plotBg.width - implicitWidth,
-                         plot.x + plot.width * modelData / 256 - implicitWidth / 2))
+                         plot.x + plot.width * modelData / xTicks.bins - implicitWidth / 2))
                     text: modelData
                     color: Theme.muted2; font.family: Theme.mono; font.pixelSize: plotArea.tickPx
                 }

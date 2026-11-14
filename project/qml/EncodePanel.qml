@@ -319,6 +319,12 @@ Item {
                                 KeyLabel { text: "コーデック"; tip: "映像の圧縮方式です。" }
                                 Select { Layout.fillWidth: true; options: encoder.codecOptions; value: encoder.codec; tip: "-c:v"; onPicked: (v) => encoder.setValue("codec", v) } }
                             RowLayout { Layout.fillWidth: true; spacing: 12
+                                KeyLabel { text: "プロファイル"; tip: "HEVC の Main 10、AV1 の Main（10bit）は 10bit で書き出します。10bit を選べるのは 10bit 以上の動画のときです。H.264 は 8bit のみです。" }
+                                Select { Layout.fillWidth: true; options: encoder.depthOptions; value: encoder.depth; onPicked: (v) => encoder.setValue("depth", v) } }
+                            RowLayout { Layout.fillWidth: true; spacing: 12; visible: encoder.showDither
+                                KeyLabel { text: "ディザ"; tip: "10bit の動画を 8bit で書き出すときに、細かいノイズを足してグラデーションの縞を目立たなくします。画素の値をそのまま使いたい（解析など）ときは「なし」にしてください。低いビットレートでは効果が薄れます。" }
+                                Select { Layout.fillWidth: true; options: encoder.ditherOptions; value: encoder.dither; onPicked: (v) => encoder.setValue("dither", v) } }
+                            RowLayout { Layout.fillWidth: true; spacing: 12
                                 KeyLabel { text: "フレームレート"; tip: "出力ファイルのフレームレートです。" }
                                 Select { Layout.fillWidth: true; options: encoder.framerateOptions; value: encoder.framerate; tip: "-r"; onPicked: (v) => encoder.setValue("framerate", v) } }
                             RowLayout { Layout.fillWidth: true; spacing: 12

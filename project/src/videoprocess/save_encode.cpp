@@ -96,9 +96,15 @@ bool frame_is_unreferenced(const AVFrame* f)
 } // namespace
 
 
-save_encode::save_encode(int h,int w) {
+save_encode::save_encode(int h,int w,bool srcRgba16_) {
     //最初にGPU設定
     cudaSetDevice(g_openglDeviceID);
+
+    // 入力の形式と出力のビット深度（10bit は P010。設定画面と同じ判定 encode_out_10bit）
+    srcRgba16 = srcRgba16_;
+    out10     = encode_out_10bit(encodeSettings, srcRgba16);
+    qDebug() << "[save_encode] 入力" << (srcRgba16 ? "RGBA16（10bit 経路）" : "RGBA8（8bit 経路）")
+             << " 出力" << (out10 ? "10bit（P010）" : "8bit（NV12）");
 
     // ★ 画像処理インスタンスの生成
     //   これが無いと encode_video() 内の
@@ -178,10 +184,10 @@ save_encode::save_encode(int h,int w) {
         const int ht = std::max(1, encodeSettings.height_tile);
         const int tiles = std::max(1, encodeSettings.encode_tile);
         const double one_mb =
-            (double)(width_ / wt) * (double)(height_ / ht) * 1.5 / (1024.0 * 1024.0);
-        // ★ 設定画面の「想定使用 VRAM」と同じ式（encode_pool_mb）
+            (double)(width_ / wt) * (double)(height_ / ht) * 1.5 * (out10 ? 2 : 1) / (1024.0 * 1024.0);
+        // ★ 設定画面の「想定使用 VRAM」と同じ式（encode_pool_mb。P010 は 1 サンプル 2 バイト）
         const int total_mb = encode_pool_mb(width_ / wt, height_ / ht,
-                                            encodeRingSize, tiles);
+                                            encodeRingSize, tiles, out10 ? 2 : 1);
 
         qDebug() << "[save_encode] 出力 =" << (separate_ ? "タイルごとに別ファイル" : "1ファイル")
                  << " files =" << (separate_ ? tiles : 1);
@@ -269,16 +275,18 @@ save_encode::save_encode(int h,int w) {
         //GPU転送用のメモリを確保
         for(int j=0;j<encodeRingSize;j++){
             if(encodeSettings.tile_gpu_map[i] != g_openglDeviceID){
+                // 幅はバイト数（P010 は 1 サンプル 2 バイト）
+                const int bps = out10 ? 2 : 1;
                 cudaMallocPitch(
                     &ve[i]->hw_frames[j].d_y,
                     &ve[i]->hw_frames[j].y_pitch,
-                    width_/encodeSettings.width_tile,
+                    (width_/encodeSettings.width_tile) * bps,
                     height_/encodeSettings.height_tile
                     );
                 cudaMallocPitch(
                     &ve[i]->hw_frames[j].d_uv,
                     &ve[i]->hw_frames[j].uv_pitch,
-                    (width_/encodeSettings.width_tile),
+                    (width_/encodeSettings.width_tile) * bps,
                     (height_/encodeSettings.height_tile)/2
                     );
             }
@@ -514,6 +522,13 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     ve[i]->codec_ctx->width = width_/encodeSettings.width_tile;
     ve[i]->codec_ctx->height = height_/encodeSettings.height_tile;
     ve[i]->codec_ctx->pix_fmt = hw_pix_fmt;
+    ve[i]->codec_ctx->sw_pix_fmt = out10 ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;
+    // 8bit / 10bit とも BT.709 limited で変換している（encode_8bit.cu / encode_10bit.cu）。その旨を書いておく
+    //   HDR は非対応なので、原色・伝達特性も BT.709（SDR）で固定
+    ve[i]->codec_ctx->colorspace      = AVCOL_SPC_BT709;
+    ve[i]->codec_ctx->color_range     = AVCOL_RANGE_MPEG;
+    ve[i]->codec_ctx->color_primaries = AVCOL_PRI_BT709;
+    ve[i]->codec_ctx->color_trc       = AVCOL_TRC_BT709;
 
     //フレームレート設定
     AVRational fps = av_d2q(encodeSettings.save_fps, 100000);
@@ -612,6 +627,10 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
         av_dict_set_int(&opts, "multipass", 0, 0);
     }
 
+    // 10bit 出力: HEVC は Main10 を明示（AV1 は入力が P010 なら 10bit になる）
+    if (out10 && encodeSettings.codec.contains("hevc"))
+        av_dict_set(&opts, "profile", "main10", 0);
+
     int ret = avcodec_open2(ve[i]->codec_ctx, codec, &opts);
     if (ret < 0) throw std::runtime_error("Failed to open codec");
     av_dict_free(&opts);
@@ -632,7 +651,7 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
         (AVHWFramesContext*)(ve[i]->hw_frames_ctx->data);
 
     frames_ctx->format    = AV_PIX_FMT_CUDA;
-    frames_ctx->sw_format = AV_PIX_FMT_NV12;
+    frames_ctx->sw_format = out10 ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;   // 10bit 出力は P010
     frames_ctx->width     = width_  / encodeSettings.width_tile;
     frames_ctx->height    = height_ / encodeSettings.height_tile;
     frames_ctx->initial_pool_size = encodeRingSize + 4;
@@ -845,8 +864,29 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex,
 
     // ==========================================================
     // 2) CUDA NV12変換
+    //    10bit 経路（RGBA16 の FBO）はタイル数によらず 1 本のカーネル
     // ==========================================================
-    if (ve.size() == 1) {
+    if (srcRgba16) {
+        // NV12（8bit 出力）でも P010（10bit 出力）でも同じタイル情報（ポインタ・ピッチはバイト単位）
+        NV12Tiles t = {};
+        t.count = (int)ve.size();
+        t.cols  = (t.count == 1) ? 1 : encodeSettings.width_tile;
+        t.outW  = (t.count == 1) ? width_  : width_  / encodeSettings.width_tile;
+        t.outH  = (t.count == 1) ? height_ : height_ / encodeSettings.height_tile;
+        for (int i = 0; i < t.count && i < 8; i++) {
+            t.y  [i] = ve[i]->hw_frames[slot].d_y;
+            t.yp [i] = ve[i]->hw_frames[slot].y_pitch;
+            t.uv [i] = ve[i]->hw_frames[slot].d_uv;
+            t.uvp[i] = ve[i]->hw_frames[slot].uv_pitch;
+        }
+        if (t.count != 1 && t.count != 2 && t.count != 4 && t.count != 8)
+            qWarning() << "[save_encode] unsupported tile count:" << t.count;
+        else if (out10)
+            CUDA_IMG_Proc->rgba16_to_p010_split_tex(srcTex, t, width_, height_, srcFlip, st);
+        else
+            CUDA_IMG_Proc->rgba16_to_nv12_split_tex(srcTex, t, width_, height_, srcFlip, encodeSettings.dither, st);   // 8bit 化のディザは設定
+    }
+    else if (ve.size() == 1) {
         CUDA_IMG_Proc->rgba_to_nv12x1_split_tex(
             srcTex,
             ve[0]->hw_frames[slot].d_y, ve[0]->hw_frames[slot].y_pitch,
@@ -943,10 +983,12 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex,
 
         AVFrame* out = fs.frame;
 
+        // 幅はバイト数（P010 は 1 サンプル 2 バイト）
+        const size_t rowBytes = size_t(width_ / encodeSettings.width_tile) * (out10 ? 2 : 1);
         cudaMemcpy2DAsync(
             out->data[0], out->linesize[0],
             fs.d_y, fs.y_pitch,
-            width_ / encodeSettings.width_tile,
+            rowBytes,
             height_ / encodeSettings.height_tile,
             cudaMemcpyDeviceToDevice,
             ve[i]->st
@@ -955,7 +997,7 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex,
         cudaMemcpy2DAsync(
             out->data[1], out->linesize[1],
             fs.d_uv, fs.uv_pitch,
-            width_ / encodeSettings.width_tile,
+            rowBytes,
             (height_ / encodeSettings.height_tile) / 2,
             cudaMemcpyDeviceToDevice,
             ve[i]->st

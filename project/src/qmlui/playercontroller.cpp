@@ -522,6 +522,13 @@ QVariantMap PlayerController::videoInfo() const
     m["audio"]         = audio;
     m["renderFps"]     = engine_ ? engine_->fps : 0.0;
     m["bitDepth"]      = VideoInfo.bitdepth;
+    // Process / Render Depth: "16bit / 10bit" = 処理（8bit 経路 RGBA8 = 8bit / 10bit 経路 RGBA16 = 16bit）/ 表示（ウィンドウの色バッファ）
+    //   表示は「アプリが出している深さ」。モニタ・ドライバの設定が 8bit なら最終的には 8bit になる
+    {
+        const bool hi = engine_ && engine_->highBitDepth();
+        m["renderDepth"] = QString("%1bit / %2").arg(hi ? 16 : 8)
+                               .arg(displayBits_ > 0 ? QString("%1bit").arg(displayBits_) : QString("-"));
+    }
     return m;
 }
 
@@ -624,8 +631,8 @@ void PlayerController::closeFile()
     emit stateChanged();
 }
 
-// 映像の画素形式の概要: "10bit 4:2:0 · PQ（表示 8bit）" など
-//   描画は RGBA 8bit なので、9bit 以上の素材は表示が 8bit になることを添える
+// 映像の画素形式の概要: "10bit 4:2:0 · PQ" など
+//   9bit 以上の素材は 10bit 経路（RGBA16）で処理する（画像保存は PNG / TIFF が 16bit、書き出しは HEVC / AV1 で 10bit）
 static QString describePixel(const AVCodecParameters* par)
 {
     const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(par->format));
@@ -642,8 +649,7 @@ static QString describePixel(const AVCodecParameters* par)
     if (!chroma.isEmpty()) s += " " + chroma;
     if (par->color_trc == AVCOL_TRC_SMPTE2084)      s += " · PQ";
     else if (par->color_trc == AVCOL_TRC_ARIB_STD_B67) s += " · HLG";
-    if (depth > 8) s += "（表示 8bit）";
-    return s;
+    return s;   // 処理・表示の深さは別の行（renderDepth）に出す
 }
 
 // 音声の概要: "AAC LC · 48 kHz" など
@@ -1070,7 +1076,9 @@ void PlayerController::screenshot()
 
 void PlayerController::openScreenshotSettings()
 {
-    if (shotSettings_) shotSettings_->open();   // QML 側は opened() で画面を出す
+    if (!shotSettings_) return;
+    shotSettings_->setSourceHighBit(engine_ && engine_->highBitDepth());   // 10bit の動画のときだけ 10bit を選べる
+    shotSettings_->open();   // QML 側は opened() で画面を出す
 }
 
 // ==============================================================
@@ -1147,6 +1155,7 @@ void PlayerController::openEncodeSettings()
     setPlayIntent(false);
     emit send_manual_pause();
 
+    encoder_->setSourceHighBit(engine_->highBitDepth());   // 10bit 経路なら 10bit 出力を選べる
     encoder_->prepare(VideoInfo.end_range_framesNo - VideoInfo.start_range_framesNo);
     emit encodeSettingsOpened();
 }

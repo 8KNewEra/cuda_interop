@@ -146,6 +146,7 @@ Item {
                     KeyLabel { text: "保存フォーマット" }
                     Select {
                         Layout.fillWidth: true
+                        tip: "JPG / BMP は常に 8bit です。PNG / TIFF は下の「ビット深度」で選べます。"
                         options: shotSettings.formatOptions
                         value: shotSettings.format
                         onPicked: (v) => shotSettings.setValue("format", v)
@@ -185,6 +186,34 @@ Item {
                         options: shotSettings.jpegSubsamplingOptions
                         value: shotSettings.jpegSubsampling
                         onPicked: (v) => shotSettings.setValue("jpegSubsampling", v)
+                    }
+                }
+
+                RowLayout {
+                    visible: shotSettings.showDepth
+                    Layout.fillWidth: true
+                    spacing: 12
+                    KeyLabel { text: "ビット深度" }
+                    Select {
+                        Layout.fillWidth: true
+                        tip: "10bit を選べるのは 10bit 以上の動画のときです。ファイルは 16bit 形式になり、8bit の約 2 倍の大きさになります。"
+                        options: shotSettings.depthOptions
+                        value: shotSettings.depth
+                        onPicked: (v) => shotSettings.setValue("depth", v)
+                    }
+                }
+
+                RowLayout {
+                    visible: shotSettings.showDither
+                    Layout.fillWidth: true
+                    spacing: 12
+                    KeyLabel { text: "ディザ" }
+                    Select {
+                        Layout.fillWidth: true
+                        tip: "10bit の動画を 8bit で保存するときに、細かいノイズを足してグラデーションの縞を目立たなくします。画素の値をそのまま使いたい（解析など）ときは「なし」にしてください。"
+                        options: shotSettings.ditherOptions
+                        value: shotSettings.dither
+                        onPicked: (v) => shotSettings.setValue("dither", v)
                     }
                 }
 
