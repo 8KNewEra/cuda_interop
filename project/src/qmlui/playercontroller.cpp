@@ -522,12 +522,28 @@ QVariantMap PlayerController::videoInfo() const
     m["audio"]         = audio;
     m["renderFps"]     = engine_ ? engine_->fps : 0.0;
     m["bitDepth"]      = VideoInfo.bitdepth;
-    // Process / Render Depth: "16bit / 10bit" = 処理（8bit 経路 RGBA8 = 8bit / 10bit 経路 RGBA16 = 16bit）/ 表示（ウィンドウの色バッファ）
-    //   表示は「アプリが出している深さ」。モニタ・ドライバの設定が 8bit なら最終的には 8bit になる
+    // Process / Render Depth: "処理 / 表示"。例 "16bit / 10bit"、途中で落ちていれば "16bit / 10bit → 8bit"
+    //   処理: 8bit 経路（RGBA8）= 8bit、10bit 経路（RGBA16）= 16bit
+    //   表示（アプリの出力）: 映像の中身の深さ（8bit 素材 8 / 10bit 素材 10）とウィンドウの色バッファの小さい方。
+    //     色バッファは起動時に 10bit で固定（実行中に形式は変えられない）なので、8bit 素材は中身どおり 8bit と出す
+    //   → の後: 画面に出るまでに一番浅くなる段（画面合成・モニター出力）がアプリの出力より浅いときだけ付ける。
+    //     画面合成は「通っているとき」だけ数える（全画面で直接出しているときは関係ない。不明なら通るとみなす）。
+    //     通常の SDR デスクトップは 8bit で合成するので、ウィンドウ表示は 10bit → 8bit になる。
+    //     HDR / 自動カラー管理が有効なら合成は FP16 なので落ちない。値は DisplayProbe（displayprobe.h）が渡す
+    //     NVIDIA の Deep color が有効で色バッファが 10bit なら、ドライバが合成の外で 10bit のまま出すので合成は数えない
     {
         const bool hi = engine_ && engine_->highBitDepth();
-        m["renderDepth"] = QString("%1bit / %2").arg(hi ? 16 : 8)
-                               .arg(displayBits_ > 0 ? QString("%1bit").arg(displayBits_) : QString("-"));
+        QString disp = "-";
+        if (displayBits_ > 0) {
+            const int app = std::min(displayBits_, hi ? 10 : 8);
+            int shown = app;
+            const bool bypass = composed_ == 0 || (deepColor_ && displayBits_ >= 10);
+            if (!bypass && compBits_ > 0)        shown = std::min(shown, compBits_);
+            if (outputBits_ > 0)                 shown = std::min(shown, outputBits_);
+            disp = QString("%1bit").arg(app);
+            if (shown < app) disp += QString(" → %1bit").arg(shown);
+        }
+        m["renderDepth"] = QString("%1bit / %2").arg(hi ? 16 : 8).arg(disp);
     }
     return m;
 }

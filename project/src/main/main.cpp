@@ -5,6 +5,10 @@
 #include "src/qmlui/windowchrome.h"
 #include "src/qmlui/encodecontroller.h"
 #include "src/qmlui/screenshotsettings.h"
+#include "src/qmlui/displayprobe.h"
+#ifdef CUDA_VIEWER_DISPLAY_VERIFY
+#include "src/qmlui/displayverify.h"   // 検証用ビルドだけ（CONFIG+=display_verify）
+#endif
 
 #include <QApplication>
 #include <QLocale>
@@ -18,6 +22,7 @@
 #include <QOpenGLContext>
 #include <QDebug>
 #include <cstring>
+
 
 std::vector<GPUInfo> g_GPUInfo;
 AppSettings g_AppSettings{};
@@ -59,6 +64,8 @@ static void prepareQmlUi()
         fmt.setRedBufferSize(10);
         fmt.setGreenBufferSize(10);
         fmt.setBlueBufferSize(10);
+        // アルファも 2bit で指定する（10:10:10:2）。RGB だけだと WGL が 8bit の形式を選んでしまう
+        //   （アルファ 8bit を残す形式が優先される）。実機（NVIDIA）で確認済み
         fmt.setAlphaBufferSize(2);
     }
     QSurfaceFormat::setDefaultFormat(fmt);
@@ -111,6 +118,10 @@ static int runQmlUi(QApplication& app)
 
         chrome.attach(window);
 
+#ifdef CUDA_VIEWER_DISPLAY_VERIFY
+        DisplayVerify::install(window);   // 表示の 10bit 検証（Ctrl+Shift+D）。検証用ビルドだけ
+#endif
+
         // 実際に取れた表示の色深度（10 / 8）を動画情報へ。コンテキストができた時点の値を読む
         auto reportBits = [window, &player] {
             QOpenGLContext* c = QOpenGLContext::currentContext();
@@ -120,6 +131,9 @@ static int runQmlUi(QApplication& app)
         };
         if (window->isSceneGraphInitialized()) reportBits();
         else QObject::connect(window, &QQuickWindow::sceneGraphInitialized, window, reportBits, Qt::DirectConnection);
+
+        // 画面に出るまでの深さ（画面合成・全画面で合成を通るか・モニター出力）を調べて動画情報へ
+        DisplayProbe::install(window, &player);
 
         // ダーク（タイトルバーは消しているが、システムメニュー等の配色用に残す）
         HWND hwnd = (HWND)window->winId();

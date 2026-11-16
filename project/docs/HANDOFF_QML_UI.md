@@ -12,8 +12,10 @@ CUDA + OpenGL + FFmpeg による GPU 専用の 8K / 16K タイル動画ビュー
 - ファイルを追加・削除したら **qmake を実行してから再ビルド**（`cuda_interop.pro`・`qml.qrc`・`qml/qmldir` の 3 か所に登録が要る）。
 - Windows 専用のリンク: `opengl32`、`nvml`、`pdh`（GPU の 3D / CUDA 使用率）。
 - CUDA カーネル（`cuda_kernels/*.cu`）は qmake の extra compiler で nvcc に通す（以前の `*.bat` + `obj_out/*.obj` は不要）。
-  nvcc は同梱の `NVIDIAGPUComputingToolkit/CUDA/v13.0/bin` を優先、対象は sm_75 / 86 / 89 / 90 / 120。
-  対象は `.pro` の `CUDA_SOURCES` に書いた 3 ファイル（decode_8bit / encode_8bit / histogram_8bit。8bit / 10bit は処理経路 = テクスチャ形式 RGBA8 / RGBA16 を表す）。
+  nvcc は同梱の `3rdparty/NVIDIAGPUComputingToolkit/CUDA/v13.0/bin` を優先、対象は sm_75 / 86 / 89 / 90 / 120。
+  対象は `.pro` の `CUDA_SOURCES` に書いた 6 ファイル（decode / encode / histogram の _8bit・_10bit。8bit / 10bit は処理経路 = テクスチャ形式 RGBA8 / RGBA16 を表す）。
+- 外部ライブラリは `3rdparty/` に同梱（.pro の `THIRDPARTY_DIR`）: CUDA Toolkit（`NVIDIAGPUComputingToolkit/CUDA/v13.0`。NVML の
+  `nvml.lib` もここの lib/x64 を使う）、`ffmpeg`、`gpuimg`、`nvapi`。実行時の DLL（各 bin/）は PATH か exe と同じフォルダに置く
   起動口は `src/imageprocess/cuda_imageprocess.cpp`（`cudaLaunchKernel`）。出力はビルドフォルダの `cuda_obj/debug|release/`。
 - 対象 GPU は NVIDIA のみ（CUDA 必須）。UI 上の GPU 名からは先頭の "NVIDIA " を省いている。
 
@@ -90,9 +92,26 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
   - 画像保存: 10bit 経路の PNG / TIFF は、設定 `screenshot_depth`（画像保存設定の「ビット深度」。表記は 10bit / 8bit、8bit の動画は 8bit のみ。既定 "16"）が 16 なら
     fbo の RGBA16 をそのまま 16bit で保存（`gpuimg::Image::rgba16`）。
     JPEG / BMP は形式上 8bit なので RGBA8 に四捨五入（`rgba16_to_rgba8_tex`）。保存用バッファは経路に合わせて 4 / 8 バイト/画素
-  - 表示の 10bit 化: `main.cpp` の既定フォーマットで色バッファ 10:10:10 を要求（VideoEngine・共有コンテキスト・ウィンドウ共通。
+  - 表示の 10bit 化: `main.cpp` の既定フォーマットで色バッファ 10:10:10:2 を要求（アルファ 2bit も指定しないと WGL が 8bit 形式を選ぶ。実機確認済み）（VideoEngine・共有コンテキスト・ウィンドウ共通。
     共有には同じ形式が必要なので既定フォーマットで揃える）。取れなければ 8bit に落ちる。10bit 経路の RGBA16 をシーングラフがそのまま描くので
-    10bit で出る。実際の深さは `sceneGraphInitialized` で読んで `PlayerController::setDisplayBits`（動画情報の Process/Render Depth の後ろ側）。`CUDA_VIEWER_DISPLAY_BITS=8` で従来に戻す
+    10bit で出る。実際の深さは `sceneGraphInitialized` で読んで `PlayerController::setDisplayBits`（動画情報の Process/Render Depth の後ろ側）。`CUDA_VIEWER_DISPLAY_BITS=8` で従来に戻す。
+    画面に出るまでの深さは `src/qmlui/displayprobe.*`（`-ldxgi -ld3d11`）が読んで PlayerController へ渡す:
+    モニター出力 = `IDXGIOutput6::GetDesc1().BitsPerColor`（`setOutputBits`）、画面合成 = `DuplicateOutput1` の形式
+    （SDR デスクトップは 8bit、HDR / 自動カラー管理が有効なら FP16。`setCompositionBits`）、全画面で合成を通るか =
+    描き直しても Desktop Duplication に新しいフレームが来なければ直接出している（独立フリップ。`setComposed`）。
+    起動時・`screenChanged`・`visibilityChanged`・アクティブになったときに読み直す。
+    実機（RTX 5000 Ada）: ウィンドウ表示は SDR だと合成（Desktop Duplication で見える画面）は 8bit、自動カラー管理 / HDR を有効にすると FP16。全画面は直接出す。
+    ただし NVIDIA のドライバ設定「Deep color for 3D applications」（`OGL_DEEP_COLOR_SCANOUT`、既定で有効）が効いていると、
+    OpenGL の 10bit ウィンドウはドライバが合成の外で 10bit のまま出す（SDR・ウィンドウで ramp10_narrow.avi を 8bit 起動と見比べて確認済み）。
+    これは公開 API で直接は取れないので、NVAPI（`3rdparty/nvapi`、NVIDIA 公開 SDK・MIT、`nvapi64.lib`）の DRS でこのアプリのプロファイル →
+    ベースプロファイルの順に設定を読み（`nvDeepColorScanout`）、有効かつ色バッファ 10bit なら合成を数えない（`setDeepColorScanout`）色バッファは実行中に変えられないので 10bit 固定、
+    8bit 素材は表示の値を中身どおり 8bit にする（`min(色バッファ, 素材 8/10)`）
+  - 表示の 10bit 検証（検証用ビルドだけ）: qmake に `CONFIG+=display_verify` を付けると `src/qmlui/displayverify.*` を組み込み
+    （`CUDA_VIEWER_DISPLAY_VERIFY`、`-ld3d11`）。Ctrl+Shift+D でカーソルの高さの 1 行（映像の表示枠）を
+    ② 色バッファ（afterRendering で glReadPixels）と ③ 画面合成（Desktop Duplication `DuplicateOutput1` FP16）から読み、
+    段数・平均幅・8bit 格子外の割合をログ `[verify]` に出す。テスト動画は RGB 10bit（FFV1 / gbrp10le、AVI → avidecode の GBRP10 経路）で
+    4096×4096、上半分 1024 段（4px 幅）・下半分 256 段（16px 幅）:
+    `ffmpeg -f lavfi -i "nullsrc=s=4096x4096:d=1:r=30,format=gbrp10le,geq=r='if(lt(Y,H/2),floor(X/4),floor(X/16)*4)':g='(同)':b='(同)'" -c:v ffv1 -level 3 ramp10.avi`
   - 8bit 化のディザ: 10bit 経路から 8bit に落とす 2 本（`rgba16_to_nv12_split_tex` / `rgba16_to_rgba8_tex`）は引数 dither で
     ±0.5 段階のノイズ（座標とチャンネルのハッシュ。フレーム間で同じ）を足してから四捨五入。設定は画像保存 `screenshot_dither`（"on"/"off"、
     ini `Screenshot/screenshot_dither`）と書き出し `EncodeSettings::dither`（ini `Encodesetting/dither`）。既定はどちらもあり。
@@ -136,7 +155,7 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
 ## 5. 情報表示
 
 ### 動画情報（InfoPanel）
-- 基本情報: ファイル名・デコーダ・デコード方式・解像度・**Bit Depth**（例 `10bit 4:2:0 · PQ`）・**Process/Render Depth**（例 `16bit / 10bit`。前 = 処理 `engine_->highBitDepth()` で 16 / 8、後 = 表示 = ウィンドウの色バッファ `displayBits_`）・fps・総フレーム・現在フレーム・**Audio**（例 `AAC LC · 48 kHz · 6ch → 2ch`）。
+- 基本情報: ファイル名・デコーダ・デコード方式・解像度・**Bit Depth**（例 `10bit 4:2:0 · PQ`）・**Process/Render Depth**（例 `16bit / 10bit`、`16bit / 10bit → 8bit`。前 = 処理 `engine_->highBitDepth()` で 16 / 8、後 = 表示 = min(色バッファ `displayBits_`, 素材 10 / 8)、→ はモニター出力 `outputBits_` がそれより浅いときだけ）・fps・総フレーム・現在フレーム・**Audio**（例 `AAC LC · 48 kHz · 6ch → 2ch`）。
   Bit Depth / Audio はファイルを開くとき `canUseGpuDecode` の中で一緒に読む（`srcPixel_` / `srcAudio_`）。
 - 描画フレームレート: 実測 / 目標と直近 60 秒の推移（破線 = 目標、一時停止中は線が途切れる）。
   このアプリはコマを落とさず遅れるだけなので、取りこぼし数は出していない。

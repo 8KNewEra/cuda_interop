@@ -8,6 +8,23 @@ QT += opengl
 QT += openglwidgets
 LIBS += -lopengl32
 win32: LIBS += -lpdh      # GPU の 3D 使用率（info_thread）
+win32: LIBS += -ldxgi -ld3d11   # 表示経路の色深度（displayprobe.cpp。モニター出力・画面合成）
+
+# ---- 外部ライブラリ（すべて 3rdparty/ に同梱）----
+#   3rdparty/NVIDIAGPUComputingToolkit/CUDA/v13.0 : CUDA Toolkit（nvcc・cudart・NPP・NVML）
+#   3rdparty/ffmpeg                               : FFmpeg（include / lib / bin）
+#   3rdparty/gpuimg                               : gpuimg（画像保存。include / lib / bin）
+#   3rdparty/nvapi                                : NVAPI（NVIDIA 公開の SDK、MIT）
+#   実行時の DLL（各 bin/）は exe から見える場所（PATH か exe と同じフォルダ）に置くこと
+THIRDPARTY_DIR = $$PWD/3rdparty
+!exists($$THIRDPARTY_DIR/NVIDIAGPUComputingToolkit/CUDA/v13.0/include/cuda_runtime.h): \
+    warning("CUDA Toolkit が見つかりません: $$THIRDPARTY_DIR/NVIDIAGPUComputingToolkit/CUDA/v13.0")
+!exists($$THIRDPARTY_DIR/ffmpeg/include/libavcodec/avcodec.h): warning("FFmpeg が見つかりません: $$THIRDPARTY_DIR/ffmpeg")
+!exists($$THIRDPARTY_DIR/gpuimg/include): warning("gpuimg が見つかりません: $$THIRDPARTY_DIR/gpuimg")
+
+# NVAPI。displayprobe.cpp でドライバ設定 Deep color を読む
+INCLUDEPATH += $$THIRDPARTY_DIR/nvapi
+win32: LIBS += -L$$THIRDPARTY_DIR/nvapi/amd64 -lnvapi64
 
 
 QT += widgets gui opengl
@@ -51,6 +68,7 @@ SOURCES += \
     $$PWD/src/main/mainwindow.cpp \
     $$PWD/src/qmlui/videoengine.cpp \
     $$PWD/src/qmlui/videoitem.cpp \
+    $$PWD/src/qmlui/displayprobe.cpp \
     $$PWD/src/qmlui/playercontroller.cpp \
     $$PWD/src/qmlui/windowchrome.cpp \
     $$PWD/src/qmlui/encodecontroller.cpp \
@@ -82,6 +100,7 @@ HEADERS += \
     $$PWD/src/main/mainwindow.h \
     $$PWD/src/qmlui/videoengine.h \
     $$PWD/src/qmlui/videoitem.h \
+    $$PWD/src/qmlui/displayprobe.h \
     $$PWD/src/qmlui/playercontroller.h \
     $$PWD/src/qmlui/windowchrome.h \
     $$PWD/src/qmlui/encodecontroller.h \
@@ -98,6 +117,15 @@ FORMS += \
     $$PWD/form/mainwindow.ui \
     $$PWD/form/video_speed.ui \
     $$PWD/form/save_screenshot.ui \
+
+# ---- 表示の 10bit 検証（検証用ビルドだけ）----
+#   qmake の引数に CONFIG+=display_verify を付けたときだけ組み込む（Qt Creator: プロジェクト → ビルド設定 →
+#   qmake の「追加の引数」）。通常・リリースのビルドには入らない。Ctrl+Shift+D で表示の段数をログに出す
+display_verify {
+    DEFINES += CUDA_VIEWER_DISPLAY_VERIFY
+    SOURCES += $$PWD/src/qmlui/displayverify.cpp
+    HEADERS += $$PWD/src/qmlui/displayverify.h
+}
 
 # Qt Quick 版 UI の QML
 RESOURCES += \
@@ -116,7 +144,7 @@ CONFIG += embed_translations
 #         -lopencv_world4120  # ← ".lib" は不要！
 
 #CUDAリンク
-CUDA_DIR = "$$PWD/NVIDIAGPUComputingToolkit/CUDA/v13.0"
+CUDA_DIR = "$$THIRDPARTY_DIR/NVIDIAGPUComputingToolkit/CUDA/v13.0"
 
 INCLUDEPATH += $$CUDA_DIR/include
 LIBS += -L$$CUDA_DIR/lib/x64 \
@@ -129,9 +157,8 @@ LIBS += -L$$CUDA_DIR/lib/x64 \
         -lnppig \
         -lnppim \
         -lnppist \
-        -lnppisu
-
-LIBS += -L"$$PWD/NVIDIA Corporation/NVSMI" -lnvml
+        -lnppisu \
+        -lnvml        # GPU の使用率など（info_thread）。nvml.lib は CUDA Toolkit の lib/x64 に入っている
 
 # ---- CUDA カーネル（cuda_kernels/*.cu）を qmake のビルドで nvcc に通す ----
 #   以前は cuda_kernels/*.bat で obj_out/*.obj を作ってリンクしていた（bat は不要になった）。
@@ -188,8 +215,8 @@ cuda.variable_out       = OBJECTS
 cuda.name               = nvcc ${QMAKE_FILE_IN}
 QMAKE_EXTRA_COMPILERS  += cuda
 
-#ffmepg
-ffmpeg_DIR = "$$PWD/ffmpeg"
+#ffmpeg
+ffmpeg_DIR = "$$THIRDPARTY_DIR/ffmpeg"
 
 INCLUDEPATH += $$ffmpeg_DIR/include
 LIBS += -L$$ffmpeg_DIR/lib
@@ -202,13 +229,59 @@ LIBS += -lswscale
 LIBS += -lavutil
 
 #gpuimg
-gpuimg_DIR = "$$PWD/gpuimg"
+gpuimg_DIR = "$$THIRDPARTY_DIR/gpuimg"
 
 INCLUDEPATH += $$gpuimg_DIR/include
 LIBS += -L$$gpuimg_DIR/lib
 
-LIBS += -gpuimg
+LIBS += -lgpuimg
 
+
+# ---- 実行に必要な DLL をビルド後に exe と同じフォルダへコピー（Windows）----
+#   3rdparty/ の各 bin から、このアプリが読み込む DLL だけをコピーする（xcopy /D = 新しいときだけ上書き）。
+#   ・リンク（exe の作り直し）のときに動く。exe が最新で DLL だけ無い場合は「リビルド」すること
+#   ・nvml.dll / nvapi64.dll / nvcuda.dll は NVIDIA のドライバに入っているのでコピーしない
+#   ・DLL を足したら下の DEPLOY_DLLS に足す
+win32 {
+    # exe の出力先（debug_and_release なら debug / release のサブフォルダ）
+    EXE_DIR = $$OUT_PWD
+    !isEmpty(DESTDIR) {
+        EXE_DIR = $$DESTDIR
+    } else: debug_and_release {
+        CONFIG(debug, debug|release): EXE_DIR = $$OUT_PWD/debug
+        else:                         EXE_DIR = $$OUT_PWD/release
+    }
+
+    # 場所は THIRDPARTY_DIR から直接組み立てる（CUDA_DIR などは "" 付きの値なので、そのまま繋ぐと引用符が混ざる）
+    CUDA_BIN_DIR   = $$THIRDPARTY_DIR/NVIDIAGPUComputingToolkit/CUDA/v13.0/bin/x64
+    FFMPEG_BIN_DIR = $$THIRDPARTY_DIR/ffmpeg/bin
+    GPUIMG_BIN_DIR = $$THIRDPARTY_DIR/gpuimg/bin
+    DEPLOY_DLLS = \
+        $$CUDA_BIN_DIR/cudart64_13.dll \
+        $$CUDA_BIN_DIR/nppc64_13.dll \
+        $$CUDA_BIN_DIR/nppial64_13.dll \
+        $$CUDA_BIN_DIR/nppicc64_13.dll \
+        $$CUDA_BIN_DIR/nppidei64_13.dll \
+        $$CUDA_BIN_DIR/nppif64_13.dll \
+        $$CUDA_BIN_DIR/nppig64_13.dll \
+        $$CUDA_BIN_DIR/nppim64_13.dll \
+        $$CUDA_BIN_DIR/nppist64_13.dll \
+        $$CUDA_BIN_DIR/nppisu64_13.dll \
+        $$FFMPEG_BIN_DIR/avcodec-62.dll \
+        $$FFMPEG_BIN_DIR/avformat-62.dll \
+        $$FFMPEG_BIN_DIR/avfilter-11.dll \
+        $$FFMPEG_BIN_DIR/avdevice-62.dll \
+        $$FFMPEG_BIN_DIR/avutil-60.dll \
+        $$FFMPEG_BIN_DIR/swresample-6.dll \
+        $$FFMPEG_BIN_DIR/swscale-9.dll \
+        $$GPUIMG_BIN_DIR/gpuimg.dll
+
+    for(dll, DEPLOY_DLLS) {
+        !exists($$dll): warning("コピーする DLL が見つかりません: $$dll")
+        # コピー先はフォルダ（リンク後なので必ずある）。末尾に \ を付けない（"…\" が引用符の扱いを壊す）
+        QMAKE_POST_LINK += xcopy /D /Y /Q $$shell_quote($$shell_path($$dll)) $$shell_quote($$shell_path($$EXE_DIR)) >nul $$escape_expand(\n\t)
+    }
+}
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin

@@ -109,6 +109,15 @@ public:
     bool initialize();
     // 表示（ウィンドウの色バッファ）の色深度。main がシーングラフの初期化後に渡す（10 / 8）
     void setDisplayBits(int bits) { displayBits_ = bits; emit infoChanged(); }
+    // 画面に出るまでの深さ（DisplayProbe が渡す。displayprobe.h）
+    //   モニター出力（NVIDIA の 8bpc / 10bpc。0 = 取れない）
+    void setOutputBits(int bits)      { if (bits != outputBits_) { outputBits_ = bits; emit infoChanged(); } }
+    //   画面合成の形式（8 / 10 / 16 = FP16。0 = 取れない）
+    void setCompositionBits(int bits) { if (bits != compBits_)   { compBits_ = bits;   emit infoChanged(); } }
+    //   画面合成を通るか（1 = 通る / 0 = 全画面で直接出している / -1 = 調べている・不明）
+    void setComposed(int state)       { if (state != composed_)  { composed_ = state;  emit infoChanged(); } }
+    //   NVIDIA の Deep color（OpenGL の 10bit ウィンドウを合成の外で出す）が有効か
+    void setDeepColorScanout(bool on) { if (on != deepColor_)  { deepColor_ = on;    emit infoChanged(); } }
 
     // エンコード設定（QML には "encoder" として公開する）
     QObject* gaussianKernel() const;
@@ -325,7 +334,11 @@ private:
     QString play_time_ = "00:00";
     // 開いたファイルの映像・音声の概要（動画情報に出す。canUseGpuDecode で読む）
     QString srcPixel_;          // "10bit 4:2:0 · PQ" など
-    int     displayBits_ = 0;   // 表示の色深度（setDisplayBits。0 = まだ分からない）
+    int     displayBits_ = 0;   // ウィンドウの色バッファの深さ（setDisplayBits。0 = まだ分からない）
+    int     outputBits_  = 0;   // モニターへの出力の深さ（setOutputBits。0 = 取れない）
+    int     compBits_    = 0;   // 画面合成の深さ（setCompositionBits。0 = 取れない）
+    int     composed_    = 1;   // 画面合成を通るか（setComposed）
+    bool    deepColor_   = false; // NVIDIA Deep color が有効か（setDeepColorScanout）
     QString srcAudio_;          // "AAC LC · 48 kHz" など
     int     srcAudioCh_ = 0;    // 元のチャンネル数
 
