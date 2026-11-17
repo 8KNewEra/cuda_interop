@@ -117,6 +117,9 @@ Rectangle {
                 Key { text: "File Name" }        Val { text: root.info.fileName || "-" }
                 Key { text: "Decoder" }          Val { text: root.info.decoder || "-" }
                 Key { text: "Decode Mode" }      Val { text: root.info.decodeMode || "-" }
+                // マルチ GPU デコードの割り振り（例 "3×2 + 0×2 + 1×2 + 2×2" = GPU 番号×タイル数）
+                Key { text: "Decode GPU"; visible: !!root.info.decodeGpu }
+                Val { text: root.info.decodeGpu || ""; visible: !!root.info.decodeGpu }
                 Key { text: "Resolution" }       Num { text: (root.info.width || 0) + "×" + (root.info.height || 0) }
                 Key { text: "Bit Depth" }        Val { text: root.info.pixel || "-" }
                 // 処理（8bit / 10bit 経路）/ 表示（ウィンドウの色バッファ）の深さ。例 "16bit / 10bit"

@@ -1,5 +1,6 @@
 #include "src/qmlui/playercontroller.h"
 #include "src/qmlui/videoengine.h"
+#include <QStringList>
 
 #include "src/videoprocess/avidecode.h"
 #include "src/videoprocess/cpudecode.h"
@@ -48,6 +49,15 @@ PlayerController::PlayerController(QObject* parent)
     connect(&perfTimer_, &QTimer::timeout, this, [this] {
         if (!engine_) return;
         QVariantMap m = engine_->perf().take();
+        // 再生中（安定して順方向に再生している間）だけ更新する。シーク・コマ送り・一時停止・逆再生の間は
+        //   集計を捨てて、直前の再生の値を出したままにする（段が出たり消えたりしてちらつくため）。HUD には frozen で知らせる
+        if (!render_active_ || reverse_flag) {
+            if (!perf_.isEmpty() && !perf_.value("frozen").toBool()) {
+                perf_["frozen"] = true;
+                emit perfChanged();
+            }
+            return;
+        }
         m["fps"]      = engine_->fps;                                       // 描画 fps（1 秒平均）
         // 目標 = 動画の fps × 再生速度（動画情報の「描画フレームレート」と同じ）。持ち時間 = 1 フレームに使える時間
         const double target = VideoInfo.fps * (speed() > 0 ? speed() : 1.0);
@@ -65,10 +75,16 @@ PlayerController::PlayerController(QObject* parent)
                     if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
             QVariantList list;
             int mx = -1;
+            // tiles: その GPU が受け持つタイル数、engines: NVDEC の基数（0 = 不明）。HUD の上限の目安に使う
+            std::map<int, int> tiles;
+            if (gpuDecode) for (int id : VideoInfo.tile_gpu) tiles[id]++;
             for (int id : ids)
                 for (const GPUInfo& g : g_GPUInfo)
                     if (g.deviceID == id) {
-                        list << QVariantMap{ {"id", id}, {"dec", g.Decoder_Usage} };
+                        const auto e = VideoInfo.gpu_nvdecs.find(id);
+                        list << QVariantMap{ {"id", id}, {"dec", g.Decoder_Usage},
+                                             {"tiles", tiles.count(id) ? tiles[id] : 0},
+                                             {"engines", e != VideoInfo.gpu_nvdecs.end() ? e->second : 0} };
                         mx = std::max(mx, g.Decoder_Usage);
                     }
             m["nvdecs"] = list;
@@ -559,7 +575,16 @@ QVariantMap PlayerController::videoInfo() const
     QVariantMap m;
     m["fileName"]      = QString::fromStdString(VideoInfo.Name);
     m["decoder"]       = QString::fromStdString(VideoInfo.Codec);
-    m["decodeMode"]    = VideoInfo.decode_mode.trimmed();
+    // decode_mode の "Decode GPU: …" の行（マルチ GPU デコードの割り振り）は別の項目にする
+    {
+        QStringList mode, gpu;
+        for (const QString& line : VideoInfo.decode_mode.split('\n', Qt::SkipEmptyParts)) {
+            if (line.startsWith("Decode GPU:")) gpu << line.mid(11).trimmed();
+            else                                mode << line.trimmed();
+        }
+        m["decodeMode"] = mode.join('\n');
+        m["decodeGpu"]  = gpu.join('\n');   // 空 = 1 枚の GPU（項目を出さない）
+    }
     m["tileCols"]      = std::max(1, VideoInfo.width_scale);    // タイルの列数・行数（タイル分割でなければ 1）
     m["tileRows"]      = std::max(1, VideoInfo.height_scale);
     const QSize s      = engine_ ? engine_->displaySize() : QSize();
@@ -802,6 +827,12 @@ void PlayerController::start_decode_thread(const QString& filePath)
     connect(decodestream, &decode_thread::transfer_time_ms, this, [this](double ms, double gbps) {
         if (engine_) engine_->perf().addTransfer(ms, gbps);
     }, Qt::QueuedConnection);
+    connect(decodestream, &decode_thread::decode_breakdown, this, [this](QVariantList parts) {
+        if (engine_) engine_->perf().addDecodeBreakdown(parts);
+    }, Qt::QueuedConnection);
+    connect(decodestream, &decode_thread::transfer_codec_stats, this, [this](double ratio, double compressMs, double expandMs) {
+        if (engine_) engine_->perf().addTransferCodec(ratio, compressMs, expandMs);
+    }, Qt::QueuedConnection);
     connect(decodestream, &decode_thread::send_slider_info, this, &PlayerController::init_decodethread_complete);
     connect(decodestream, &decode_thread::heavy_process_signal, this, [this](bool done) {
         setControlsEnabled(done);
@@ -847,6 +878,8 @@ void PlayerController::stop_decode_thread()
     run_decode_thread = false;
     steady_play_frames_ = 0;
     render_active_ = false;
+    perf_.clear();          // 性能 HUD の値は次のファイルへ持ち越さない
+    emit perfChanged();
     play_intent_ = false;
     seekHoldTimer_.stop();
     seek_hold_ = false;

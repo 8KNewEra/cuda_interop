@@ -2,9 +2,11 @@
 #define NVGPUDECODE_H
 
 #include "src/videoprocess/decode_thread.h"
+#include "src/videoprocess/xfer_codec.h"
 
 #include <deque>
 #include <map>
+#include <memory>
 #include <vector>
 
 class nvgpudecode:public decode_thread
@@ -136,6 +138,27 @@ protected:
     bool init_remote();                                     // ストリーム・イベント（初回の転送で作る）
     bool alloc_remote_tile(int i, AVFrame* f);              // タイル i の転送先リング・中継バッファ
     bool transfer_remote(const std::vector<int>& tiles);    // 別 GPU のタイルを送り、decode_ready を記録
+    // 圧縮転送（nvCOMP。xfer_codec.h）。設定（g_AppSettings.decode_xfer_codec）が「なし」以外のとき transfer_remote から
+    bool transfer_compressed(const std::vector<int>& tiles, int s);
+    XferCodec::Algo xferAlgo_ = XferCodec::None;
+    bool            xferDelta_ = true;
+    std::map<int, std::unique_ptr<XferCodec>> codecs_;      // 別 GPU ごと
+
+    // ---- 性能 HUD: デコード（待ち）の内訳（get_multidecode_image の 1 コマ分。CPU の実時間 ms）----
+    //   どこで CPU が待たされているかを見るための計測。QElapsedTimer だけなので常時測ってよい軽さ
+    //     read    : ファイルからパケットを読む（av_read_frame）
+    //     send    : GPU ごとの avcodec_send_packet（cuvid はここでは積むだけのことが多い）
+    //     recv    : GPU ごとの avcodec_receive_frame（パース・NVDEC への投入・完了待ち（Map）・出力コピーの発行）
+    //     xfer    : 別 GPU のタイルの転送の発行（transfer_remote / transfer_compressed）
+    //     other   : 残り（pts 合わせ・publish の残り・emit など）
+    struct DecodeProf {
+        double read = 0, xfer = 0;
+        std::map<int, double> send, recv;   // GPU 番号 → ms
+        void clear() { read = xfer = 0; send.clear(); recv.clear(); }
+    };
+    DecodeProf prof_;
+    int tileGpu(int i) const { return (vd[i].gpu >= 0) ? vd[i].gpu : g_openglDeviceID; }
+    void emit_decode_breakdown(double totalMs);
     void release_remote();                                  // 転送先リング・中継・イベント・コンテキストを解放
 };
 

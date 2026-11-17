@@ -4,6 +4,7 @@
 #include <QThread>
 #include <QObject>
 #include <QMutex>
+#include <QVariantList>
 
 #include <atomic>
 #include <cmath>
@@ -69,6 +70,11 @@ signals:
     void decode_time_ms(double ms);
     // 性能 HUD: マルチ GPU デコードで別 GPU からメインメモリへ送った時間（そのコマの分。ms）と速度（GB/s）
     void transfer_time_ms(double ms, double gbps);
+    // 性能 HUD: 圧縮転送（nvCOMP）の圧縮率（元 ÷ 圧縮後）、デコード側 GPU での圧縮と、表示用 GPU での取り込み・展開の時間（ms）
+    void transfer_codec_stats(double ratio, double compressMs, double expandMs);
+    // 性能 HUD: デコード（待ち）の内訳（マルチタイルの GPU デコードのとき。1 コマ分の CPU の実時間 ms）
+    //   [{key, label, ms}] の並び（key は集計用の識別子。順番はそのまま HUD の行の順）
+    void decode_breakdown(QVariantList parts);
 
 public slots:
     void sliderPlayback(int value);

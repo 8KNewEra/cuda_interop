@@ -389,7 +389,7 @@ ApplicationWindow {
                     anchors.left: parent.left
                     anchors.bottom: parent.bottom
                     anchors.margins: 16
-                    width: Math.min(320, parent.width - 32)
+                    width: Math.min(implicitWidth, parent.width - 32)   // 幅は HUD が文字の大きさから決める（最小 320）
                     height: implicitHeight
                     perf: player.perf
                     fileOpen: player.fileOpen

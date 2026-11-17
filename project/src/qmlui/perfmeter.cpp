@@ -2,6 +2,7 @@
 
 #include <QOpenGLFunctions_4_5_Core>
 #include <QVariantList>
+#include <algorithm>
 
 QVariantMap PerfMeter::Acc::toMap() const
 {
@@ -22,8 +23,9 @@ void PerfMeter::setEnabled(bool on)
     cur_ = -1;
     haveLast_ = false;
     decode_.clear(); convert_.clear(); filter_.clear(); display_.clear(); hist_.clear(); cpu_.clear(); interval_ms_.clear();
-    transfer_.clear(); transferGbps_.clear();
+    transfer_.clear(); transferGbps_.clear(); ratio_.clear(); compress_.clear(); expand_.clear();
     intervals_.clear();
+    parts_.clear();
 }
 
 void PerfMeter::create(QOpenGLFunctions_4_5_Core* gl)
@@ -110,6 +112,26 @@ void PerfMeter::addTransfer(double ms, double gbps)
     transferGbps_.add(gbps);
 }
 
+void PerfMeter::addTransferCodec(double ratio, double compressMs, double expandMs)
+{
+    if (!on_) return;
+    ratio_.add(ratio);
+    compress_.add(compressMs);
+    expand_.add(expandMs);
+}
+
+void PerfMeter::addDecodeBreakdown(const QVariantList& parts)
+{
+    if (!on_) return;
+    for (const QVariant& v : parts) {
+        const QVariantMap p = v.toMap();
+        const QString key = p.value("key").toString();
+        auto it = std::find_if(parts_.begin(), parts_.end(), [&](const Part& x) { return x.key == key; });
+        if (it == parts_.end()) { parts_.push_back({ key, p.value("label").toString(), {} }); it = parts_.end() - 1; }
+        it->acc.add(p.value("ms").toDouble());
+    }
+}
+
 void PerfMeter::frameEnd()
 {
     if (!on_) return;
@@ -158,12 +180,23 @@ QVariantMap PerfMeter::take()
     m["interval"] = interval_ms_.toMap();
     m["transfer"] = transfer_.toMap();
     m["transferGbps"] = transferGbps_.n ? transferGbps_.sum / transferGbps_.n : -1.0;   // 平均の転送速度（GB/s）
+    m["xferRatio"]    = ratio_.n ? ratio_.sum / ratio_.n : -1.0;                     // 圧縮率（元 ÷ 圧縮後。圧縮転送のときだけ）
+    m["compress"]     = compress_.toMap();                                            // 別 GPU での前処理と圧縮
+    m["expand"]       = expand_.toMap();
+    QVariantList dp;                                                                  // デコード（待ち）の内訳
+    for (Part& p : parts_) {
+        QVariantMap e = p.acc.toMap();
+        e["label"] = p.label;
+        dp << e;
+    }
+    m["decodeParts"] = dp;
+    parts_.clear();                                              // 表示用 GPU での取り込み・展開
     QVariantList iv;
     iv.reserve(int(intervals_.size()));
     for (float v : intervals_) iv << double(v);
     m["intervals"] = iv;
     decode_.clear(); convert_.clear(); filter_.clear(); display_.clear(); hist_.clear(); cpu_.clear(); interval_ms_.clear();
-    transfer_.clear(); transferGbps_.clear();
+    transfer_.clear(); transferGbps_.clear(); ratio_.clear(); compress_.clear(); expand_.clear();
     intervals_.clear();
     return m;
 }

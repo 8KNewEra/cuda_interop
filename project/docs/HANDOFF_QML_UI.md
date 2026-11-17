@@ -194,6 +194,14 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
   GUI 側は従来どおり `decode_ready` だけ待つ。
   最初は `cudaMemcpy3DPeerAsync`（P2P 無しはドライバがメインメモリ経由）だったが、RTX 4080 SUPER + RTX 2070 で約 2.4GB/s で頭打ち
   （16K 4 タイル: 3:1 で 48fps、2:2 で 23fps）だったので 2 段に変えた。
+- 圧縮転送（試験的、nvCOMP 6.0 = `3rdparty/nvcomp`、`src/videoprocess/xfer_codec.*`、`cuda_kernels/xfer_compress.cu`）:
+  設定「転送の圧縮」（`g_AppSettings.decode_xfer_codec` = none / cascaded / bitcomp / ans、`decode_xfer_delta`、ini `Decode/`）。
+  別 GPU ごとに `XferCodec`。デコード側 GPU（既定ストリーム）で `xfer_fwd`（pitched → 詰めた並び、Y / UV を別の面に、行内の差分 → ジグザグ、
+  P010 は >>6）→ 64KB チャンクで nvCOMP 圧縮 → `xfer_pack`（チャンクを詰めてページ固定・マップ済みのメインメモリへカーネルが直接書く。
+  CPU は圧縮後の大きさを知らずに済む）。表示用 GPU（`xfer_stream_`）で `xfer_fetch`（メインメモリ → GPU、チャンク表も作る）→ 展開 →
+  `xfer_inv`（差分を戻して r_y / r_uv へ。行ごとのブロック内スキャン）。枠は kStage=3、順序は 2 段コピーと同じイベント。
+  初期化に失敗したらそのファイルの間は圧縮なしに戻す。HUD は「転送」= 圧縮 + 送出（実効 GB/s = 元の大きさ ÷ 時間）、「展開」、圧縮率。
+  未検証（実機での効果はこれから）。12bit 素材（P016）は >>6 で下位 2bit が落ちる（表示も 10bit 扱いなので実害なし）。
 - 設定はファイルを開くときに読む。「OK して開き直す」は `PlayerController::reopenForDecodeSettings`（開き直して `reopen_frame_` へ高精度シーク）。
 - 性能 HUD: `perf.nvdecs`（デコードに使っている GPU ごとの NVDEC）、上限の目安は最大の使用率から。
   「転送」= D2H の時間（その GPU の CUDA イベント、`decode_thread::transfer_time_ms`）と速度 GB/s。マルチ GPU デコードのときだけ表示。
@@ -260,7 +268,7 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
 - スポイトのピン留め・記録
 - ズーム表示を「1 画素 = ○px」に
 - ベンチマークモード（性能 HUD は実装済み。一定区間の平均・最悪値・パーセンタイルを CSV に記録する機能は未）
-- マルチ GPU デコードの続き（実装済みは 5.5。残り: 10bit の詰め直しで転送量を 10/16 に、nvcomp は効果を測ってから）
+- マルチ GPU デコードの続き（実装済みは 5.5。残り: 圧縮転送（試験実装済み）の実測と、効果がなければ削除）
 - ディザ付きの画面表示（表示は 10bit 化済み。8bit の色バッファしか取れない環境向け。8bit 化して保存・書き出すときのディザは対応済み。色の行列は BT.709 に統一済み。HDR の PQ / HLG 引き継ぎは非対応の方針）
 - 2 ファイル比較
 - Widgets 版との機能差の解消

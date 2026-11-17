@@ -22,6 +22,11 @@ THIRDPARTY_DIR = $$PWD/3rdparty
 !exists($$THIRDPARTY_DIR/ffmpeg/include/libavcodec/avcodec.h): warning("FFmpeg が見つかりません: $$THIRDPARTY_DIR/ffmpeg")
 !exists($$THIRDPARTY_DIR/gpuimg/include): warning("gpuimg が見つかりません: $$THIRDPARTY_DIR/gpuimg")
 
+# nvCOMP（NVIDIA nvCOMP SDK 6.0）。マルチ GPU デコードの圧縮転送（試験的。src/videoprocess/xfer_codec.*）
+#   実行時は bin/nvcomp64_6.dll（下の DEPLOY_DLLS で exe の横へコピー）。ライセンスは 3rdparty/nvcomp/LICENSE.txt
+INCLUDEPATH += $$THIRDPARTY_DIR/nvcomp/include
+win32: LIBS += -L$$THIRDPARTY_DIR/nvcomp/lib -lnvcomp
+
 # NVAPI。displayprobe.cpp でドライバ設定 Deep color を読む
 INCLUDEPATH += $$THIRDPARTY_DIR/nvapi
 win32: LIBS += -L$$THIRDPARTY_DIR/nvapi/amd64 -lnvapi64
@@ -71,6 +76,7 @@ SOURCES += \
     $$PWD/src/qmlui/displayprobe.cpp \
     $$PWD/src/qmlui/perfmeter.cpp \
     $$PWD/src/qmlui/decodesettings.cpp \
+    $$PWD/src/videoprocess/xfer_codec.cpp \
     $$PWD/src/qmlui/playercontroller.cpp \
     $$PWD/src/qmlui/windowchrome.cpp \
     $$PWD/src/qmlui/encodecontroller.cpp \
@@ -105,6 +111,7 @@ HEADERS += \
     $$PWD/src/qmlui/displayprobe.h \
     $$PWD/src/qmlui/perfmeter.h \
     $$PWD/src/qmlui/decodesettings.h \
+    $$PWD/src/videoprocess/xfer_codec.h \
     $$PWD/src/videoprocess/decode_gpu_map.h \
     $$PWD/src/qmlui/playercontroller.h \
     $$PWD/src/qmlui/windowchrome.h \
@@ -178,6 +185,7 @@ LIBS += -L$$CUDA_DIR/lib/x64 \
 #       encode_10bit.cu    : RGBA16 の FBO → NV12（エンコード入力）/ RGBA8（画像保存）
 #       histogram_10bit.cu : RGBA16 の FBO からヒストグラム（1024 段。集計先の構造体は histogram_10bit.h）
 #       tiles_10bit.h      : 10bit 経路のカーネルへ渡すタイルの構造体（cuda_imageprocess.cpp と共用）
+#       xfer_compress.cu   : マルチ GPU デコードの圧縮転送（差分・詰め直し・圧縮チャンクの受け渡し。xfer_codec.cpp から）
 #     起動口は src/imageprocess/cuda_imageprocess.cpp
 #   ・.cu を変更しただけなら通常のビルドで、変わったものだけ再コンパイルされる
 #   ・cuda_kernels/ の .cuh / .h を変えると、全カーネルを再コンパイルする
@@ -190,7 +198,8 @@ CUDA_SOURCES = \
     $$PWD/cuda_kernels/histogram_8bit.cu \
     $$PWD/cuda_kernels/decode_10bit.cu \
     $$PWD/cuda_kernels/encode_10bit.cu \
-    $$PWD/cuda_kernels/histogram_10bit.cu
+    $$PWD/cuda_kernels/histogram_10bit.cu \
+    $$PWD/cuda_kernels/xfer_compress.cu
 CUDA_HEADERS = $$files($$PWD/cuda_kernels/*.cuh) $$files($$PWD/cuda_kernels/*.h)
 CUDA_ARCHS   = 75 86 89 90 120
 
@@ -279,7 +288,8 @@ win32 {
         $$FFMPEG_BIN_DIR/avutil-60.dll \
         $$FFMPEG_BIN_DIR/swresample-6.dll \
         $$FFMPEG_BIN_DIR/swscale-9.dll \
-        $$GPUIMG_BIN_DIR/gpuimg.dll
+        $$GPUIMG_BIN_DIR/gpuimg.dll \
+        $$THIRDPARTY_DIR/nvcomp/bin/nvcomp64_6.dll
 
     for(dll, DEPLOY_DLLS) {
         !exists($$dll): warning("コピーする DLL が見つかりません: $$dll")

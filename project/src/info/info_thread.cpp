@@ -26,11 +26,12 @@
 //   種類 "3D" → 3D、"Cuda" / "Compute_0" など（ドライバ・設定で名前が変わる）→ CUDA。
 //   エンジンごとに全プロセスの値を足し、同じアダプタ（LUID）・同じ種類のエンジンの最大を使う。
 //   アダプタは CUDA の deviceProp.luid で突き合わせる（TCC モードなど LUID が無い GPU は -1）。
+//   種類 "VideoDecode" / "VideoEncode" → NVDEC / NVENC（NVML の値が低く出る GPU があるので、大きい方を使う）。
 //   注意: CUDA と OpenGL の連携（マップ・コピー）の負荷は 3D 側に乗ることがある。
 namespace {
 using Luid = std::pair<unsigned, unsigned>;   // {High, Low}
 
-struct EngineUsage { int g3d = -1, cuda = -1; };   // -1 = そのエンジンのデータなし
+struct EngineUsage { int g3d = -1, cuda = -1, dec = -1, enc = -1; };   // -1 = そのエンジンのデータなし
 
 class GpuEngineCounter {
 public:
@@ -54,7 +55,7 @@ public:
         if (PdhGetFormattedCounterArrayW(counter_, PDH_FMT_DOUBLE, &size, &count, items) != ERROR_SUCCESS)
             return out;
 
-        // {LUID, 種類（0 = 3D、1 = CUDA）, エンジン番号} → 全プロセスの合計
+        // {LUID, 種類（0 = 3D、1 = CUDA、2 = NVDEC、3 = NVENC）, エンジン番号} → 全プロセスの合計
         std::map<std::tuple<Luid, int, int>, double> perEngine;
         for (DWORD i = 0; i < count; ++i) {
             const wchar_t* name = items[i].szName;
@@ -64,6 +65,8 @@ public:
             int kind;
             if (std::wcscmp(t, L"3D") == 0)                                         kind = 0;
             else if (std::wcsncmp(t, L"Cuda", 4) == 0 || std::wcsncmp(t, L"Compute", 7) == 0) kind = 1;
+            else if (std::wcsncmp(t, L"VideoDecode", 11) == 0)                       kind = 2;
+            else if (std::wcsncmp(t, L"VideoEncode", 11) == 0)                       kind = 3;
             else continue;
             const DWORD st = items[i].FmtValue.CStatus;
             if (st != PDH_CSTATUS_VALID_DATA && st != PDH_CSTATUS_NEW_DATA) continue;
@@ -76,7 +79,8 @@ public:
         }
         for (const auto& [key, v] : perEngine) {
             EngineUsage& u = out[std::get<0>(key)];
-            int& dst = (std::get<1>(key) == 0) ? u.g3d : u.cuda;
+            const int k = std::get<1>(key);
+            int& dst = k == 0 ? u.g3d : k == 1 ? u.cuda : k == 2 ? u.dec : u.enc;
             dst = (std::max)(dst, (int)std::lround(std::clamp(v, 0.0, 100.0)));
         }
         valid_ = true;
@@ -187,16 +191,23 @@ void info_thread::check_gpu_usage() {
 
         int use3d = -1, useCuda = -1;
 #ifdef _WIN32
+        int pdhDec = -1, pdhEnc = -1;
         Luid luid;
         if (cudaLuid(g_GPUInfo[i].deviceID, &luid)) {
             const auto it = engineUsage.find(luid);
             if (it != engineUsage.end()) {
                 use3d   = it->second.g3d;
                 useCuda = it->second.cuda;   // CUDA のエンジンが見つからない環境は -1（隠す）
+                pdhDec  = it->second.dec;
+                pdhEnc  = it->second.enc;
             }
             // 3D は全 GPU にあるエンジン。誰も使っていなければインスタンスが無いので 0
             if (engines.valid() && use3d < 0) use3d = 0;
         }
+        // NVDEC / NVENC: NVML は GPU によって低く出る（RTX 2070 で張り付いているのに 3 割程度など）。
+        // タスクマネージャーと同じ PDH の値と比べて大きい方を使う
+        if (pdhDec > (int)decUtil) decUtil = (unsigned)pdhDec;
+        if (pdhEnc > (int)encUtil) encUtil = (unsigned)pdhEnc;
 #endif
         g_GPUInfo[i].Graphics3D_Usage = use3d;
         g_GPUInfo[i].Cuda_Usage       = useCuda;

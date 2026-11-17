@@ -64,8 +64,30 @@ QVariantList DecodeSettings::gpus() const
     return list;
 }
 
+QVariantList DecodeSettings::xferCodecOptions() const
+{
+    // 試験的。効果がなければ「なし」（従来の転送）に戻す
+    auto opt = [](const char* t, const char* v) { return QVariantMap{ {"text", QString::fromUtf8(t)}, {"value", QString::fromUtf8(v)} }; };
+    return { opt("なし", "none"), opt("Cascaded", "cascaded"), opt("Bitcomp", "bitcomp"), opt("ANS", "ans") };
+}
+
+void DecodeSettings::setXferCodec(const QString& v)
+{
+    if (v == xferCodec_ || (v != "none" && v != "cascaded" && v != "bitcomp" && v != "ans")) return;
+    xferCodec_ = v;
+    emit changed();
+}
+
+void DecodeSettings::setXferDelta(bool on)
+{
+    if (on == xferDelta_) return;
+    xferDelta_ = on;
+    emit changed();
+}
+
 bool DecodeSettings::dirty() const
 {
+    if (xferCodec_ != g_AppSettings.decode_xfer_codec || xferDelta_ != g_AppSettings.decode_xfer_delta) return true;
     for (const GPUInfo& g : g_GPUInfo) {
         auto it = weights_.find(g.deviceID);
         if (it != weights_.end() && it->second != effectiveDecodeWeight(g)) return true;
@@ -79,6 +101,8 @@ void DecodeSettings::open(int tiles, const QString& codec)
     for (const GPUInfo& g : g_GPUInfo) weights_[g.deviceID] = effectiveDecodeWeight(g);
     fileTiles_ = tiles;
     fileCodec_ = codec;
+    xferCodec_ = g_AppSettings.decode_xfer_codec;
+    xferDelta_ = g_AppSettings.decode_xfer_delta;
     emit changed();
     emit opened();
 }
@@ -95,6 +119,8 @@ void DecodeSettings::setWeight(int deviceId, int weight)
 void DecodeSettings::apply(bool reopen)
 {
     const bool wasDirty = dirty();
+    g_AppSettings.decode_xfer_codec = xferCodec_;
+    g_AppSettings.decode_xfer_delta = xferDelta_;
     for (GPUInfo& g : g_GPUInfo) {
         auto it = weights_.find(g.deviceID);
         if (it != weights_.end()) g.decode_weight = it->second;

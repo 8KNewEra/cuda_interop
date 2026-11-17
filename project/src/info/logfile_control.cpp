@@ -22,6 +22,8 @@ void logfile_control::load_inifile()
     g_AppSettings.saveScreenshot_folder = settings.value("Path/saveScreenshot_folder", g_AppSettings.saveScreenshot_folder).toString();
     g_AppSettings.videoInfo_flag = settings.value("Info/videoInfo_flag", g_AppSettings.videoInfo_flag).toBool();
     g_AppSettings.perf_hud = settings.value("Info/perf_hud", g_AppSettings.perf_hud).toBool();
+    g_AppSettings.decode_xfer_codec = settings.value("Decode/xfer_codec", g_AppSettings.decode_xfer_codec).toString();
+    g_AppSettings.decode_xfer_delta = settings.value("Decode/xfer_delta", g_AppSettings.decode_xfer_delta).toBool();
     g_AppSettings.histgram_flag = settings.value("Info/histgram_flag", g_AppSettings.histgram_flag).toBool();
     g_AppSettings.video_speed_ratio = settings.value("Playback/video_speed_ratio", g_AppSettings.video_speed_ratio).toDouble();
     g_AppSettings.audio_volume = settings.value("Playback/audio_volume", g_AppSettings.audio_volume).toInt();
@@ -166,6 +168,8 @@ void logfile_control::save_inifile(){
     settings.setValue("Path/saveScreenshot_folder", g_AppSettings.saveScreenshot_folder);
     settings.setValue("Info/videoInfo_flag", g_AppSettings.videoInfo_flag);
     settings.setValue("Info/perf_hud", g_AppSettings.perf_hud);
+    settings.setValue("Decode/xfer_codec", g_AppSettings.decode_xfer_codec);
+    settings.setValue("Decode/xfer_delta", g_AppSettings.decode_xfer_delta);
     settings.setValue("Info/histgram_flag", g_AppSettings.histgram_flag);
     settings.setValue("Playback/video_speed_ratio", g_AppSettings.video_speed_ratio);
     settings.setValue("Playback/audio_volume", g_AppSettings.audio_volume);

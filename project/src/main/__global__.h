@@ -5,6 +5,7 @@
 #include "qobject.h"
 #include <QFileDialog>
 #include <string>
+#include <map>
 #include <cuda_runtime.h>
 #define STATE_NOT_ENCODE 0
 #define STATE_ENCODE_READY 1
@@ -24,6 +25,10 @@ struct AppSettings
     // Info
     bool videoInfo_flag = false;
     bool perf_hud = false;              // 性能 HUD（QML 版。映像の左下に処理段ごとの時間）
+    // マルチ GPU デコードの転送の圧縮（試験的。nvCOMP）: "none" / "cascaded" / "bitcomp" / "ans"
+    //   decode_xfer_delta: 圧縮の前に行の中で隣との差を取る（滑らかな画ほど縮む）。src/videoprocess/xfer_codec.h
+    QString decode_xfer_codec = "none";
+    bool    decode_xfer_delta = true;
     bool histgram_flag  = false;
 
     // Playback
@@ -286,6 +291,9 @@ struct DecodeInfo {
     QString decode_mode="";
     // タイルごとのデコード GPU（CUDA デバイス番号。nvgpudecode が開くときに決める。CPU デコードは空）
     std::vector<int> tile_gpu;
+    // デコードに使う GPU の NVDEC のエンジン数（このコーデック・ビット深度で使える基数。cuvidGetDecoderCaps の
+    //   nNumNVDECs）。GPU 番号 → 基数。取れない（古いドライバ）GPU は入れない。性能 HUD のデコード上限の目安に使う
+    std::map<int, int> gpu_nvdecs;
 
     //時間
     int max_hour = 0;

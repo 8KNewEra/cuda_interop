@@ -197,6 +197,35 @@ Item {
                           : "タイル分割の動画を開いているときは、ここにタイルの割り振りの見込みが出ます。設定は次にファイルを開いたときから使われます。"
                     color: Theme.faint; font.family: Theme.font; font.pixelSize: 12
                 }
+
+                Rectangle { Layout.fillWidth: true; Layout.topMargin: 4; height: 1; color: Theme.borderSoft }
+
+                // 転送の圧縮（試験的。nvCOMP）。別 GPU でデコードしたタイルを圧縮してから表示用 GPU へ送る
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    Text { text: "転送の圧縮（試験的）"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 13; Layout.preferredWidth: 160 }
+                    Select {
+                        Layout.fillWidth: true
+                        tip: "別の GPU でデコードしたタイルを、圧縮してから表示用の GPU へ送ります。GPU 間の経路が細い構成で効果があります。性能 HUD の「圧縮率」「転送」「展開」で効果を確かめ、効果がなければ「なし」に戻してください。"
+                        options: decodeSettings.xferCodecOptions
+                        value: decodeSettings.xferCodec
+                        onPicked: (v) => decodeSettings.setXferCodec(v)
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    visible: decodeSettings.xferCodec !== "none"
+                    Text { text: "差分（前処理）"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 13; Layout.preferredWidth: 160 }
+                    Select {
+                        Layout.fillWidth: true
+                        tip: "圧縮の前に、行の中で隣の画素との差に置き換えます。なめらかな映像ほど縮みやすくなります。"
+                        options: [{ text: "あり", value: true }, { text: "なし", value: false }]
+                        value: decodeSettings.xferDelta
+                        onPicked: (v) => decodeSettings.setXferDelta(v)
+                    }
+                }
             }
 
             // フッター
