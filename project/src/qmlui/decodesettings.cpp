@@ -3,6 +3,7 @@
 #include "src/videoprocess/decode_gpu_map.h"
 
 #include <QVariantMap>
+#include <set>
 
 DecodeSettings::DecodeSettings(QObject* parent)
     : QObject(parent)
@@ -25,22 +26,43 @@ static std::string codecKey(const QString& c)
     return std::string();
 }
 
-QVariantList DecodeSettings::gpus() const
+// g_GPUInfo に編集中の重みを当てたもの（割り振りの見込み用）
+static std::vector<GPUInfo> editedGpus(const std::map<int, int>& weights)
 {
-    // 編集中の重みで今のファイルの割り振りを見込む
     std::vector<GPUInfo> tmp = g_GPUInfo;
     for (GPUInfo& g : tmp) {
-        auto it = weights_.find(g.deviceID);
-        if (it != weights_.end()) g.decode_weight = it->second;
+        auto it = weights.find(g.deviceID);
+        if (it != weights.end()) g.decode_weight = it->second;
     }
+    return tmp;
+}
+
+bool DecodeSettings::multiGpu() const
+{
+    // 開いているファイルがあればその割り振りで、無ければ「重みが 1 以上でデコードできる GPU」の数で判断する
+    const std::vector<GPUInfo> tmp = editedGpus(weights_);
+    const std::string key = codecKey(fileCodec_);
+    const char* codec = key.empty() ? nullptr : key.c_str();
+    std::set<int> used;
+    if (fileTiles_ > 0) {
+        for (int id : assignDecodeTiles(fileTiles_, codec, tmp)) used.insert(id);
+    } else {
+        for (const GPUInfo& g : tmp)
+            if (effectiveDecodeWeight(g) > 0 && gpuCanDecode(g, codec)) used.insert(g.deviceID);
+    }
+    return used.size() > 1;
+}
+
+QVariantList DecodeSettings::gpus() const
+{
+    const std::vector<GPUInfo> tmp = editedGpus(weights_);
     const std::string key = codecKey(fileCodec_);
     const char* codec = key.empty() ? nullptr : key.c_str();
     std::map<int, int> tiles;
     if (fileTiles_ > 0)
         for (int id : assignDecodeTiles(fileTiles_, codec, tmp)) tiles[id]++;
 
-    // 表示用 GPU を先頭に、残りは番号順
-    std::vector<const GPUInfo*> order;
+    std::vector<const GPUInfo*> order;   // 表示用 GPU を先頭に、残りは番号順
     for (const GPUInfo& g : tmp) order.push_back(&g);
     std::stable_sort(order.begin(), order.end(), [](const GPUInfo* a, const GPUInfo* b) {
         const bool pa = a->deviceID == g_openglDeviceID, pb = b->deviceID == g_openglDeviceID;
@@ -66,9 +88,8 @@ QVariantList DecodeSettings::gpus() const
 
 QVariantList DecodeSettings::xferCodecOptions() const
 {
-    // 試験的。効果がなければ「なし」（従来の転送）に戻す
     auto opt = [](const char* t, const char* v) { return QVariantMap{ {"text", QString::fromUtf8(t)}, {"value", QString::fromUtf8(v)} }; };
-    return { opt("なし", "none"), opt("Cascaded", "cascaded"), opt("Bitcomp", "bitcomp"), opt("ANS", "ans") };
+    return { opt("なし", "none"), opt("ANS（推奨）", "ans"), opt("Cascaded", "cascaded"), opt("Bitcomp", "bitcomp") };
 }
 
 void DecodeSettings::setXferCodec(const QString& v)

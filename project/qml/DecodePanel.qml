@@ -2,10 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// デコード設定（マルチ GPU デコード）。画面全体に重ねるダイアログ（画像保存設定と同じ見た目）
-//   値は DecodeSettings（context property "decodeSettings"）が持つ
-//   GPU ごとの「デコードの重み」でタイルを按分する（decode_gpu_map.h）。0 の GPU はデコードに使わない
-//   デコーダはファイルを開くときに作るので、反映は次に開いたとき。「OK して開き直す」なら今の位置から開き直す
+// デコード設定（マルチ GPU デコード）。値は DecodeSettings（"decodeSettings"）。docs/MULTI_GPU_DECODE.md
 Item {
     id: root
 
@@ -107,8 +104,7 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
-                    text: "タイル分割された動画のタイルを、重みの比で複数の GPU に振り分けてデコードします（マルチ GPU デコード）。"
-                          + "重み 0 の GPU は使いません。表示に使っている GPU 以外でデコードしたタイルは、表示用の GPU へ転送します。"
+                    text: "タイルを重みの比で GPU に割り振ってデコードします。重み 0 の GPU は使いません。"
                     color: Theme.muted; font.family: Theme.font; font.pixelSize: 13
                     lineHeight: 1.25
                 }
@@ -125,7 +121,7 @@ Item {
                     HeadText { text: "重み"; Layout.preferredWidth: 150 }
                     HeadText { text: root.hasFile ? "このファイル" : ""; Layout.preferredWidth: 84; horizontalAlignment: Text.AlignRight }
 
-                    // 行（配列は変更のたびに作り直されるので、モデルは本数にして中身は index で読む）
+                    // 配列は変更のたびに作り直されるので、モデルは本数にして中身は index で読む
                     Repeater {
                         model: decodeSettings.gpus.length * 4
                         delegate: Item {
@@ -150,12 +146,11 @@ Item {
                                 }
                                 Text {
                                     text: "GPU " + cell.g.id + " · " + (cell.g.sm || "")
-                                          + (cell.g.canDecode === false ? " · このコーデックは非対応" : "")
+                                          + (cell.g.canDecode === false ? " · 非対応のコーデック" : "")
                                     color: cell.g.canDecode === false ? Theme.marker : Theme.faint
                                     font.family: Theme.font; font.pixelSize: 11
                                 }
                             }
-                            // NVDEC 使用率（開いた時点の値）
                             Text {
                                 visible: cell.col === 1
                                 anchors.fill: parent
@@ -174,7 +169,6 @@ Item {
                                 enabled: cell.g.canDecode !== false
                                 onMoved: (v) => decodeSettings.setWeight(cell.g.id, v)
                             }
-                            // このファイルで受け持つタイル数の見込み
                             Text {
                                 visible: cell.col === 3
                                 anchors.fill: parent
@@ -193,34 +187,40 @@ Item {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
                     text: root.hasFile
-                          ? "今のファイルは " + decodeSettings.fileTiles + " タイルです。設定はファイルを開き直すと反映されます。"
-                          : "タイル分割の動画を開いているときは、ここにタイルの割り振りの見込みが出ます。設定は次にファイルを開いたときから使われます。"
+                          ? "このファイル: " + decodeSettings.fileTiles + " タイル。開き直すと反映されます。"
+                          : "次に開いたファイルから反映されます。"
                     color: Theme.faint; font.family: Theme.font; font.pixelSize: 12
                 }
 
                 Rectangle { Layout.fillWidth: true; Layout.topMargin: 4; height: 1; color: Theme.borderSoft }
 
-                // 転送の圧縮（試験的。nvCOMP）。別 GPU でデコードしたタイルを圧縮してから表示用 GPU へ送る
+                // 転送の圧縮（GPU が 1 枚なら転送が無いので「なし」表示で触れない。保存値はそのまま）
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 12
-                    Text { text: "転送の圧縮（試験的）"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 13; Layout.preferredWidth: 160 }
+                    Text { text: "転送の圧縮"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 13; Layout.preferredWidth: 120 }
                     Select {
                         Layout.fillWidth: true
-                        tip: "別の GPU でデコードしたタイルを、圧縮してから表示用の GPU へ送ります。GPU 間の経路が細い構成で効果があります。性能 HUD の「圧縮率」「転送」「展開」で効果を確かめ、効果がなければ「なし」に戻してください。"
+                        enabled: decodeSettings.multiGpu
+                        tip: "別の GPU から表示用 GPU へ送るタイルを圧縮します（可逆）。"
                         options: decodeSettings.xferCodecOptions
-                        value: decodeSettings.xferCodec
+                        value: decodeSettings.multiGpu ? decodeSettings.xferCodec : "none"
                         onPicked: (v) => decodeSettings.setXferCodec(v)
                     }
+                }
+                Text {
+                    visible: !decodeSettings.multiGpu
+                    text: "GPU が 1 枚のときは転送しないので使いません。"
+                    color: Theme.faint; font.family: Theme.font; font.pixelSize: 12
                 }
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 12
-                    visible: decodeSettings.xferCodec !== "none"
-                    Text { text: "差分（前処理）"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 13; Layout.preferredWidth: 160 }
+                    visible: decodeSettings.multiGpu && decodeSettings.xferCodec !== "none"
+                    Text { text: "差分"; color: Theme.muted; font.family: Theme.font; font.pixelSize: 13; Layout.preferredWidth: 120 }
                     Select {
                         Layout.fillWidth: true
-                        tip: "圧縮の前に、行の中で隣の画素との差に置き換えます。なめらかな映像ほど縮みやすくなります。"
+                        tip: "左隣との差を取ってから圧縮します。圧縮率が上がります。"
                         options: [{ text: "あり", value: true }, { text: "なし", value: false }]
                         value: decodeSettings.xferDelta
                         onPicked: (v) => decodeSettings.setXferDelta(v)

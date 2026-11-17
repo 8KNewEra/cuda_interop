@@ -25,9 +25,8 @@ struct AppSettings
     // Info
     bool videoInfo_flag = false;
     bool perf_hud = false;              // 性能 HUD（QML 版。映像の左下に処理段ごとの時間）
-    // マルチ GPU デコードの転送の圧縮（試験的。nvCOMP）: "none" / "cascaded" / "bitcomp" / "ans"
-    //   decode_xfer_delta: 圧縮の前に行の中で隣との差を取る（滑らかな画ほど縮む）。src/videoprocess/xfer_codec.h
-    QString decode_xfer_codec = "none";
+    // マルチ GPU デコードの転送の圧縮: "none" / "ans" / "cascaded" / "bitcomp"、差分（docs/MULTI_GPU_DECODE.md）
+    QString decode_xfer_codec = "ans";
     bool    decode_xfer_delta = true;
     bool histgram_flag  = false;
 
@@ -291,8 +290,7 @@ struct DecodeInfo {
     QString decode_mode="";
     // タイルごとのデコード GPU（CUDA デバイス番号。nvgpudecode が開くときに決める。CPU デコードは空）
     std::vector<int> tile_gpu;
-    // デコードに使う GPU の NVDEC のエンジン数（このコーデック・ビット深度で使える基数。cuvidGetDecoderCaps の
-    //   nNumNVDECs）。GPU 番号 → 基数。取れない（古いドライバ）GPU は入れない。性能 HUD のデコード上限の目安に使う
+    // GPU 番号 → NVDEC の基数（このコーデックで使える数。取れない GPU は入れない）。性能 HUD の上限の目安用
     std::map<int, int> gpu_nvdecs;
 
     //時間
@@ -487,8 +485,7 @@ struct GPUInfo {
     int tile_weight = 10;
     int backup_tile_weight = -1;
     bool av1_forced_disabled = false;
-    //デコード設定用（マルチ GPU デコード。0..10、-1 = 未設定 = 表示用 GPU だけ 10）
-    //   使い方は src/videoprocess/decode_gpu_map.h（assignDecodeTiles）
+    //デコード設定用（マルチ GPU デコードの重み 0..10、-1 = 未設定 = 表示用 GPU だけ 10。decode_gpu_map.h）
     int decode_weight = -1;
 };
 

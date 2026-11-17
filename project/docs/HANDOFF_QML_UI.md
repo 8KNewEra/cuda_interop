@@ -173,8 +173,14 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
   画像処理 / 表示ツール = GL のタイムスタンプ（`glQueryCounter`）、ヒストグラム = CPU 実時間（同期するため）、
   描画スレッド = `upload` 全体の CPU 時間、フレーム間隔 = `upload` の呼ばれた間隔。GPU の結果は 4 フレームのリングで待たずに回収。
 - `PlayerController::perf` は 0.25 秒ごと（`perfTimer_`）。持ち時間 = 1000 / (fps × 再生速度)。ON/OFF は ini `Info/perf_hud`。
-- デコードの時間は「待ち」（NVDEC は先読みで並行）なので限界は分からない。NVDEC 使用率から上限 fps の目安（今の fps ÷ 使用率）を出す。
-  フレーム間隔の色は持ち時間の 5% 超えから（再生は fps に合わせて進むので、間隔 ≒ 持ち時間が正常）。
+  更新は安定して順方向に再生している間（`render_active_` かつ逆再生でない）だけ。シーク・コマ送り・一時停止・逆再生の間は
+  直前の値のまま（`frozen`、見出しに「停止中 ·」）。段が出たり消えたりしてちらつくため。ファイルを閉じたら消す。
+- デコードの時間は「待ち」（NVDEC は先読みで並行）なので限界は分からない。NVDEC の使用率と基数から上限 fps の目安を出す。
+  マルチ GPU デコードの行（圧縮 / 転送 / 展開、デコード待ちの内訳、上限の計算）は `docs/MULTI_GPU_DECODE.md` の 8。
+  内訳は普段は畳む（行クリックで ▸ / ▾）。
+- 列幅は TextMetrics でその環境の文字幅から決め、HUD の幅も広がる（最小 320。環境によって文字がはみ出たため）。
+- NVDEC 使用率（`GPUInfo::Decoder_Usage`）は NVML と PDH（GPU Engine の VideoDecode）の大きい方（RTX 2070 で NVML が低く出たため）。
+- フレーム間隔の色は持ち時間の 5% 超えから（再生は fps に合わせて進むので、間隔 ≒ 持ち時間が正常）。
 - 実測（RTX 4080 SUPER、16K 8bit 4:2:0 30fps）: GPU の段の合計 約 2.6ms、描画スレッド 約 4.9ms、NVDEC 80%（上限 約 37fps）→ 16K の高 fps はデコードが限界
 - inline component（Stage）は外側の id を参照しないよう、持ち時間を `budget` で渡している。
 
@@ -183,29 +189,13 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
 - 「クリップボードにコピー」「名前を付けて保存…」（`<元の名前>_info.txt`）。
 
 ## 5.5 マルチ GPU デコード（DecodePanel / DecodeSettings、ファイル → デコード設定…）
-- GPU ごとの重み `GPUInfo::decode_weight`（0..10、-1 = 未設定 = 表示用 GPU だけ 10。ini の GPU グループ `decode_weight`）。
-  割り振りは `src/videoprocess/decode_gpu_map.h` の `assignDecodeTiles`（最大剰余法、表示用 GPU のタイルが先頭、
-  そのコーデックを NVDEC で扱えない GPU は外す: AV1 は sm_86 以降）。結果は `VideoInfo.tile_gpu`、動画情報の Decode Mode に `Decode GPU: 0×3 + 1×1`。
-- `nvgpudecode`: 別 GPU のタイルはその GPU の FFmpeg デバイスコンテキスト（`primary_ctx`、`remote_hw_ctx`）で cuvid を開く。
-  `publish_decode_frame` → `transfer_remote` で「その GPU → メインメモリ（ページ固定、`cudaHostAllocPortable`、`kStage`=3 枠）→
-  表示用 GPU のリング（`VideoDecorder::r_y / r_uv`、hw_frames と同じ段数）」の 2 段で送る。
-  D2H はその GPU の既定ストリーム（cuvid の出力コピーの後）、H2D と `decode_ready` は表示用 GPU の非ブロッキング `xfer_stream_`
-  （表示用 GPU のタイルの完了 `local_ev_` と D2H の完了を待ってから）。同じ中継枠を次に使う前に前回の H2D 完了をその GPU に待たせる。
+詳細は **`docs/MULTI_GPU_DECODE.md`**（流れ・同期の条件・HUD の値・実測・試して戻したもの）。要点:
+- タイルを GPU ごとの重みで割り振り（`decode_gpu_map.h`）、別 GPU のタイルは表示用 GPU のリング `r_y / r_uv` へ送ってから GUI に渡す。
   GUI 側は従来どおり `decode_ready` だけ待つ。
-  最初は `cudaMemcpy3DPeerAsync`（P2P 無しはドライバがメインメモリ経由）だったが、RTX 4080 SUPER + RTX 2070 で約 2.4GB/s で頭打ち
-  （16K 4 タイル: 3:1 で 48fps、2:2 で 23fps）だったので 2 段に変えた。
-- 圧縮転送（試験的、nvCOMP 6.0 = `3rdparty/nvcomp`、`src/videoprocess/xfer_codec.*`、`cuda_kernels/xfer_compress.cu`）:
-  設定「転送の圧縮」（`g_AppSettings.decode_xfer_codec` = none / cascaded / bitcomp / ans、`decode_xfer_delta`、ini `Decode/`）。
-  別 GPU ごとに `XferCodec`。デコード側 GPU（既定ストリーム）で `xfer_fwd`（pitched → 詰めた並び、Y / UV を別の面に、行内の差分 → ジグザグ、
-  P010 は >>6）→ 64KB チャンクで nvCOMP 圧縮 → `xfer_pack`（チャンクを詰めてページ固定・マップ済みのメインメモリへカーネルが直接書く。
-  CPU は圧縮後の大きさを知らずに済む）。表示用 GPU（`xfer_stream_`）で `xfer_fetch`（メインメモリ → GPU、チャンク表も作る）→ 展開 →
-  `xfer_inv`（差分を戻して r_y / r_uv へ。行ごとのブロック内スキャン）。枠は kStage=3、順序は 2 段コピーと同じイベント。
-  初期化に失敗したらそのファイルの間は圧縮なしに戻す。HUD は「転送」= 圧縮 + 送出（実効 GB/s = 元の大きさ ÷ 時間）、「展開」、圧縮率。
-  未検証（実機での効果はこれから）。12bit 素材（P016）は >>6 で下位 2bit が落ちる（表示も 10bit 扱いなので実害なし）。
-- 設定はファイルを開くときに読む。「OK して開き直す」は `PlayerController::reopenForDecodeSettings`（開き直して `reopen_frame_` へ高精度シーク）。
-- 性能 HUD: `perf.nvdecs`（デコードに使っている GPU ごとの NVDEC）、上限の目安は最大の使用率から。
-  「転送」= D2H の時間（その GPU の CUDA イベント、`decode_thread::transfer_time_ms`）と速度 GB/s。マルチ GPU デコードのときだけ表示。
-- 実測の前提（RTX 4080 SUPER 単体、16K 8bit 30fps）: NVDEC 80%、2 倍速で 37fps 頭打ち → 60fps にはデコードの分担が必要。サブは RTX 2070（Turing: AV1 不可）。
+- 転送は圧縮なし（メインメモリ経由の 2 段コピー）か、nvCOMP の圧縮転送（`XferCodec`、既定 ANS・差分あり）。
+  使う GPU が 1 枚なら設定画面の圧縮は「なし」表示で触れない。
+- タイル数の目安 = GPU の数 × NVDEC の基数（1 タイル = NVDEC 1 基）。RTX 5000 Ada ×4 で 8 タイル・約 205〜215fps。
+- デコードの先行（順方向の通常再生だけ 1 コマ先へ）。`CUDA_VIEWER_DECODE_AHEAD=0` で無効。
 
 ## 6. エンコード設定（EncodePanel / EncodeController）
 - 開いている間は後ろの画面を 1 枚のテクスチャに焼いて固定（`ShaderEffectSource live:false, hideSource`）。
@@ -268,7 +258,8 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
 - スポイトのピン留め・記録
 - ズーム表示を「1 画素 = ○px」に
 - ベンチマークモード（性能 HUD は実装済み。一定区間の平均・最悪値・パーセンタイルを CSV に記録する機能は未）
-- マルチ GPU デコードの続き（実装済みは 5.5。残り: 圧縮転送（試験実装済み）の実測と、効果がなければ削除）
+- マルチ GPU デコードの続き（実装済みは 5.5。残り: タイルの割り振りをビットレートで均す（NVDEC の偏り対策）、
+  デコード設定で「受け持ちタイル数 < NVDEC の基数」の GPU に注意を出す、高 fps 再生時だけ先行 2 フレーム（リング 8 段が必要）
 - ディザ付きの画面表示（表示は 10bit 化済み。8bit の色バッファしか取れない環境向け。8bit 化して保存・書き出すときのディザは対応済み。色の行列は BT.709 に統一済み。HDR の PQ / HLG 引き継ぎは非対応の方針）
 - 2 ファイル比較
 - Widgets 版との機能差の解消

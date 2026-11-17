@@ -3,7 +3,7 @@
 #include <QDebug>
 #include <algorithm>
 
-#include "nvcomp/cascaded.h"   // 3rdparty/nvcomp/include（NVIDIA nvCOMP SDK）
+#include "nvcomp/cascaded.h"   // 3rdparty/nvcomp
 #include "nvcomp/bitcomp.h"
 #include "nvcomp/ans.h"
 
@@ -21,8 +21,7 @@ extern "C" cudaError_t xfer_fetch(const uint64_t* hostHdr, uint64_t* devHdr, int
 namespace {
 size_t align16(size_t v) { return (v + 15) & ~size_t(15); }
 
-// ---- アルゴリズムごとの nvCOMP の呼び分け ----
-//   データ型: NV12 は 1 バイト、P010 は 2 バイト（ANS はバイト列のみ）
+// nvCOMP のオプション（データ型: NV12 = 1 バイト、P010 = 2 バイト。ANS はバイト列のみ）
 nvcompBatchedCascadedCompressOpts_t cascadedOpts(int bps)
 {
     nvcompBatchedCascadedCompressOpts_t o = nvcompBatchedCascadedCompressDefaultOpts;
@@ -32,7 +31,7 @@ nvcompBatchedCascadedCompressOpts_t cascadedOpts(int bps)
 nvcompBatchedCascadedDecompressOpts_t cascadedDOpts(int bps)
 {
     nvcompBatchedCascadedDecompressOpts_t o = nvcompBatchedCascadedDecompressDefaultOpts;
-    o.common_opts = cascadedOpts(bps).common_opts;   // 圧縮と同じ条件に絞る（展開が速くなる）
+    o.common_opts = cascadedOpts(bps).common_opts;
     return o;
 }
 nvcompBatchedBitcompCompressOpts_t bitcompOpts(int bps)
@@ -118,7 +117,7 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
     bool ok = true;
     auto chk = [&](cudaError_t e) { if (e != cudaSuccess) ok = false; };
 
-    // ---- デコード側 GPU ----
+    // ---- 別 GPU ----
     cudaSetDevice(src_);
     chk(cudaMalloc(&sInBytes_, sizeof(size_t) * n_));
     if (ok) chk(cudaMemcpy(sInBytes_, chunkBytes.data(), sizeof(size_t) * n_, cudaMemcpyHostToDevice));
@@ -150,7 +149,7 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
         chk(cudaEventCreate(&cmpEnd_[s])); chk(cudaEventCreate(&sendBeg_[s]));
     }
 
-    // ---- メインメモリ（Portable: どの GPU からも使える、Mapped: カーネルから直接読み書きできる）----
+    // ---- メインメモリ（Portable: どの GPU からも使える、Mapped: カーネルから直接書ける）----
     hHdr_.assign(nStage_, nullptr); hData_.assign(nStage_, nullptr);
     for (int s = 0; s < nStage_; s++) {
         chk(cudaHostAlloc((void**)&hHdr_[s], sizeof(uint64_t) * (2 + 2 * size_t(n_)), cudaHostAllocPortable | cudaHostAllocMapped));
@@ -202,11 +201,9 @@ bool XferCodec::encode(int s, const std::vector<const AVFrame*>& frames, cudaEve
     bool ok = true;
     SrcSet& k = sets_[nextSet_];
     nextSet_ = (nextSet_ + 1) % kSets;
-    // この組の前回（kSets 個前のフレーム）の完了を既定ストリームに待たせる。
-    //   以降に積まれる cuvid の出力コピーが、そのフレームの面を上書きする前に読み終えていることの保証
-    //   （面はリングが一周するまで残るので、実際にはまず待たない）
+    // 以降の cuvid の出力コピーが、この組の前回のフレームの面を読み終える前に上書きしないための保険
     if (k.used) cudaStreamWaitEvent(0, k.done, 0);
-    // 既定ストリーム = cuvid の出力コピーの後。ここからは組のストリームで進める
+    // 既定ストリーム（cuvid の出力コピー）の後から、組のストリームで進める
     cudaEventRecord(k.ready, 0);
     cudaStreamWaitEvent(k.stream, k.ready, 0);
     cudaStream_t cs = k.stream;
@@ -255,8 +252,7 @@ bool XferCodec::decode(int s, cudaStream_t st, const std::vector<Dst>& dst)
     cudaSetDevice(dst_);
     bool ok = true;
     cudaEventRecord(decBeg_[s], st);
-    // 取り込み: 圧縮後の大きさの見込み（少し前のフレームの実績 × 1.25 + 1MB）までは DMA、超えた分はカーネル
-    //   最初のフレームは実績が無いので全体の 1/4 を見込む（外れても正しさは変わらない。速さだけ）
+    // 取り込み: 見込み（直近の実績 × 1.25 + 1MB。最初は全体の 1/4）までは DMA、超えた分はカーネル。外れても速さだけの問題
     const size_t cap = maxComp_ * size_t(n_);
     const size_t est = lastComp_ ? lastComp_ + lastComp_ / 4 + (size_t(1) << 20) : cap / 4;
     ok = xfer_fetch(hHdr_[s], dHdr_, n_, hData_[s], dData_, std::min(est, cap),

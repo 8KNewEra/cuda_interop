@@ -1,19 +1,6 @@
-// ==============================================================
-// マルチ GPU デコードの圧縮転送（src/videoprocess/xfer_codec.*）で使うカーネル
-//
-//   流れ（1 フレーム・別 GPU のタイルごと）
-//     デコード側 GPU : xfer_fwd（NV12 / P010 → 詰めた並び。差分・ジグザグ）→ nvCOMP で圧縮
-//                     → xfer_pack（圧縮チャンクを詰めて、メインメモリ（ページ固定・マップ済み）へ直接書く。
-//                       圧縮後の実際のバイト数だけが PCIe を流れる）
-//     表示用 GPU     : xfer_fetch（メインメモリ → GPU。チャンクの位置と大きさも作る）→ nvCOMP で展開
-//                     → xfer_inv（差分を戻して NV12 / P010 の転送先へ）
-//   CPU は待たない（圧縮後の大きさはメインメモリ上のヘッダで受け渡す）
-//
-//   差分（delta）: 行の中で LAG 個左の値との差（Y は 1、UV は U/V が交互なので 2）。差はジグザグ
-//     （0,-1,1,-2.. → 0,1,2,3..）にして小さい正の数にする。滑らかな画ほど 0 付近に集まり縮みやすい
-//   P010 は値が上位 10bit に入っているので、>>6 してから扱う（戻すときに <<6。下位 6bit は常に 0）
-//   起動口はこのファイルの extern "C" のホスト関数（nvgpudecode / xfer_codec.cpp から呼ぶ）
-// ==============================================================
+// マルチ GPU デコードの圧縮転送のカーネル（src/videoprocess/xfer_codec.* から使う。docs/MULTI_GPU_DECODE.md）
+//   差分: 行の中で LAG 個左との差（Y = 1、UV = 2）をジグザグ（0,-1,1,-2.. → 0,1,2,3..）にする。可逆（bits ビットで巡回）
+//   P010 は >>6 して 10bit で扱い、戻すときに <<6
 #include <cuda_runtime.h>
 #include <stdint.h>
 
@@ -136,9 +123,8 @@ __global__ void xfer_scan_kernel(const size_t* compBytes, int n, uint64_t* hdr)
     hdr[1] = off;
 }
 
-// 圧縮チャンクをデータ域へ詰める（1 ブロック 1 チャンク、16 バイト単位。読む側も 16 バイト単位で余分を読む）
-//   ブロック数は少なめ（kPackBlocks）にしてチャンクを順に回る。書き出しは PCIe の速さで決まるので、
-//   SM を埋めないようにして、次のフレームの圧縮（別ストリーム）と並んで動けるようにする
+// 圧縮チャンクをメインメモリのデータ域へ詰める（16 バイト単位）。書き出しは PCIe で決まるので
+//   ブロック数を絞って SM を空け、次のフレームの圧縮（別ストリーム）と並べる
 __global__ void xfer_pack_kernel(const void* const* slots, const uint64_t* hdr, int n, uint8_t* data)
 {
     for (int b = blockIdx.x; b < n; b += gridDim.x) {
@@ -150,10 +136,7 @@ __global__ void xfer_pack_kernel(const void* const* slots, const uint64_t* hdr, 
     }
 }
 
-// メインメモリ → 表示用 GPU の残り。nvCOMP の展開に渡すチャンクの位置と大きさも作る
-//   データの先頭 copied バイトは DMA（cudaMemcpyAsync。コピーエンジンなので SM を使わない）で済んでいる。
-//   見込みを超えた分（copied より後ろ）だけ、カーネルがメインメモリから直接読む（めったに無い）
-//   hdr は表示用 GPU に DMA で写したヘッダ
+// 先頭 copied バイトは DMA 済み。超えた分だけメインメモリから読み、展開に渡すチャンク表を作る
 __global__ void xfer_fetch_kernel(const uint64_t* hdr, int n, const uint8_t* hostData, uint8_t* devData,
                                   uint64_t copied, const void** compPtrs, size_t* compBytes)
 {
@@ -206,9 +189,7 @@ extern "C" cudaError_t xfer_inv(const uint8_t* src, uint8_t* dst, size_t dstPitc
     return cudaGetLastError();
 }
 
-// devHdr: デコード側 GPU のヘッダ（位置を決める作業用）、hostHdr / hostData: メインメモリ（ページ固定・マップ済み）
-//   データはカーネルがメインメモリへ直接書く（圧縮後の大きさを CPU が知らなくても、実際のバイト数だけ PCIe を流れる）
-//   ヘッダは小さいので DMA でコピーする
+// データはカーネルがメインメモリへ直接書く（CPU が大きさを知らなくても実際のバイト数だけ流れる）。ヘッダは DMA
 extern "C" cudaError_t xfer_pack(const void* const* slots, const size_t* compBytes, int n,
                                  uint64_t* devHdr, uint64_t* hostHdr, uint8_t* hostData, cudaStream_t st)
 {
@@ -219,9 +200,7 @@ extern "C" cudaError_t xfer_pack(const void* const* slots, const size_t* compByt
     return cudaGetLastError();
 }
 
-// hostHdr / hostData: メインメモリ（ページ固定）、devHdr / devData: 表示用 GPU
-//   ヘッダと、データの先頭 copyBytes バイト（圧縮後の大きさの見込み）は DMA で写す。
-//   CPU は今のフレームの圧縮後の大きさを知らない（待たない）ので、見込みを超えた分はカーネルが拾う
+// ヘッダと先頭 copyBytes バイト（見込み）は DMA、超えた分はカーネルが拾う
 extern "C" cudaError_t xfer_fetch(const uint64_t* hostHdr, uint64_t* devHdr, int n, const uint8_t* hostData,
                                   uint8_t* devData, size_t copyBytes, const void** compPtrs, size_t* compBytes,
                                   cudaStream_t st)
