@@ -1,0 +1,109 @@
+#include "src/qmlui/decodesettings.h"
+#include "src/main/__global__.h"
+#include "src/videoprocess/decode_gpu_map.h"
+
+#include <QVariantMap>
+
+DecodeSettings::DecodeSettings(QObject* parent)
+    : QObject(parent)
+{
+}
+
+// GPU 名から先頭の "NVIDIA " を省く（他の画面と同じ）
+static QString shortGpuName(QString n)
+{
+    if (n.startsWith("NVIDIA ")) n.remove(0, 7);
+    return n;
+}
+
+// 見込みに使うコーデック名（decode_gpu_map.h の gpuCanDecode と同じ名前に）
+static std::string codecKey(const QString& c)
+{
+    if (c.contains("av1"))  return "av1";
+    if (c.contains("hevc")) return "hevc";
+    if (c.contains("h264")) return "h264";
+    return std::string();
+}
+
+QVariantList DecodeSettings::gpus() const
+{
+    // 編集中の重みで今のファイルの割り振りを見込む
+    std::vector<GPUInfo> tmp = g_GPUInfo;
+    for (GPUInfo& g : tmp) {
+        auto it = weights_.find(g.deviceID);
+        if (it != weights_.end()) g.decode_weight = it->second;
+    }
+    const std::string key = codecKey(fileCodec_);
+    const char* codec = key.empty() ? nullptr : key.c_str();
+    std::map<int, int> tiles;
+    if (fileTiles_ > 0)
+        for (int id : assignDecodeTiles(fileTiles_, codec, tmp)) tiles[id]++;
+
+    // 表示用 GPU を先頭に、残りは番号順
+    std::vector<const GPUInfo*> order;
+    for (const GPUInfo& g : tmp) order.push_back(&g);
+    std::stable_sort(order.begin(), order.end(), [](const GPUInfo* a, const GPUInfo* b) {
+        const bool pa = a->deviceID == g_openglDeviceID, pb = b->deviceID == g_openglDeviceID;
+        if (pa != pb) return pa;
+        return a->deviceID < b->deviceID;
+    });
+
+    QVariantList list;
+    for (const GPUInfo* g : order) {
+        QVariantMap m;
+        m["id"]        = g->deviceID;
+        m["name"]      = shortGpuName(g->deviceName);
+        m["sm"]        = QString("sm_%1%2").arg(g->CC_major).arg(g->CC_minor);
+        m["weight"]    = effectiveDecodeWeight(*g);
+        m["canDecode"] = gpuCanDecode(*g, codec);
+        m["primary"]   = (g->deviceID == g_openglDeviceID);
+        m["dec"]       = g->Decoder_Usage;
+        m["tiles"]     = fileTiles_ > 0 ? tiles[g->deviceID] : -1;
+        list << m;
+    }
+    return list;
+}
+
+bool DecodeSettings::dirty() const
+{
+    for (const GPUInfo& g : g_GPUInfo) {
+        auto it = weights_.find(g.deviceID);
+        if (it != weights_.end() && it->second != effectiveDecodeWeight(g)) return true;
+    }
+    return false;
+}
+
+void DecodeSettings::open(int tiles, const QString& codec)
+{
+    weights_.clear();
+    for (const GPUInfo& g : g_GPUInfo) weights_[g.deviceID] = effectiveDecodeWeight(g);
+    fileTiles_ = tiles;
+    fileCodec_ = codec;
+    emit changed();
+    emit opened();
+}
+
+void DecodeSettings::setWeight(int deviceId, int weight)
+{
+    weight = qBound(0, weight, 10);
+    auto it = weights_.find(deviceId);
+    if (it == weights_.end() || it->second == weight) return;
+    it->second = weight;
+    emit changed();
+}
+
+void DecodeSettings::apply(bool reopen)
+{
+    const bool wasDirty = dirty();
+    for (GPUInfo& g : g_GPUInfo) {
+        auto it = weights_.find(g.deviceID);
+        if (it != weights_.end()) g.decode_weight = it->second;
+    }
+    emit closed();
+    if (reopen && wasDirty) emit reopenRequested();
+}
+
+void DecodeSettings::cancel()
+{
+    emit closed();
+}

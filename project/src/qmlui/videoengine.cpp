@@ -64,6 +64,7 @@ VideoEngine::~VideoEngine()
     }
 
     const bool current = makeCurrent();
+    perf_.destroy(current ? this : nullptr);   // GL のクエリと CUDA のイベント
 
     // surface / texture object は unregister より先に破棄する
     inputSurfRetire.destroy();
@@ -427,6 +428,9 @@ void VideoEngine::upload(const VideoFrame& Frame)
         return;
     }
 
+    // 性能 HUD: ここから upload の終わりまでを 1 フレームとして測る（OFF なら何もしない）
+    perf_.frameBegin(this);
+
     // in-flight クランプ（K フレーム前の GPU 処理が終わるまで投入しない）
     const int fdIdx = frameDoneNo;
     if (frameDoneValid[fdIdx]) {
@@ -461,10 +465,12 @@ void VideoEngine::upload(const VideoFrame& Frame)
             cudaStreamWaitEvent(interop_stream, Frame.decode_ready, 0);
         }
 
+        perf_.convertBegin(interop_stream);   // 変換カーネルの時間（デコード完了待ちの後から測る）
         if (Frame.src_mode == SRC_NV12_TILE)
             rgba16_ ? p010ToSurface(Frame, surf) : mergeToSurface(Frame, surf);
         else
             yuvToSurface(Frame, surf);
+        perf_.convertEnd(interop_stream);
 
         inputSurfRetire.retire(si, interop_stream);
     }
@@ -480,6 +486,7 @@ void VideoEngine::upload(const VideoFrame& Frame)
     frameDoneNo = (fdIdx + 1) % kMaxFramesInFlight;
 
     FBO_Rendering(Frame);
+    perf_.frameEnd();
 
     fpsCount++;
     if (fpsTimer.elapsed() >= 1000) {
@@ -549,6 +556,7 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     }
     GLuint srcTex = inputTextureID;
     bool   toFbo  = ((nPass % 2) == 1);   // 最終パスが fbo に着地するように開始側を決める
+    perf_.glMark(this, PerfMeter::FilterBegin);
     for (int i = 0; i < nPass; i++) {
         glBindFramebuffer(GL_FRAMEBUFFER, toFbo ? fbo : tempfbo);
         glViewport(0, 0, width_, height_);
@@ -565,6 +573,7 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
         srcTex = toFbo ? fboTextureID : tempTextureID;
         toFbo  = !toFbo;
     }
+    perf_.glMark(this, PerfMeter::FilterEnd);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindVertexArray(0);
     glUseProgram(0);
@@ -588,8 +597,11 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
 
     // ---- 表示モード ----
     if (g_AppSettings.histgram_flag && cudaResource_hist_draw && cudaResource2) {
+        QElapsedTimer ht;
+        if (perf_.enabled()) ht.start();
         histgram_Analysys();
         drawHistogram();
+        if (perf_.enabled()) perf_.addHistogram(ht.nsecsElapsed() / 1e6);   // 集計は同期するので CPU の実時間
     } else if (hist_valid_) {
         hist_valid_ = false;
         emit histogramChanged();
@@ -605,6 +617,7 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     const bool seamOn = g_AppSettings.seamEnabled && g_AppSettings.seam_highlight && (tileCols * tileRows > 1)
                         && width_ % tileCols == 0 && height_ % tileRows == 0;
     if (zebraProg_ && (zebraOn || g_AppSettings.channelEnabled || compareOn || seamOn)) {
+        perf_.glMark(this, PerfMeter::DisplayBegin);
         glBindFramebuffer(GL_FRAMEBUFFER, tempfbo);
         glViewport(0, 0, width_, height_);
         glUseProgram(zebraProg_);
@@ -642,6 +655,7 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        perf_.glMark(this, PerfMeter::DisplayEnd);
         displayTex_ = tempTextureID;
     }
 
@@ -1631,12 +1645,14 @@ void VideoEngine::queryCudaGPUs()
             for (const auto& saved : savedGPUInfo) {
                 if (same(saved, cur)) {
                     cur.tile_weight = saved.tile_weight;
+                    cur.decode_weight = saved.decode_weight;   // マルチ GPU デコードの重み
                     cur.openglEnable = saved.openglEnable;
                     break;
                 }
             }
         } else {
             cur.tile_weight = 10;
+            cur.decode_weight = -1;   // 構成が変わったらデコードは表示用 GPU だけに戻す
             cur.openglEnable = false;
         }
         g_GPUInfo.push_back(cur);

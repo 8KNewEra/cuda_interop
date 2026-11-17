@@ -32,6 +32,18 @@ struct VideoDecorder {
     //   hw_frames を直接渡すと EAGAIN だけで取得済みのコマが消えるので、
     //   ここへ受けて成功時だけ move_ref する（receive_into_slot）。
     AVFrame* tmp_frame = nullptr;
+
+    // ★ マルチ GPU デコード（NVDEC 経路のみ。decode_gpu_map.h）
+    //   gpu: このタイルをデコードする GPU（CUDA デバイス番号。-1 = 表示用 GPU）
+    //   表示用 GPU 以外でデコードしたタイルは、表示用 GPU 上のこのリング（hw_frames と同じ段数）へ
+    //   転送してから GUI に渡す（nvgpudecode::copy_remote_tile）。解放は nvgpudecode のデストラクタ
+    int gpu = -1;
+    std::vector<uint8_t*> r_y, r_uv;
+    size_t r_ypitch = 0, r_uvpitch = 0;
+    // 転送の中継（メインメモリのページ固定バッファ。nvgpudecode::kStage 枠、幅 = 1 行のバイト数で詰める）
+    std::vector<uint8_t*> h_y, h_uv;
+    size_t h_rowBytes = 0;
+    int    h_rows = 0;
 };
 
 class decode_thread : public QObject {
@@ -53,6 +65,10 @@ signals:
     void decode_end();
     void decode_error(QString error);
     void heavy_process_signal(bool flag);
+    // 性能 HUD: 通常の再生で 1 フレームのデコードにかかった時間（get_decode_image の実時間。ms）
+    void decode_time_ms(double ms);
+    // 性能 HUD: マルチ GPU デコードで別 GPU からメインメモリへ送った時間（そのコマの分。ms）と速度（GB/s）
+    void transfer_time_ms(double ms, double gbps);
 
 public slots:
     void sliderPlayback(int value);

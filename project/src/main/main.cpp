@@ -5,6 +5,7 @@
 #include "src/qmlui/windowchrome.h"
 #include "src/qmlui/encodecontroller.h"
 #include "src/qmlui/screenshotsettings.h"
+#include "src/qmlui/decodesettings.h"
 #include "src/qmlui/displayprobe.h"
 #ifdef CUDA_VIEWER_DISPLAY_VERIFY
 #include "src/qmlui/displayverify.h"   // 検証用ビルドだけ（CONFIG+=display_verify）
@@ -104,6 +105,7 @@ static int runQmlUi(QApplication& app)
     qml.rootContext()->setContextProperty("chrome", &chrome);
     qml.rootContext()->setContextProperty("encoder", player.encoder());
     qml.rootContext()->setContextProperty("shotSettings", player.screenshotSettings());
+    qml.rootContext()->setContextProperty("decodeSettings", player.decodeSettings());
     qml.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (qml.rootObjects().isEmpty())
         return -1;

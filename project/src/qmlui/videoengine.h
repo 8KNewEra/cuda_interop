@@ -30,6 +30,7 @@
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "src/main/__global__.h"
 #include "src/main/glwidget.h"          // CudaObjRetireRing を共用する
+#include "src/qmlui/perfmeter.h"       // 性能 HUD の計測
 
 #include <QObject>
 #include <QOpenGLContext>
@@ -87,6 +88,9 @@ public:
     int encode_FrameCount = 0;
 
     double fps = 0.0;            // OpenGL Rendering FPS（表示用）
+
+    // 性能 HUD の計測（PlayerController が ON/OFF・集計の取り出し・デコード時間の追加をする）
+    PerfMeter& perf() { return perf_; }
 
     // ---- 表示側（Qt Quick のレンダリング中に呼ぶ）----
     bool    hasFrame()        const { return frame_valid_; }
@@ -279,6 +283,7 @@ private:
 
     QElapsedTimer fpsTimer;
     int fpsCount = 0;
+    PerfMeter perf_;             // 性能 HUD（OFF の間は何もしない）
 
     // ---- ヒストグラム ----
     cudaStream_t hist_stream = nullptr;

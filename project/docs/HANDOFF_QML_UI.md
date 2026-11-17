@@ -155,7 +155,7 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
 ## 5. 情報表示
 
 ### 動画情報（InfoPanel）
-- 基本情報: ファイル名・デコーダ・デコード方式・解像度・**Bit Depth**（例 `10bit 4:2:0 · PQ`）・**Process/Render Depth**（例 `16bit / 10bit`、`16bit / 10bit → 8bit`。前 = 処理 `engine_->highBitDepth()` で 16 / 8、後 = 表示 = min(色バッファ `displayBits_`, 素材 10 / 8)、→ はモニター出力 `outputBits_` がそれより浅いときだけ）・fps・総フレーム・現在フレーム・**Audio**（例 `AAC LC · 48 kHz · 6ch → 2ch`）。
+- 基本情報: ファイル名・デコーダ・デコード方式・解像度・**Bit Depth**（例 `10bit 4:2:0 · PQ`）・**Process/Render Depth**（例 `16bit / 10bit`、`16bit / 10bit → 8bit`。前 = 処理 `engine_->highBitDepth()` で 16 / 8、後 = 表示 = min(色バッファ `displayBits_`, 素材 10 / 8)、→ は画面に出るまでの一番浅い段（画面合成 `compBits_`〈合成を通るときだけ。全画面の直接出力・NVIDIA Deep color 有効なら数えない〉・モニター出力 `outputBits_`）がそれより浅いときだけ。値は `displayprobe.cpp`）・fps・総フレーム・現在フレーム・**Audio**（例 `AAC LC · 48 kHz · 6ch → 2ch`）。
   Bit Depth / Audio はファイルを開くとき `canUseGpuDecode` の中で一緒に読む（`srcPixel_` / `srcAudio_`）。
 - 描画フレームレート: 実測 / 目標と直近 60 秒の推移（破線 = 目標、一時停止中は線が途切れる）。
   このアプリはコマを落とさず遅れるだけなので、取りこぼし数は出していない。
@@ -166,9 +166,38 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
 - 推移の記録は QML 側だけで持つ。ファイルを閉じた・別ファイルを開いたらクリア。
 - 入りきらないときは中をスクロール（収まっているときはホイールを映像のズームに渡す）。
 
+### 性能 HUD（PerfHud.qml / PerfMeter、Ctrl+Shift+P・表示トグル「性能」）
+- 映像の左下。段ごとの時間（直近 0.25 秒の平均・最大 ms）とフレーム間隔の推移（直近 300 フレーム、破線 = 持ち時間）、NVDEC 使用率。
+- 計測は `src/qmlui/perfmeter.*`（`VideoEngine::perf()`）。OFF の間は各フックが即 return（GL クエリも CUDA イベントも出さない）。
+  デコード = `decode_thread::decode_time_ms`（get_decode_image の実時間）、変換 = interop_stream の CUDA イベント、
+  画像処理 / 表示ツール = GL のタイムスタンプ（`glQueryCounter`）、ヒストグラム = CPU 実時間（同期するため）、
+  描画スレッド = `upload` 全体の CPU 時間、フレーム間隔 = `upload` の呼ばれた間隔。GPU の結果は 4 フレームのリングで待たずに回収。
+- `PlayerController::perf` は 0.25 秒ごと（`perfTimer_`）。持ち時間 = 1000 / (fps × 再生速度)。ON/OFF は ini `Info/perf_hud`。
+- デコードの時間は「待ち」（NVDEC は先読みで並行）なので限界は分からない。NVDEC 使用率から上限 fps の目安（今の fps ÷ 使用率）を出す。
+  フレーム間隔の色は持ち時間の 5% 超えから（再生は fps に合わせて進むので、間隔 ≒ 持ち時間が正常）。
+- 実測（RTX 4080 SUPER、16K 8bit 4:2:0 30fps）: GPU の段の合計 約 2.6ms、描画スレッド 約 4.9ms、NVDEC 80%（上限 約 37fps）→ 16K の高 fps はデコードが限界
+- inline component（Stage）は外側の id を参照しないよう、持ち時間を `budget` で渡している。
+
 ### プロパティ（ファイル → プロパティ…、Ctrl+I）
 - MediaInfo 風のセクション表示（全般 / 映像 #n / 音声 #n / 字幕・その他）。値は選択してコピー可。
 - 「クリップボードにコピー」「名前を付けて保存…」（`<元の名前>_info.txt`）。
+
+## 5.5 マルチ GPU デコード（DecodePanel / DecodeSettings、ファイル → デコード設定…）
+- GPU ごとの重み `GPUInfo::decode_weight`（0..10、-1 = 未設定 = 表示用 GPU だけ 10。ini の GPU グループ `decode_weight`）。
+  割り振りは `src/videoprocess/decode_gpu_map.h` の `assignDecodeTiles`（最大剰余法、表示用 GPU のタイルが先頭、
+  そのコーデックを NVDEC で扱えない GPU は外す: AV1 は sm_86 以降）。結果は `VideoInfo.tile_gpu`、動画情報の Decode Mode に `Decode GPU: 0×3 + 1×1`。
+- `nvgpudecode`: 別 GPU のタイルはその GPU の FFmpeg デバイスコンテキスト（`primary_ctx`、`remote_hw_ctx`）で cuvid を開く。
+  `publish_decode_frame` → `transfer_remote` で「その GPU → メインメモリ（ページ固定、`cudaHostAllocPortable`、`kStage`=3 枠）→
+  表示用 GPU のリング（`VideoDecorder::r_y / r_uv`、hw_frames と同じ段数）」の 2 段で送る。
+  D2H はその GPU の既定ストリーム（cuvid の出力コピーの後）、H2D と `decode_ready` は表示用 GPU の非ブロッキング `xfer_stream_`
+  （表示用 GPU のタイルの完了 `local_ev_` と D2H の完了を待ってから）。同じ中継枠を次に使う前に前回の H2D 完了をその GPU に待たせる。
+  GUI 側は従来どおり `decode_ready` だけ待つ。
+  最初は `cudaMemcpy3DPeerAsync`（P2P 無しはドライバがメインメモリ経由）だったが、RTX 4080 SUPER + RTX 2070 で約 2.4GB/s で頭打ち
+  （16K 4 タイル: 3:1 で 48fps、2:2 で 23fps）だったので 2 段に変えた。
+- 設定はファイルを開くときに読む。「OK して開き直す」は `PlayerController::reopenForDecodeSettings`（開き直して `reopen_frame_` へ高精度シーク）。
+- 性能 HUD: `perf.nvdecs`（デコードに使っている GPU ごとの NVDEC）、上限の目安は最大の使用率から。
+  「転送」= D2H の時間（その GPU の CUDA イベント、`decode_thread::transfer_time_ms`）と速度 GB/s。マルチ GPU デコードのときだけ表示。
+- 実測の前提（RTX 4080 SUPER 単体、16K 8bit 30fps）: NVDEC 80%、2 倍速で 37fps 頭打ち → 60fps にはデコードの分担が必要。サブは RTX 2070（Turing: AV1 不可）。
 
 ## 6. エンコード設定（EncodePanel / EncodeController）
 - 開いている間は後ろの画面を 1 枚のテクスチャに焼いて固定（`ShaderEffectSource live:false, hideSource`）。
@@ -179,7 +208,7 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
 
 ## 7. 操作・状態
 
-- ショートカット: Space（再生 / 一時停止）、F11（映像だけ全画面）、Esc（全画面解除）、Ctrl+O（開く）、Ctrl+I（プロパティ）。
+- ショートカット: Space（再生 / 一時停止）、F11（映像だけ全画面）、Esc（全画面解除）、Ctrl+O（開く）、Ctrl+I（プロパティ）、Ctrl+Shift+P（性能 HUD）。
 - `win.busy` = ファイルを開いていて `controlsEnabled` が false（高精度シーク・画像保存などの重い処理中）。
   busy 中に使えるのは「ファイルを閉じる」とウィンドウ操作だけ。復帰しない場合も「ファイルを閉じる」で抜けられる。
 - `win.modalOpen`（エンコード設定・画像保存設定・プロパティ）中はヘッダーとショートカットを止める。
@@ -200,12 +229,38 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
 - 動作確認の代わりに手元で QML をモック（PySide6）で描画して確認してきた。新しめの Qt で入ったプロパティ
   （Icon.qml の `preferredRendererType` など）は古い Qt では読めないので注意。
 
-## 9. 今後の候補（未着手）
+## 9. 10bit 対応の実機検証（RTX 5000 Ada、2026-11）
+
+テスト動画（RGB 10bit、FFV1 / gbrp10le の AVI。CPU デコードの GBRP10 経路で RGB の値がそのまま入る＝リミテッドレンジ変換なし）:
+- `ramp10.avi`: 4096×4096、上半分 0..1023 の 1024 段（4px 幅）、下半分 256 段（16px 幅）。検証コマンドの段数を数える用
+- `ramp10_narrow.avi`: 4096×2160、256..358 の範囲で上半分 103 段（40px 幅）、下半分 26 段（160px 幅）。目で見比べる用
+- 作り方は §3 の「表示の 10bit 検証」の ffmpeg コマンド（narrow は式を `256+floor(X/40)` / `256+floor(X/160)*4` に）
+
+結果:
+| 条件 | ② 色バッファ | ③ 画面合成 | 見た目（narrow） | Process/Render Depth |
+|---|---|---|---|---|
+| 8bit 起動（`CUDA_VIEWER_DISPLAY_BITS=8`） | 256 段・8bit 外 0% | 256 | 上下同じ縞 | `16bit / 8bit` |
+| 10bit・全画面 | 1024 段・8bit 外 42%（3840px に縮小表示） | 読めない（直接出力でフレームが来ない） | 上が滑らか | `16bit / 10bit` |
+| 10bit・ウィンドウ・SDR・出力 10bpc | 10bit | 256（8bit 形式） | 上が滑らか（Deep color） | `16bit / 10bit` |
+| 10bit・ウィンドウ・自動カラー管理 or HDR | 980 段 | 980 段（FP16） | 上が滑らか | `16bit / 10bit` |
+| 出力 8bpc（Deep color 有効） | （色バッファ 8bit になる） | — | 上下同じ縞 | `16bit / 8bit` |
+
+分かったこと:
+- 色バッファは `setAlphaBufferSize(2)` まで指定しないと WGL が 8bit の形式を選ぶ（10:10:10:2）。
+- SDR のデスクトップ合成は 8bit。ウィンドウ表示で 10bit が出るのは NVIDIA の Deep color（ドライバが合成の外で出す。Desktop Duplication からは見えない）か、
+  自動カラー管理 / HDR（合成が FP16）のとき。全画面は合成を通らない（独立フリップ）。
+- 出力 8bpc にすると、ドライバは 10bit の色バッファを渡さない（アプリの出力自体が 8bit）。
+- スポイトの値は RGB（リミテッドレンジの YUV を 0..1023 に広げた値）なので、YUV の 1 段が RGB では約 1.17 段になり、6〜7 段に 1 回値が飛ぶ（正常）。
+- Deep color のオフ（NVIDIA Profile Inspector で `0x2097C2F6` を Disabled）は未確認。通常触らない隠し設定（既定で有効）なので省略した。
+  オフのときの表示は NVAPI 追加前と同じ判定（SDR・ウィンドウで `→ 8bit`）になる。
+
+## 10. 今後の候補（未着手）
 
 - トーンカーブの背景にヒストグラム、カーソル位置の値表示
 - スポイトのピン留め・記録
 - ズーム表示を「1 画素 = ○px」に
-- 性能 HUD / ベンチマークモード（「NVIDIA 限定・最速」の打ち出し用）
+- ベンチマークモード（性能 HUD は実装済み。一定区間の平均・最悪値・パーセンタイルを CSV に記録する機能は未）
+- マルチ GPU デコードの続き（実装済みは 5.5。残り: 10bit の詰め直しで転送量を 10/16 に、nvcomp は効果を測ってから）
 - ディザ付きの画面表示（表示は 10bit 化済み。8bit の色バッファしか取れない環境向け。8bit 化して保存・書き出すときのディザは対応済み。色の行列は BT.709 に統一済み。HDR の PQ / HLG 引き継ぎは非対応の方針）
 - 2 ファイル比較
 - Widgets 版との機能差の解消

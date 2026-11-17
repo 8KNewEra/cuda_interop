@@ -22,6 +22,8 @@
         <file>qml/ScreenshotPanel.qml</file>
         <file>qml/PropertiesPanel.qml</file>
         <file>qml/Sparkline.qml</file>
+        <file>qml/PerfHud.qml</file>
+        <file>qml/DecodePanel.qml</file>
         <file>qml/KernelParams.qml</file>
         <file>qml/KernelEditor.qml</file>
         <file>qml/Segmented.qml</file>

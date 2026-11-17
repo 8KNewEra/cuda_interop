@@ -4,6 +4,7 @@
 #include "src/videoprocess/decode_thread.h"
 
 #include <deque>
+#include <map>
 #include <vector>
 
 class nvgpudecode:public decode_thread
@@ -108,6 +109,34 @@ protected:
 
     // 累計の不一致回数
     int mismatch_total_ = 0;
+
+    // ---- マルチ GPU デコード（decode_gpu_map.h）----
+    //   別 GPU のタイルは「その GPU → メインメモリ（ページ固定）→ 表示用 GPU」の 2 段で送る（transfer_remote）
+    //   ・1 段目（D2H）はその GPU の既定ストリーム（cuvid の出力コピーの後に並ぶ）
+    //   ・2 段目（H2D）は表示用 GPU の非ブロッキングストリーム xfer_stream_（既定ストリームを止めない）
+    //   ・中継バッファは kStage 枠を順に使う。同じ枠を次に使う前に、前回の H2D の完了をその GPU に待たせる
+    //   ・別 GPU があるコマの decode_ready は xfer_stream_ で記録する（表示用 GPU のタイルの完了も待たせてから）
+    //   前フレームの H2D と次フレームの D2H は別の GPU・別のストリームなので重なって流れる
+    static constexpr int kStage = 3;
+    struct RemoteGpu {
+        cudaEvent_t beg[kStage] = {};      // D2H の開始・終了（時間を測る。性能 HUD の「転送」）
+        cudaEvent_t end[kStage] = {};
+        bool        used[kStage] = {};
+        double      bytes[kStage] = {};
+    };
+    std::map<int, AVBufferRef*> remote_ctx_;   // GPU ごとの FFmpeg デバイスコンテキスト（primary_ctx）
+    std::map<int, RemoteGpu>    remote_;       // GPU ごとの D2H イベント
+    cudaStream_t xfer_stream_ = nullptr;       // 表示用 GPU の H2D（cudaStreamNonBlocking）
+    cudaEvent_t  local_ev_[kStage] = {};       // 表示用 GPU のタイル（cuvid のコピー）の完了
+    cudaEvent_t  h2d_ev_[kStage]   = {};       // H2D の完了（同じ枠を次に使う前に待つ）
+    bool         h2d_used_[kStage] = {};
+    int          stage_ = 0;
+    bool         remote_init_ = false;
+    AVBufferRef* remote_hw_ctx(int gpu);                    // 無ければ作る。失敗は nullptr
+    bool init_remote();                                     // ストリーム・イベント（初回の転送で作る）
+    bool alloc_remote_tile(int i, AVFrame* f);              // タイル i の転送先リング・中継バッファ
+    bool transfer_remote(const std::vector<int>& tiles);    // 別 GPU のタイルを送り、decode_ready を記録
+    void release_remote();                                  // 転送先リング・中継・イベント・コンテキストを解放
 };
 
 #endif // NVGPUDECODE_H

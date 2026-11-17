@@ -18,6 +18,8 @@ AppMenuSeparator 1.0 AppMenuSeparator.qml
 ScreenshotPanel 1.0 ScreenshotPanel.qml
 PropertiesPanel 1.0 PropertiesPanel.qml
 Sparkline 1.0 Sparkline.qml
+PerfHud 1.0 PerfHud.qml
+DecodePanel 1.0 DecodePanel.qml
 KernelParams 1.0 KernelParams.qml
 KernelEditor 1.0 KernelEditor.qml
 Segmented 1.0 Segmented.qml

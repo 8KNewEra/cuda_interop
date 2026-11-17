@@ -21,6 +21,7 @@ void logfile_control::load_inifile()
     g_AppSettings.decode_path = settings.value("Path/decode_path", g_AppSettings.decode_path).toString();
     g_AppSettings.saveScreenshot_folder = settings.value("Path/saveScreenshot_folder", g_AppSettings.saveScreenshot_folder).toString();
     g_AppSettings.videoInfo_flag = settings.value("Info/videoInfo_flag", g_AppSettings.videoInfo_flag).toBool();
+    g_AppSettings.perf_hud = settings.value("Info/perf_hud", g_AppSettings.perf_hud).toBool();
     g_AppSettings.histgram_flag = settings.value("Info/histgram_flag", g_AppSettings.histgram_flag).toBool();
     g_AppSettings.video_speed_ratio = settings.value("Playback/video_speed_ratio", g_AppSettings.video_speed_ratio).toDouble();
     g_AppSettings.audio_volume = settings.value("Playback/audio_volume", g_AppSettings.audio_volume).toInt();
@@ -152,6 +153,7 @@ void logfile_control::load_inifile()
         g_GPUInfo[i].Memory_Usage = settings.value("Memory_Usage", 0).toInt();
         g_GPUInfo[i].GPU_Usage = settings.value("GPU_Usage", 0).toInt();
         g_GPUInfo[i].tile_weight = settings.value("tile_weight", 10).toInt();
+        g_GPUInfo[i].decode_weight = settings.value("decode_weight", -1).toInt();
 
         settings.endGroup();
     }
@@ -163,6 +165,7 @@ void logfile_control::save_inifile(){
     settings.setValue("Path/decode_path", g_AppSettings.decode_path);
     settings.setValue("Path/saveScreenshot_folder", g_AppSettings.saveScreenshot_folder);
     settings.setValue("Info/videoInfo_flag", g_AppSettings.videoInfo_flag);
+    settings.setValue("Info/perf_hud", g_AppSettings.perf_hud);
     settings.setValue("Info/histgram_flag", g_AppSettings.histgram_flag);
     settings.setValue("Playback/video_speed_ratio", g_AppSettings.video_speed_ratio);
     settings.setValue("Playback/audio_volume", g_AppSettings.audio_volume);
@@ -277,6 +280,7 @@ void logfile_control::save_inifile(){
         settings.setValue("Memory_Usage", g_GPUInfo[i].Memory_Usage);
         settings.setValue("GPU_Usage", g_GPUInfo[i].GPU_Usage);
         settings.setValue("tile_weight", g_GPUInfo[i].tile_weight);
+        settings.setValue("decode_weight", g_GPUInfo[i].decode_weight);
 
         settings.endGroup();
     }

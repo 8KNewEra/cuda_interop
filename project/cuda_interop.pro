@@ -69,6 +69,8 @@ SOURCES += \
     $$PWD/src/qmlui/videoengine.cpp \
     $$PWD/src/qmlui/videoitem.cpp \
     $$PWD/src/qmlui/displayprobe.cpp \
+    $$PWD/src/qmlui/perfmeter.cpp \
+    $$PWD/src/qmlui/decodesettings.cpp \
     $$PWD/src/qmlui/playercontroller.cpp \
     $$PWD/src/qmlui/windowchrome.cpp \
     $$PWD/src/qmlui/encodecontroller.cpp \
@@ -101,6 +103,9 @@ HEADERS += \
     $$PWD/src/qmlui/videoengine.h \
     $$PWD/src/qmlui/videoitem.h \
     $$PWD/src/qmlui/displayprobe.h \
+    $$PWD/src/qmlui/perfmeter.h \
+    $$PWD/src/qmlui/decodesettings.h \
+    $$PWD/src/videoprocess/decode_gpu_map.h \
     $$PWD/src/qmlui/playercontroller.h \
     $$PWD/src/qmlui/windowchrome.h \
     $$PWD/src/qmlui/encodecontroller.h \

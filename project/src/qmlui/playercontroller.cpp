@@ -10,6 +10,7 @@
 #include "src/info/logfile_control.h"
 #include "src/qmlui/encodecontroller.h"
 #include "src/qmlui/screenshotsettings.h"
+#include "src/qmlui/decodesettings.h"
 #include "src/qmlui/filterkernel.h"
 #include "src/qmlui/tonecurve.h"
 #include "src/qmlui/mediaprobe.h"
@@ -42,6 +43,41 @@ PlayerController::PlayerController(QObject* parent)
     seekHoldTimer_.setInterval(10000);
     connect(&seekHoldTimer_, &QTimer::timeout, this, [this] { clearSeekHold(); });
 
+    // 性能 HUD: 0.25 秒ごとに集計を取り出して QML へ（毎フレーム通知すると描画が増えて計測を乱す）
+    perfTimer_.setInterval(250);
+    connect(&perfTimer_, &QTimer::timeout, this, [this] {
+        if (!engine_) return;
+        QVariantMap m = engine_->perf().take();
+        m["fps"]      = engine_->fps;                                       // 描画 fps（1 秒平均）
+        // 目標 = 動画の fps × 再生速度（動画情報の「描画フレームレート」と同じ）。持ち時間 = 1 フレームに使える時間
+        const double target = VideoInfo.fps * (speed() > 0 ? speed() : 1.0);
+        m["videoFps"] = target;
+        m["budget"]   = target > 0 ? 1000.0 / target : 0.0;
+        m["encoding"] = encode_state == STATE_ENCODING;
+        // デコードに使っている GPU の NVDEC 使用率（info_thread が 1 秒ごとに更新）。gpus は動画情報が
+        //   出ている間しか通知されないので、HUD 用にここで直接読む。表示用 GPU が先頭
+        //   nvdecs: [{id, dec}]（マルチ GPU デコードなら複数）、nvdec: その最大（上限 fps の目安に使う。-1 = なし）
+        {
+            std::vector<int> ids{ g_openglDeviceID };
+            const bool gpuDecode = fileOpen() && dynamic_cast<nvgpudecode*>(decodestream) != nullptr;
+            if (gpuDecode)
+                for (int id : VideoInfo.tile_gpu)
+                    if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+            QVariantList list;
+            int mx = -1;
+            for (int id : ids)
+                for (const GPUInfo& g : g_GPUInfo)
+                    if (g.deviceID == id) {
+                        list << QVariantMap{ {"id", id}, {"dec", g.Decoder_Usage} };
+                        mx = std::max(mx, g.Decoder_Usage);
+                    }
+            m["nvdecs"] = list;
+            m["nvdec"]  = mx;
+        }
+        perf_ = m;
+        emit perfChanged();
+    });
+
     infoTimer_.setInterval(500);
     connect(&infoTimer_, &QTimer::timeout, this, [this] {
         // エンコード中は動画情報も更新しない（後ろは隠れている）
@@ -57,6 +93,7 @@ PlayerController::~PlayerController()
 
     delete encoder_;       encoder_ = nullptr;
     delete shotSettings_; shotSettings_ = nullptr;
+    delete decodeSettings_; decodeSettings_ = nullptr;
     delete engine_;        engine_ = nullptr;
 
     // 最後に ini を保存（logfile_control のデストラクタが書く）
@@ -92,6 +129,7 @@ bool PlayerController::initialize()
 
     start_info_thread();
     infoTimer_.start();
+    applyPerf();   // 前回 ON で終了していれば HUD の計測を始める
 
     // エンコード設定（QML 版。GPU 情報が確定してから作る）
     encoder_ = new EncodeController();
@@ -102,6 +140,11 @@ bool PlayerController::initialize()
 
     // 画像保存設定（QML 版。作った時点で ini の値を正規化して g_AppSettings に戻す）
     shotSettings_ = new ScreenshotSettings();
+
+    // デコード設定（マルチ GPU デコード）。「開き直して反映」は今の位置から開き直す
+    decodeSettings_ = new DecodeSettings();
+    connect(decodeSettings_, &DecodeSettings::reopenRequested,
+            this, &PlayerController::reopenForDecodeSettings, Qt::QueuedConnection);
 
     ready_ = true;
     emit stateChanged();
@@ -117,6 +160,22 @@ void PlayerController::setInfoVisible(bool on)
     g_AppSettings.videoInfo_flag = on;
     emit displayChanged();
     emit infoChanged();
+}
+
+void PlayerController::setPerfVisible(bool on)
+{
+    if (g_AppSettings.perf_hud == on) return;
+    g_AppSettings.perf_hud = on;
+    applyPerf();
+    emit displayChanged();
+}
+
+void PlayerController::applyPerf()
+{
+    const bool on = g_AppSettings.perf_hud && engine_;
+    if (engine_) engine_->perf().setEnabled(on);
+    if (on) perfTimer_.start();
+    else  { perfTimer_.stop(); perf_.clear(); emit perfChanged(); }
 }
 
 void PlayerController::setHistVisible(bool on)
@@ -736,6 +795,13 @@ void PlayerController::start_decode_thread(const QString& filePath)
     decodestream->moveToThread(decode__thread);
 
     connect(decodestream, &decode_thread::send_decode_image, this, &PlayerController::decode_view, Qt::QueuedConnection);
+    // 性能 HUD のデコード時間（デコードスレッドから。OFF の間は PerfMeter が捨てる）
+    connect(decodestream, &decode_thread::decode_time_ms, this, [this](double ms) {
+        if (engine_) engine_->perf().addDecode(ms);
+    }, Qt::QueuedConnection);
+    connect(decodestream, &decode_thread::transfer_time_ms, this, [this](double ms, double gbps) {
+        if (engine_) engine_->perf().addTransfer(ms, gbps);
+    }, Qt::QueuedConnection);
     connect(decodestream, &decode_thread::send_slider_info, this, &PlayerController::init_decodethread_complete);
     connect(decodestream, &decode_thread::heavy_process_signal, this, [this](bool done) {
         setControlsEnabled(done);
@@ -814,6 +880,10 @@ void PlayerController::init_decodethread_complete()
     qDebug() << "Framerate:" << VideoInfo.fps << "MaxFrames:" << VideoInfo.max_framesNo;
     setPlayIntent(true);          // 開いた直後は再生から始まる
     start_fps_thread(VideoInfo.fps * g_AppSettings.video_speed_ratio);
+
+    // デコード設定の反映で開き直したときは、元の位置へ戻す
+    if (reopen_frame_ > 0 && reopen_frame_ <= VideoInfo.max_framesNo) highResSeek(reopen_frame_);
+    reopen_frame_ = -1;
 }
 
 void PlayerController::setControlsEnabled(bool on)
@@ -1088,6 +1158,24 @@ void PlayerController::screenshot()
         setControlsEnabled(true);
         emit screenshotStateChanged(false);
     }, Qt::SingleShotConnection);
+}
+
+void PlayerController::openDecodeSettings()
+{
+    if (!decodeSettings_) return;
+    // 今のファイルを GPU でデコードしていれば、そのタイル数で割り振りの見込みを出す
+    //   （tile_gpu は GPU デコードのときだけ埋まる。CPU デコードの前に開いたファイルの値が残らないよう種類も見る）
+    const bool gpuDecode = fileOpen() && dynamic_cast<nvgpudecode*>(decodestream) != nullptr;
+    const int tiles = (gpuDecode && !VideoInfo.tile_gpu.empty()) ? int(VideoInfo.tile_gpu.size()) : 0;
+    decodeSettings_->open(tiles, tiles > 0 ? QString::fromStdString(VideoInfo.Codec) : QString());
+}
+
+// デコード設定の反映: 今のファイルを開き直し、開き終わったら今のフレームへ戻す（init_decodethread_complete）
+void PlayerController::reopenForDecodeSettings()
+{
+    if (!fileOpen() || g_AppSettings.decode_path.isEmpty()) return;
+    reopen_frame_ = FrameNo;
+    openFile(QUrl::fromLocalFile(g_AppSettings.decode_path));
 }
 
 void PlayerController::openScreenshotSettings()

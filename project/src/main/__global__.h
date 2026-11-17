@@ -23,6 +23,7 @@ struct AppSettings
 
     // Info
     bool videoInfo_flag = false;
+    bool perf_hud = false;              // 性能 HUD（QML 版。映像の左下に処理段ごとの時間）
     bool histgram_flag  = false;
 
     // Playback
@@ -283,6 +284,8 @@ struct DecodeInfo {
     int width_scale=1;
     int height_scale=1;
     QString decode_mode="";
+    // タイルごとのデコード GPU（CUDA デバイス番号。nvgpudecode が開くときに決める。CPU デコードは空）
+    std::vector<int> tile_gpu;
 
     //時間
     int max_hour = 0;
@@ -476,6 +479,9 @@ struct GPUInfo {
     int tile_weight = 10;
     int backup_tile_weight = -1;
     bool av1_forced_disabled = false;
+    //デコード設定用（マルチ GPU デコード。0..10、-1 = 未設定 = 表示用 GPU だけ 10）
+    //   使い方は src/videoprocess/decode_gpu_map.h（assignDecodeTiles）
+    int decode_weight = -1;
 };
 
 extern AppSettings g_AppSettings;

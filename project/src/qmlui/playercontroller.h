@@ -32,6 +32,7 @@ class EncodeController;
 class FilterKernel;
 class MediaProbe;
 class ScreenshotSettings;
+class DecodeSettings;
 
 class PlayerController : public QObject
 {
@@ -62,6 +63,9 @@ class PlayerController : public QObject
     // ---- 表示 ----
     Q_PROPERTY(bool infoVisible READ infoVisible WRITE setInfoVisible NOTIFY displayChanged)
     Q_PROPERTY(bool histVisible READ histVisible WRITE setHistVisible NOTIFY displayChanged)
+    // 性能 HUD（Ctrl+Shift+P）。perf は 0.25 秒ごとの集計（段ごとの avg / max、フレーム間隔の列など）
+    Q_PROPERTY(bool perfVisible READ perfVisible WRITE setPerfVisible NOTIFY displayChanged)
+    Q_PROPERTY(QVariantMap perf READ perf NOTIFY perfChanged)
 
     // ---- 画像処理（GLSL）----
     Q_PROPERTY(bool gaussian  READ gaussian  WRITE setGaussian  NOTIFY filterChanged)
@@ -126,6 +130,7 @@ public:
     Q_INVOKABLE void showProperties();     // 開いているファイルの詳細情報を読んで画面を出す
     EncodeController* encoder() const { return encoder_; }
     ScreenshotSettings* screenshotSettings() const { return shotSettings_; }
+    DecodeSettings* decodeSettings() const { return decodeSettings_; }   // マルチ GPU デコード（context property "decodeSettings"）
 
     bool ready() const           { return ready_; }
     bool fileOpen() const        { return run_decode_thread; }
@@ -153,6 +158,9 @@ public:
     bool histVisible() const { return g_AppSettings.histgram_flag; }
     void setInfoVisible(bool on);
     void setHistVisible(bool on);
+    bool perfVisible() const { return g_AppSettings.perf_hud; }
+    void setPerfVisible(bool on);
+    QVariantMap perf() const { return perf_; }
 
     bool gaussian() const  { return g_AppSettings.gaussianfilterEnabled; }
     bool sobel() const     { return g_AppSettings.sobelfilterEnabled; }
@@ -228,6 +236,7 @@ public:
     Q_INVOKABLE void allFiltersOff();
     Q_INVOKABLE void screenshot();
     Q_INVOKABLE void openScreenshotSettings();
+    Q_INVOKABLE void openDecodeSettings();   // ファイル → デコード設定…
     Q_INVOKABLE void openEncodeSettings();
 
     Q_INVOKABLE QString jumpLabel(bool forward) const;   // "+3s" / "-1f" など
@@ -243,6 +252,7 @@ signals:
     void volumeChanged();
     void infoChanged();
     void histogramChanged();
+    void perfChanged();
     void pickChanged();
     void screenshotStateChanged(bool busy);
     // エンコード設定を開いた（QML がパネルを出す）
@@ -289,6 +299,10 @@ private:
     MediaProbe*   mediaInfo_   = nullptr;   // プロパティ画面
     EncodeController* encoder_ = nullptr;   // エンコード設定（QML 版）
     ScreenshotSettings* shotSettings_ = nullptr;   // 画像保存設定（QML 版）
+    DecodeSettings* decodeSettings_ = nullptr;     // デコード設定（マルチ GPU デコード）
+    // デコード設定を反映するために開き直したとき、開き終わったらこのフレームへ戻す（-1 = なし）
+    int reopen_frame_ = -1;
+    void reopenForDecodeSettings();
 
     decode_thread* decodestream = nullptr;
     QThread*       decode__thread = nullptr;
@@ -296,6 +310,9 @@ private:
     fps_thread*    fpsstream = nullptr;
     info_thread*   infostream = nullptr;
     QTimer         infoTimer_;
+    QTimer         perfTimer_;      // 性能 HUD の集計を取り出す（ON のときだけ動く）
+    QVariantMap    perf_;
+    void applyPerf();               // HUD の ON/OFF を計測とタイマーへ反映
 
     // ---- 状態 ----
     bool ready_ = false;

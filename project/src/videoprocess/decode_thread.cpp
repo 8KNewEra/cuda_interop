@@ -3,6 +3,7 @@
 #include "qfileinfo.h"
 #include <QDebug>
 #include <QThread>
+#include <QElapsedTimer>
 #include <cmath>
 
 extern "C" {
@@ -622,7 +623,10 @@ void decode_thread::processFrame() {
     //デコード
     if(decode_state==STATE_DECODE_READY){
         decode_state=STATE_DECODING;
+        QElapsedTimer t;      // 性能 HUD 用（NVDEC の完了待ちを含む実時間）
+        t.start();
         get_decode_image();
+        emit decode_time_ms(t.nsecsElapsed() / 1e6);
         decode_state=STATE_WAIT_DECODE_FLAG;
     }else{
         drop_flag=true;

@@ -85,6 +85,8 @@ ApplicationWindow {
         onActivated: win.toggleFullscreenVideo()
     }
     Shortcut { sequence: "Ctrl+I"; enabled: win.canOperate && player.fileOpen; onActivated: player.showProperties() }
+    // 性能 HUD（映像の左下。処理段ごとの時間）。全画面中も使える
+    Shortcut { sequence: "Ctrl+Shift+P"; context: Qt.ApplicationShortcut; enabled: !win.modalOpen; onActivated: player.perfVisible = !player.perfVisible }
     Shortcut { sequences: [StandardKey.Open]; enabled: win.canOperate && player.ready; onActivated: player.openFileDialog() }
 
     // ---- エンコード設定（再生画面の上に重ねる）----
@@ -101,7 +103,10 @@ ApplicationWindow {
     Connections { target: player.mediaInfo; function onOpened() { win.propsOpen = true } }
 
     // ダイアログ表示中はヘッダーとショートカットを止める
-    readonly property bool modalOpen: encodeOpen || shotOpen || propsOpen
+    // デコード設定（マルチ GPU デコード）
+    property bool decodeOpen: false
+    Connections { target: decodeSettings; function onOpened() { win.decodeOpen = true } function onClosed() { win.decodeOpen = false } }
+    readonly property bool modalOpen: encodeOpen || shotOpen || propsOpen || decodeOpen
     // 操作可能か（ダイアログなし かつ 重い処理中でない）
     // busy: 高精度シーク・画像保存などの重い処理中。controlsEnabled は未オープン時も
     //   false なので「ファイルを開いていて操作不可」のときだけ busy とする。
@@ -208,6 +213,9 @@ ApplicationWindow {
                         AppMenuSeparator {}
                         Action { property string hint: "Ctrl+I"; text: "プロパティ…"; enabled: player.fileOpen && !win.busy; onTriggered: player.showProperties() }
                         AppMenuSeparator {}
+                        // マルチ GPU デコード（GPU ごとの重み）
+                        Action { text: "デコード設定…"; enabled: player.ready && !win.busy && !player.encoding; onTriggered: player.openDecodeSettings() }
+                        AppMenuSeparator {}
                         Action { property string hint: "F11"; text: "全画面"; enabled: !win.busy; onTriggered: win.toggleFullscreenVideo() }
                     }
                 }
@@ -226,7 +234,8 @@ ApplicationWindow {
                         Repeater {
                             model: [
                                 { label: "動画情報",     key: "infoVisible", paths: ["M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0z", "M12 11v6M12 7.5v.5"] },
-                                { label: "ヒストグラム", key: "histVisible", paths: ["M4 20h16M7 20v-6M11 20V8M15 20v-9M19 20v-4"] }
+                                { label: "ヒストグラム", key: "histVisible", paths: ["M4 20h16M7 20v-6M11 20V8M15 20v-9M19 20v-4"] },
+                                { label: "性能",         key: "perfVisible", paths: ["M4 18a8 8 0 1 1 16 0", "M12 18l4-5"] }
                             ]
                             delegate: AbstractButton {
                                 id: dispBtn
@@ -371,6 +380,20 @@ ApplicationWindow {
                     frameNo: player.frameNo
                     speed: player.speed
                     playing: player.renderActive
+                }
+
+                // 性能 HUD（左下。全画面中も出す。エンコード中は後ろが止まるので出さない）
+                PerfHud {
+                    z: 2      // 重なり順は上と同じ
+                    visible: player.perfVisible && player.fileOpen && !player.encoding
+                    anchors.left: parent.left
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 16
+                    width: Math.min(320, parent.width - 32)
+                    height: implicitHeight
+                    perf: player.perf
+                    fileOpen: player.fileOpen
+                    fileKey: player.fileOpen ? (player.videoInfo.fileName || "") : ""
                 }
 
                 ZoomNavigator {
@@ -711,6 +734,13 @@ ApplicationWindow {
         anchors.fill: parent
         anchors.topMargin: titleBar.visible ? titleBar.height : 0
         visible: win.shotOpen
+        focus: visible
+    }
+
+    DecodePanel {
+        anchors.fill: parent
+        anchors.topMargin: titleBar.visible ? titleBar.height : 0
+        visible: win.decodeOpen
         focus: visible
     }
 
