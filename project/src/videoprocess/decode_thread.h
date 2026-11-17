@@ -238,6 +238,10 @@ protected:
     //   emit した枚数 - GUIが消費した枚数。ringSize に達したら
     //   「GUIがまだ読んでいる面を上書きしかけている」＝バグ。
     std::atomic<int> inflight_frames{0};
+
+    // デコードの先行（decode_thread.cpp の説明を参照）。GUI の未受け取りがこれ未満なら次へ進む
+    static int decode_ahead_limit();
+    bool can_decode_ahead() const;
 };
 
 #endif // DECODE_THREAD_H

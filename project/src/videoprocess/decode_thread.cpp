@@ -451,6 +451,38 @@ void decode_thread::get_decode_audio()
 //     デコードが走ると hw_frames リングを追い越し、GUI が変換中の面を
 //     上書きする（エンコード結果が帯状にズレる）。
 // ==============================================================
+// ==============================================================
+// デコードの先行（描画と次のデコードを重ねる）
+//
+//   1:1 のハンドシェイク（GUI が受け取ってから次をデコード）だと、1 コマの周期が
+//   「デコード（待ち）＋ GUI の受け取り・描画」の合計になる。通常の再生中だけ、GUI が
+//   まだ受け取っていない枚数（inflight_frames）が kDecodeAhead 未満なら次のデコードへ進む。
+//   周期はおおむね両者の遅い方になる。fps の刻み（fps_thread）は今までどおり 1 刻み 1 コマ。
+//
+//   リングの段数（ringSize = 6）との関係:
+//     GUI へ送ったが未受け取り（≦ kDecodeAhead = 2）＋ GUI の GPU 処理中（kMaxFramesInFlight = 2）
+//     ＋ デコード中（1）= 5 < 6。kDecodeAhead を増やすときはこの関係を崩さないこと
+//
+//   使わない場面: エンコード中（1 枚消費 → 1 枚生成のまま）、一時停止・逆再生・コマ送り・シーク
+//   環境変数 CUDA_VIEWER_DECODE_AHEAD=0 で従来の 1:1 に戻せる（問題が出たとき用。1 も 1:1 と同じ）
+// ==============================================================
+int decode_thread::decode_ahead_limit()
+{
+    static const int n = [] {
+        bool ok = false;
+        const int v = qEnvironmentVariableIntValue("CUDA_VIEWER_DECODE_AHEAD", &ok);
+        return ok ? std::clamp(v, 0, 2) : 2;
+    }();
+    return n;
+}
+
+bool decode_thread::can_decode_ahead() const
+{
+    return encode_state.load() == STATE_NOT_ENCODE
+        && video_play_flag && !video_reverse_flag
+        && inflight_frames.load() < decode_ahead_limit();
+}
+
 void decode_thread::receve_decode_flag(){
     QMutexLocker locker(&mutex);
 
@@ -614,6 +646,7 @@ void decode_thread::processFrame() {
             decode_state=STATE_DECODING;
 
             // ★ この経路は画像を書き換えないので slot は進めない
+            ++inflight_frames;   // GUI が受け取ると receve_decode_flag で減る（先行の枚数の勘定を合わせる）
             emit send_decode_image(Frame,true,video_reverse_flag);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
@@ -627,7 +660,9 @@ void decode_thread::processFrame() {
         t.start();
         get_decode_image();
         emit decode_time_ms(t.nsecsElapsed() / 1e6);
-        decode_state=STATE_WAIT_DECODE_FLAG;
+        // デコードの先行: 通常の再生中は、GUI がまだ受け取っていない枚数が kDecodeAhead 未満なら
+        //   受け取りを待たずに次の fps の刻みでも続けてデコードする（描画と次のデコードが重なる）
+        decode_state = can_decode_ahead() ? STATE_DECODE_READY : STATE_WAIT_DECODE_FLAG;
     }else{
         drop_flag=true;
     }
