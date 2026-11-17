@@ -72,6 +72,8 @@ signals:
     void transfer_time_ms(double ms, double gbps);
     // 性能 HUD: 圧縮転送（nvCOMP）の圧縮率（元 ÷ 圧縮後）、デコード側 GPU での圧縮と、表示用 GPU での取り込み・展開の時間（ms）
     void transfer_codec_stats(double ratio, double compressMs, double expandMs);
+    // 性能 HUD: 展開の内訳（表示用 GPU。取り込み / nvCOMP の展開 / 差分を戻して書く。ms）
+    void transfer_expand_parts(double fetchMs, double decompMs, double invMs);
     // 性能 HUD: デコード（待ち）の内訳（マルチタイルの GPU デコードのとき。1 コマ分の CPU の実時間 ms）
     //   [{key, label, ms}] の並び（key は集計用の識別子。順番はそのまま HUD の行の順）
     void decode_breakdown(QVariantList parts);

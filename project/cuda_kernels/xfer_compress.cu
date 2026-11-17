@@ -150,17 +150,24 @@ __global__ void xfer_pack_kernel(const void* const* slots, const uint64_t* hdr, 
     }
 }
 
-// メインメモリ（ヘッダ・データ域）→ 表示用 GPU。nvCOMP の展開に渡すチャンクの位置と大きさも作る
+// メインメモリ → 表示用 GPU の残り。nvCOMP の展開に渡すチャンクの位置と大きさも作る
+//   データの先頭 copied バイトは DMA（cudaMemcpyAsync。コピーエンジンなので SM を使わない）で済んでいる。
+//   見込みを超えた分（copied より後ろ）だけ、カーネルがメインメモリから直接読む（めったに無い）
+//   hdr は表示用 GPU に DMA で写したヘッダ
 __global__ void xfer_fetch_kernel(const uint64_t* hdr, int n, const uint8_t* hostData, uint8_t* devData,
-                                  const void** compPtrs, size_t* compBytes)
+                                  uint64_t copied, const void** compPtrs, size_t* compBytes)
 {
     const int b = blockIdx.x;
     if (b >= n) return;
     const uint64_t bytes = hdr[2 + b], off = hdr[2 + n + b];
-    const uint4* s = reinterpret_cast<const uint4*>(hostData + off);
-    uint4*       d = reinterpret_cast<uint4*>(devData + off);
-    const uint64_t words = (bytes + 15) / 16;
-    for (uint64_t i = threadIdx.x; i < words; i += blockDim.x) d[i] = s[i];
+    const uint64_t end = off + ((bytes + 15) & ~uint64_t(15));
+    if (end > copied) {
+        const uint64_t from = off > copied ? off : copied;   // copied は 16 の倍数
+        const uint4* s = reinterpret_cast<const uint4*>(hostData + from);
+        uint4*       d = reinterpret_cast<uint4*>(devData + from);
+        const uint64_t words = (end - from) / 16;
+        for (uint64_t i = threadIdx.x; i < words; i += blockDim.x) d[i] = s[i];
+    }
     if (threadIdx.x == 0) {
         compPtrs[b]  = devData + off;
         compBytes[b] = size_t(bytes);
@@ -212,9 +219,16 @@ extern "C" cudaError_t xfer_pack(const void* const* slots, const size_t* compByt
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t xfer_fetch(const uint64_t* hdr, int n, const uint8_t* hostData, uint8_t* devData,
-                                  const void** compPtrs, size_t* compBytes, cudaStream_t st)
+// hostHdr / hostData: メインメモリ（ページ固定）、devHdr / devData: 表示用 GPU
+//   ヘッダと、データの先頭 copyBytes バイト（圧縮後の大きさの見込み）は DMA で写す。
+//   CPU は今のフレームの圧縮後の大きさを知らない（待たない）ので、見込みを超えた分はカーネルが拾う
+extern "C" cudaError_t xfer_fetch(const uint64_t* hostHdr, uint64_t* devHdr, int n, const uint8_t* hostData,
+                                  uint8_t* devData, size_t copyBytes, const void** compPtrs, size_t* compBytes,
+                                  cudaStream_t st)
 {
-    xfer_fetch_kernel<<<n, 256, 0, st>>>(hdr, n, hostData, devData, compPtrs, compBytes);
+    copyBytes &= ~size_t(15);
+    cudaMemcpyAsync(devHdr, hostHdr, sizeof(uint64_t) * (2 + 2 * size_t(n)), cudaMemcpyHostToDevice, st);
+    if (copyBytes) cudaMemcpyAsync(devData, hostData, copyBytes, cudaMemcpyHostToDevice, st);
+    xfer_fetch_kernel<<<n, 256, 0, st>>>(devHdr, n, hostData, devData, uint64_t(copyBytes), compPtrs, compBytes);
     return cudaGetLastError();
 }

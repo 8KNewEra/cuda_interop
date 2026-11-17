@@ -23,12 +23,15 @@ Rectangle {
     readonly property real labelW: Math.max(96, Math.ceil(Math.max(tmLabel.width, tmSub.width)) + 4)
     readonly property real valW:   Math.max(44, Math.ceil(tmVal.width) + 4)
     TextMetrics { id: tmLabel; font.family: Theme.font; font.pixelSize: 12; text: "▾ デコード（待ち）" }
-    TextMetrics { id: tmSub;   font.family: Theme.font; font.pixelSize: 12; text: "  └ GPU10 転送の発行" }
+    TextMetrics { id: tmSub;   font.family: Theme.font; font.pixelSize: 12; text: "  └ 差分戻し・書き込み" }
     TextMetrics { id: tmVal;   font.family: Theme.mono; font.pixelSize: 12; text: "000.00" }
 
     // デコード（待ち）の内訳を開いているか（普段は畳む。行をクリックで開閉）
     property bool showDecodeParts: false
     readonly property bool hasDecodeParts: (perf.decodeParts || []).length > 0
+    // 展開の内訳を開いているか（同じく普段は畳む）
+    property bool showExpandParts: false
+    readonly property bool hasExpandParts: (perf.expandParts || []).length > 0
     implicitHeight: col.implicitHeight + 24
     radius: Theme.radius
     color: Theme.overlay
@@ -209,7 +212,25 @@ Rectangle {
         // マルチ GPU デコードのときだけ: 別 GPU → メインメモリの転送（その GPU の時間。圧縮転送なら圧縮後のデータを送る時間）
         Stage { label: "転送"; v: root.perf.transfer; budget: root.budget; labelWidth: root.labelW; valueWidth: root.valW; visible: root.nvdecs.length > 1 }
         // 圧縮転送（nvCOMP）のときだけ: 表示用 GPU での取り込み・展開
-        Stage { label: "展開"; v: root.perf.expand; budget: root.budget; labelWidth: root.labelW; valueWidth: root.valW; visible: root.nvdecs.length > 1 && (root.perf.xferRatio || -1) > 0 }
+        //   内訳（取り込み / nvCOMP の展開 / 差分戻し）はクリックで開閉
+        Stage {
+            label: (root.hasExpandParts ? (root.showExpandParts ? "▾ " : "▸ ") : "") + "展開"
+            v: root.perf.expand; budget: root.budget; labelWidth: root.labelW; valueWidth: root.valW
+            visible: root.nvdecs.length > 1 && (root.perf.xferRatio || -1) > 0
+            TapHandler { enabled: root.hasExpandParts; onTapped: root.showExpandParts = !root.showExpandParts }
+            HoverHandler { enabled: root.hasExpandParts; cursorShape: Qt.PointingHandCursor }
+        }
+        Repeater {
+            model: root.showExpandParts && root.nvdecs.length > 1 ? (root.perf.expandParts || []).length : 0
+            delegate: Stage {
+                required property int index
+                readonly property var p: (root.perf.expandParts || [])[index] || ({})
+                label: "  └ " + (p.label || "")
+                v: p
+                budget: root.budget; labelWidth: root.labelW; valueWidth: root.valW
+                opacity: 0.85
+            }
+        }
         Text {
             visible: root.nvdecs.length > 1 && (root.perf.transferGbps || -1) > 0
             Layout.fillWidth: true

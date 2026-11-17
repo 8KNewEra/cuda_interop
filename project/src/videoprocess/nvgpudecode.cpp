@@ -778,6 +778,7 @@ bool nvgpudecode::transfer_compressed(const std::vector<int>& tiles, int s)
     const int bps = VideoInfo.bitdepth > 8 ? 2 : 1;
     // 時間は GPU ごとに並行して進むので最大、バイト数は合計
     double cmpMs = 0, sendMs = 0, decMs = 0, raw = 0, comp = 0;
+    double fetchMs = 0, decompMs = 0, invMs = 0;   // 展開の内訳（表示用 GPU の 1 本のストリームで順に進むので合計）
     bool haveStats = false, ok = true;
     for (auto& [g, idx] : byGpu) {
         std::unique_ptr<XferCodec>& c = codecs_[g];
@@ -794,9 +795,10 @@ bool nvgpudecode::transfer_compressed(const std::vector<int>& tiles, int s)
             }
         }
         // この枠の前回の結果（圧縮率と時間。性能 HUD 用。待たない）
-        double cm, sm, d, rb, cb;
-        if (c->takeStats(s, cm, sm, d, rb, cb)) {
+        double cm, sm, d, rb, cb, fm = -1, xm = -1, im = -1;
+        if (c->takeStats(s, cm, sm, d, rb, cb, &fm, &xm, &im)) {
             cmpMs = (std::max)(cmpMs, cm); sendMs = (std::max)(sendMs, sm); decMs += d;   // 展開は表示用 GPU の 1 本のストリームで順に
+            fetchMs += (std::max)(0.0, fm); decompMs += (std::max)(0.0, xm); invMs += (std::max)(0.0, im);
             raw += rb; comp += cb; haveStats = true;
         }
         std::vector<const AVFrame*> frames;
@@ -808,6 +810,7 @@ bool nvgpudecode::transfer_compressed(const std::vector<int>& tiles, int s)
         // 実効速度 = 元の大きさ ÷ 圧縮と送るの遅い方（フレームごとに交互の組で重ねて進むので、合計ではなく遅い方で流れる）
         emit transfer_time_ms(sendMs, raw / ((std::max)(cmpMs, sendMs) * 1e6));
         emit transfer_codec_stats(comp > 0 ? raw / comp : 0.0, cmpMs, decMs);  // 圧縮率、圧縮と展開の時間
+        emit transfer_expand_parts(fetchMs, decompMs, invMs);                // 展開の内訳
     }
 
     // 表示用 GPU: 表示用 GPU のタイルの完了と、各 GPU の圧縮の完了を待ってから展開

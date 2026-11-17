@@ -24,6 +24,7 @@ void PerfMeter::setEnabled(bool on)
     haveLast_ = false;
     decode_.clear(); convert_.clear(); filter_.clear(); display_.clear(); hist_.clear(); cpu_.clear(); interval_ms_.clear();
     transfer_.clear(); transferGbps_.clear(); ratio_.clear(); compress_.clear(); expand_.clear();
+    fetch_.clear(); decomp_.clear(); inv_.clear();
     intervals_.clear();
     parts_.clear();
 }
@@ -120,6 +121,12 @@ void PerfMeter::addTransferCodec(double ratio, double compressMs, double expandM
     expand_.add(expandMs);
 }
 
+void PerfMeter::addExpandParts(double fetchMs, double decompMs, double invMs)
+{
+    if (!on_) return;
+    fetch_.add(fetchMs); decomp_.add(decompMs); inv_.add(invMs);
+}
+
 void PerfMeter::addDecodeBreakdown(const QVariantList& parts)
 {
     if (!on_) return;
@@ -190,7 +197,16 @@ QVariantMap PerfMeter::take()
         dp << e;
     }
     m["decodeParts"] = dp;
-    parts_.clear();                                              // 表示用 GPU での取り込み・展開
+    parts_.clear();
+    QVariantList ep;                                                                  // 展開の内訳
+    if (fetch_.n > 0) {
+        auto part = [&](const Acc& a, const char* label) { QVariantMap e = a.toMap(); e["label"] = QString::fromUtf8(label); ep << e; };
+        part(fetch_,  "取り込み");
+        part(decomp_, "nvCOMP 展開");
+        part(inv_,    "差分戻し・書き込み");
+    }
+    m["expandParts"] = ep;
+    fetch_.clear(); decomp_.clear(); inv_.clear();                                              // 表示用 GPU での取り込み・展開
     QVariantList iv;
     iv.reserve(int(intervals_.size()));
     for (float v : intervals_) iv << double(v);

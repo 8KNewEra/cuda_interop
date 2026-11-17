@@ -14,8 +14,9 @@ extern "C" cudaError_t xfer_inv(const uint8_t* src, uint8_t* dst, size_t dstPitc
                                 int bps, int lag, int delta, cudaStream_t st);
 extern "C" cudaError_t xfer_pack(const void* const* slots, const size_t* compBytes, int n,
                                  uint64_t* devHdr, uint64_t* hostHdr, uint8_t* hostData, cudaStream_t st);
-extern "C" cudaError_t xfer_fetch(const uint64_t* hdr, int n, const uint8_t* hostData, uint8_t* devData,
-                                  const void** compPtrs, size_t* compBytes, cudaStream_t st);
+extern "C" cudaError_t xfer_fetch(const uint64_t* hostHdr, uint64_t* devHdr, int n, const uint8_t* hostData,
+                                  uint8_t* devData, size_t copyBytes, const void** compPtrs, size_t* compBytes,
+                                  cudaStream_t st);
 
 namespace {
 size_t align16(size_t v) { return (v + 15) & ~size_t(15); }
@@ -159,6 +160,8 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
     // ---- 表示用 GPU ----
     cudaSetDevice(dst_);
     chk(cudaMalloc(&dData_, maxComp_ * n_));
+    chk(cudaMalloc(&dHdr_, sizeof(uint64_t) * (2 + 2 * size_t(n_))));
+    lastComp_ = 0;
     chk(cudaMalloc(&dCompPtrs_, sizeof(void*) * n_));
     chk(cudaMalloc(&dCompBytes_, sizeof(size_t) * n_));
     chk(cudaMalloc(&dTight_, total_));
@@ -174,7 +177,11 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
         chk(cudaMemcpy(dOutBufBytes_, chunkBytes.data(), sizeof(size_t) * n_, cudaMemcpyHostToDevice));
     }
     decBeg_.assign(nStage_, nullptr); decEnd_.assign(nStage_, nullptr);
-    for (int s = 0; s < nStage_; s++) { chk(cudaEventCreate(&decBeg_[s])); chk(cudaEventCreate(&decEnd_[s])); }
+    fetchEnd_.assign(nStage_, nullptr); decompEnd_.assign(nStage_, nullptr);
+    for (int s = 0; s < nStage_; s++) {
+        chk(cudaEventCreate(&decBeg_[s]));   chk(cudaEventCreate(&decEnd_[s]));
+        chk(cudaEventCreate(&fetchEnd_[s])); chk(cudaEventCreate(&decompEnd_[s]));
+    }
 
     if (!ok) {
         qWarning() << "[xfer] メモリの確保に失敗:" << cudaGetErrorString(cudaGetLastError());
@@ -248,7 +255,13 @@ bool XferCodec::decode(int s, cudaStream_t st, const std::vector<Dst>& dst)
     cudaSetDevice(dst_);
     bool ok = true;
     cudaEventRecord(decBeg_[s], st);
-    ok = xfer_fetch(hHdr_[s], n_, hData_[s], dData_, (const void**)dCompPtrs_, dCompBytes_, st) == cudaSuccess;
+    // 取り込み: 圧縮後の大きさの見込み（少し前のフレームの実績 × 1.25 + 1MB）までは DMA、超えた分はカーネル
+    //   最初のフレームは実績が無いので全体の 1/4 を見込む（外れても正しさは変わらない。速さだけ）
+    const size_t cap = maxComp_ * size_t(n_);
+    const size_t est = lastComp_ ? lastComp_ + lastComp_ / 4 + (size_t(1) << 20) : cap / 4;
+    ok = xfer_fetch(hHdr_[s], dHdr_, n_, hData_[s], dData_, std::min(est, cap),
+                    (const void**)dCompPtrs_, dCompBytes_, st) == cudaSuccess;
+    cudaEventRecord(fetchEnd_[s], st);
     nvcompStatus_t r = nvcompSuccess;
     switch (algo_) {
     case Cascaded:
@@ -266,6 +279,7 @@ bool XferCodec::decode(int s, cudaStream_t st, const std::vector<Dst>& dst)
     default: r = nvcompErrorInvalidValue; break;
     }
     ok = ok && r == nvcompSuccess;
+    cudaEventRecord(decompEnd_[s], st);
     for (size_t t = 0; ok && t < dst.size(); t++) {
         const Plane& py = planes_[2 * t];
         const Plane& pu = planes_[2 * t + 1];
@@ -277,7 +291,8 @@ bool XferCodec::decode(int s, cudaStream_t st, const std::vector<Dst>& dst)
     return ok;
 }
 
-bool XferCodec::takeStats(int s, double& cmpMs, double& sendMs, double& decMs, double& rawBytes, double& compBytes)
+bool XferCodec::takeStats(int s, double& cmpMs, double& sendMs, double& decMs, double& rawBytes, double& compBytes,
+                          double* fetchMs, double* decompMs, double* invMs)
 {
     if (!ready_ || !used_[s]) return false;
     if (cudaEventQuery(encEnd_[s]) != cudaSuccess || cudaEventQuery(decEnd_[s]) != cudaSuccess) { cudaGetLastError(); return false; }
@@ -288,6 +303,20 @@ bool XferCodec::takeStats(int s, double& cmpMs, double& sendMs, double& decMs, d
     cmpMs = c; sendMs = w; decMs = d;
     rawBytes  = double(total_);
     compBytes = double(hHdr_[s][1]);   // xfer_pack が書いたヘッダ（合計バイト）
+    lastComp_ = size_t(hHdr_[s][1]);   // 次の取り込みの見込みに使う
+    // 展開の内訳（取り込み / nvCOMP の展開 / 差分を戻して書く）
+    float f = 0, x = 0;
+    if (cudaEventElapsedTime(&f, decBeg_[s], fetchEnd_[s]) == cudaSuccess &&
+        cudaEventElapsedTime(&x, fetchEnd_[s], decompEnd_[s]) == cudaSuccess) {
+        if (fetchMs)  *fetchMs  = f;
+        if (decompMs) *decompMs = x;
+        if (invMs)    *invMs    = (std::max)(0.0f, d - f - x);
+    } else {
+        cudaGetLastError();
+        if (fetchMs) *fetchMs = -1;
+        if (decompMs) *decompMs = -1;
+        if (invMs) *invMs = -1;
+    }
     return true;
 }
 
@@ -315,7 +344,9 @@ void XferCodec::release()
         cudaSetDevice(dst_);
         cudaDeviceSynchronize();
         freeDev(dData_); freeDev(dCompPtrs_); freeDev(dCompBytes_); freeDev(dTight_); freeDev(dOutPtrs_);
-        freeDev(dOutBufBytes_); freeDev(dOutBytes_); freeDev(dStatus_); freeDev(dTemp_);
+        freeDev(dOutBufBytes_); freeDev(dOutBytes_); freeDev(dStatus_); freeDev(dTemp_); freeDev(dHdr_);
+        for (cudaEvent_t& e : fetchEnd_)  if (e) { cudaEventDestroy(e); e = nullptr; }
+        for (cudaEvent_t& e : decompEnd_) if (e) { cudaEventDestroy(e); e = nullptr; }
         for (cudaEvent_t& e : decBeg_) if (e) { cudaEventDestroy(e); e = nullptr; }
         for (cudaEvent_t& e : decEnd_) if (e) { cudaEventDestroy(e); e = nullptr; }
     }

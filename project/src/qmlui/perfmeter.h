@@ -55,6 +55,8 @@ public:
     void addTransfer(double ms, double gbps);
     // 圧縮転送（nvCOMP）の圧縮率と、別 GPU での圧縮・表示用 GPU での取り込みと展開の時間（ms）
     void addTransferCodec(double ratio, double compressMs, double expandMs);
+    // 展開の内訳（取り込み / nvCOMP の展開 / 差分を戻して書く。ms）
+    void addExpandParts(double fetchMs, double decompMs, double invMs);
     // デコード（待ち）の内訳（nvgpudecode::decode_breakdown。[{key, label, ms}]）
     void addDecodeBreakdown(const QVariantList& parts);
     // 前回からの集計（平均・最大）とフレーム間隔の列。呼ぶと区間をリセットする
@@ -88,7 +90,7 @@ private:
     QElapsedTimer interval_;          // フレーム間隔
     bool haveLast_ = false;
 
-    Acc decode_, convert_, filter_, display_, hist_, cpu_, interval_ms_, transfer_, transferGbps_, ratio_, compress_, expand_;
+    Acc decode_, convert_, filter_, display_, hist_, cpu_, interval_ms_, transfer_, transferGbps_, ratio_, compress_, expand_, fetch_, decomp_, inv_;
     std::vector<float> intervals_;    // take() までのフレーム間隔（ms）
     struct Part { QString key, label; Acc acc; };
     std::vector<Part> parts_;         // デコード（待ち）の内訳（来た順）

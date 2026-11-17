@@ -830,6 +830,9 @@ void PlayerController::start_decode_thread(const QString& filePath)
     connect(decodestream, &decode_thread::decode_breakdown, this, [this](QVariantList parts) {
         if (engine_) engine_->perf().addDecodeBreakdown(parts);
     }, Qt::QueuedConnection);
+    connect(decodestream, &decode_thread::transfer_expand_parts, this, [this](double f, double x, double i) {
+        if (engine_) engine_->perf().addExpandParts(f, x, i);
+    }, Qt::QueuedConnection);
     connect(decodestream, &decode_thread::transfer_codec_stats, this, [this](double ratio, double compressMs, double expandMs) {
         if (engine_) engine_->perf().addTransferCodec(ratio, compressMs, expandMs);
     }, Qt::QueuedConnection);

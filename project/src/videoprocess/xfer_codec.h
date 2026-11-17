@@ -14,7 +14,8 @@
 //       xfer_pack  : 圧縮チャンクを詰めて、メインメモリ（ページ固定・マップ済み）へカーネルが直接書く
 //                    → 圧縮後の実際のバイト数だけが PCIe を流れる。CPU は大きさを知らなくてよい（待たない）
 //     decode（表示用 GPU の非ブロッキングストリーム）
-//       xfer_fetch : メインメモリ → 表示用 GPU（チャンクの位置と大きさはメインメモリ上のヘッダから）
+//       xfer_fetch : メインメモリ → 表示用 GPU。ヘッダと、圧縮後の大きさの見込みまでは DMA（コピーエンジン。
+//                    SM を使わない）、見込みを超えた分だけカーネルが直接読む（チャンクの位置と大きさはヘッダから）
 //       nvCOMP     : 展開
 //       xfer_inv   : 差分を戻して、転送先（pitched。GUI が読む面）へ
 //   メインメモリの受け渡し枠は nStage 枠。同じ枠を次に使う前に、前回の decode の完了を待たせる（encode の stageFree）
@@ -67,7 +68,9 @@ public:
     // 枠 s の前回の結果（終わっていれば true。待たない）
     //   cmpMs: 圧縮（差分の前処理を含む。デコード側 GPU）、sendMs: メインメモリへ書き出す時間（PCIe。枠の空き待ちは含まない）
     //   decMs: 取り込みと展開（表示用 GPU）、raw / comp: バイト数
-    bool takeStats(int s, double& cmpMs, double& sendMs, double& decMs, double& rawBytes, double& compBytes);
+    //   fetchMs / decompMs / invMs: 展開の内訳（取り込み / nvCOMP の展開 / 差分を戻して書く。取れなければ -1）
+    bool takeStats(int s, double& cmpMs, double& sendMs, double& decMs, double& rawBytes, double& compBytes,
+                   double* fetchMs = nullptr, double* decompMs = nullptr, double* invMs = nullptr);
 
     void release();
 
@@ -115,6 +118,9 @@ private:
     int*      dStatus_ = nullptr;
     void*     dTemp_ = nullptr;      size_t  dTempBytes_ = 0;
     std::vector<cudaEvent_t> decBeg_, decEnd_;
+    std::vector<cudaEvent_t> fetchEnd_, decompEnd_;   // 展開の内訳（取り込みの終わり / nvCOMP の展開の終わり）
+    uint64_t* dHdr_ = nullptr;       // DMA で写したヘッダ
+    size_t    lastComp_ = 0;         // 少し前のフレームの圧縮後の合計（取り込みの DMA の見込み）
 };
 
 #endif // XFER_CODEC_H
