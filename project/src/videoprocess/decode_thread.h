@@ -4,6 +4,7 @@
 #include <QThread>
 #include <QObject>
 #include <QMutex>
+#include <QVariantList>
 
 #include <atomic>
 #include <cmath>
@@ -32,6 +33,17 @@ struct VideoDecorder {
     //   hw_frames を直接渡すと EAGAIN だけで取得済みのコマが消えるので、
     //   ここへ受けて成功時だけ move_ref する（receive_into_slot）。
     AVFrame* tmp_frame = nullptr;
+
+    // マルチ GPU デコード（NVDEC 経路のみ。docs/MULTI_GPU_DECODE.md）
+    //   gpu: デコードする GPU（-1 = 表示用 GPU）。別 GPU のタイルは表示用 GPU 上の r_y / r_uv（hw_frames と同じ段数）へ
+    //   送ってから GUI に渡す（圧縮転送で詰めたまま渡すときは XferCodec の展開先を使うので空）。
+    //   h_y / h_uv は圧縮しない転送の中継（ページ固定、nvgpudecode::kStage 枠）
+    int gpu = -1;
+    std::vector<uint8_t*> r_y, r_uv;
+    size_t r_ypitch = 0, r_uvpitch = 0;
+    std::vector<uint8_t*> h_y, h_uv;
+    size_t h_rowBytes = 0;
+    int    h_rows = 0;
 };
 
 class decode_thread : public QObject {
@@ -53,6 +65,13 @@ signals:
     void decode_end();
     void decode_error(QString error);
     void heavy_process_signal(bool flag);
+    // 性能 HUD: 通常の再生で 1 フレームのデコードにかかった時間（get_decode_image の実時間。ms）
+    void decode_time_ms(double ms);
+    // 性能 HUD（マルチ GPU デコード。値の意味は docs/MULTI_GPU_DECODE.md）
+    void transfer_time_ms(double ms, double gbps);
+    void transfer_codec_stats(double ratio, double compressMs, double expandMs);
+    void transfer_expand_parts(double fetchMs, double decompMs, double invMs);
+    void decode_breakdown(QVariantList parts);   // [{key, label, ms}]（HUD の行の順）
 
 public slots:
     void sliderPlayback(int value);
@@ -216,6 +235,10 @@ protected:
     //   emit した枚数 - GUIが消費した枚数。ringSize に達したら
     //   「GUIがまだ読んでいる面を上書きしかけている」＝バグ。
     std::atomic<int> inflight_frames{0};
+
+    // デコードの先行（GUI の未受け取りが上限未満なら次へ進む）
+    static int decode_ahead_limit();
+    bool can_decode_ahead() const;
 };
 
 #endif // DECODE_THREAD_H

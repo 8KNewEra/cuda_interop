@@ -1,5 +1,10 @@
 #include "src/videoprocess/nvgpudecode.h"
+#include "src/videoprocess/decode_gpu_map.h"
 
+#include <QStringList>
+#include <QLibrary>
+#include <QElapsedTimer>
+#include <QVariantMap>
 #include <algorithm>
 
 extern "C" {
@@ -9,6 +14,59 @@ extern "C" {
 // ===============================
 // mp4 NVIDIA向けGPUデコード
 // ===============================
+
+// NVDEC の基数（cuvidGetDecoderCaps の nNumNVDECs。取れなければ 0）。性能 HUD のデコード上限の目安に使う
+//   1 タイル = 1 セッション = 1 基なので、タイル数が基数より少ない GPU は一部の基が遊ぶ
+//   nvcuvid はドライバ付属なので実行時に読み込む（Video Codec SDK のヘッダは使わない）
+namespace {
+struct NvDecCaps {                      // CUVIDDECODECAPS（SDK 12 以降）と同じ並び
+    int            eCodecType;          // IN  cudaVideoCodec
+    int            eChromaFormat;       // IN  cudaVideoChromaFormat
+    unsigned int   nBitDepthMinus8;     // IN
+    unsigned int   reserved1[3];
+    unsigned char  bIsSupported;        // OUT
+    unsigned char  nNumNVDECs;          // OUT（SDK 12 以降）
+    unsigned short nOutputFormatMask;
+    unsigned int   nMaxWidth, nMaxHeight, nMaxMBCount;
+    unsigned short nMinWidth, nMinHeight;
+    unsigned char  bIsHistogramSupported, nCounterBitDepth;
+    unsigned short nMaxHistogramBins;
+    unsigned int   reserved3[10];
+};
+using GetDecoderCapsFn = int (*)(NvDecCaps*);   // CUresult CUDAAPI（x64 は呼び出し規約が 1 つ）
+
+int nvdecEngines(int gpu, AVCodecID codec, int bitdepth)
+{
+    static GetDecoderCapsFn fn = [] {
+#ifdef _WIN32
+        static QLibrary lib("nvcuvid");
+#else
+        static QLibrary lib("nvcuvid", 1);
+#endif
+        return lib.load() ? reinterpret_cast<GetDecoderCapsFn>(lib.resolve("cuvidGetDecoderCaps")) : nullptr;
+    }();
+    if (!fn) return 0;
+    int type;   // cudaVideoCodec
+    switch (codec) {
+    case AV_CODEC_ID_H264: type = 4;  break;
+    case AV_CODEC_ID_HEVC: type = 8;  break;
+    case AV_CODEC_ID_VP9:  type = 10; break;
+    case AV_CODEC_ID_AV1:  type = 11; break;
+    default: return 0;
+    }
+    int prev = 0;
+    cudaGetDevice(&prev);
+    cudaSetDevice(gpu);
+    cudaFree(nullptr);   // cuvid はドライバ API の current context を使うので primary context を current に
+    NvDecCaps c{};
+    c.eCodecType = type;
+    c.eChromaFormat = 1;   // 4:2:0
+    c.nBitDepthMinus8 = unsigned(std::max(0, bitdepth - 8));
+    const int r = fn(&c);
+    cudaSetDevice(prev);
+    return (r == 0 && c.bIsSupported) ? int(c.nNumNVDECs) : 0;
+}
+} // namespace
 
 // ffmpeg初期化
 bool nvgpudecode::initialized_ffmpeg()
@@ -134,6 +192,14 @@ bool nvgpudecode::initialized_ffmpeg()
 
     qDebug() << "bit depth:" << VideoInfo.bitdepth;
 
+    // マルチ GPU デコード: 転送の圧縮とタイルの割り振り（開くときの設定）
+    xferAlgo_  = XferCodec::parse(g_AppSettings.decode_xfer_codec);
+    xferDelta_ = g_AppSettings.decode_xfer_delta;
+    const std::vector<int> tileGpu = assignDecodeTiles(
+        int(video_stream_indices.size()),
+        avcodec_get_name(fmt_ctx->streams[video_stream_indices[0]]->codecpar->codec_id));
+    VideoInfo.tile_gpu.clear();
+
     // ------------------------
     // デコーダ作成（GPU）
     // ------------------------
@@ -142,6 +208,7 @@ bool nvgpudecode::initialized_ffmpeg()
 
         vd.emplace_back();
         auto& dec = vd.back();
+        dec.gpu = (i < (int)tileGpu.size()) ? tileGpu[i] : g_openglDeviceID;
 
         //リングバッファフレーム作成
         // ★ ゼロコピー化後は、このリングが「デコード結果の保護」そのものになる。
@@ -187,7 +254,18 @@ bool nvgpudecode::initialized_ffmpeg()
             return false;
         }
 
-        dec.codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+        // 別 GPU のタイルはその GPU のデバイスコンテキストで開く
+        AVBufferRef* devctx = hw_device_ctx;
+        if (dec.gpu != g_openglDeviceID) {
+            devctx = remote_hw_ctx(dec.gpu);
+            if (!devctx) {
+                qWarning() << "[nvgpudecode] GPU" << dec.gpu << "で開けないので表示用 GPU でデコードします tile" << i;
+                dec.gpu = g_openglDeviceID;
+                devctx = hw_device_ctx;
+            }
+        }
+        VideoInfo.tile_gpu.push_back(dec.gpu);
+        dec.codec_ctx->hw_device_ctx = av_buffer_ref(devctx);
         dec.codec_ctx->pkt_timebase = st->time_base;
 
         ret = avcodec_parameters_to_context(dec.codec_ctx, st->codecpar);
@@ -263,6 +341,26 @@ bool nvgpudecode::initialized_ffmpeg()
         VideoInfo.height_scale = 1;
     }
 
+    // GPU ごとの NVDEC の基数と、割り振りの表示（"Decode GPU: 0×3 + 1×1"。複数 GPU のときだけ）
+    {
+        std::map<int, int> per;
+        for (int g : VideoInfo.tile_gpu) per[g]++;
+        VideoInfo.gpu_nvdecs.clear();
+        const AVCodecParameters* vpar = fmt_ctx->streams[video_stream_indices[0]]->codecpar;
+        for (const auto& [g, n] : per) {
+            const int e = nvdecEngines(g, vpar->codec_id, VideoInfo.bitdepth);
+            if (e > 0) VideoInfo.gpu_nvdecs[g] = e;
+            qDebug().noquote() << QString("[nvgpudecode] GPU%1: NVDEC %2 基、%3 タイル").arg(g).arg(e > 0 ? QString::number(e) : "?").arg(n);
+        }
+        if (per.size() > 1) {
+            QStringList parts;
+            parts << QString("%1×%2").arg(g_openglDeviceID).arg(per[g_openglDeviceID]);
+            for (const auto& [g, n] : per) if (g != g_openglDeviceID) parts << QString("%1×%2").arg(g).arg(n);
+            VideoInfo.decode_mode = VideoInfo.decode_mode.trimmed() + "\nDecode GPU: " + parts.join(" + ") + "\n";
+            qDebug().noquote() << "[nvgpudecode] マルチ GPU デコード:" << parts.join(" + ");
+        }
+    }
+
     // ------------------------
     // CUDA メモリ確保
     // ------------------------
@@ -307,6 +405,7 @@ bool nvgpudecode::initialized_ffmpeg()
                 }
             }
             qDebug() << "[nvgpudecode] NVDEC 完了待ち: イベント方式";
+
         } else {
             decode_ready_ev.clear();
 
@@ -479,6 +578,297 @@ void nvgpudecode::get_decode_image(){
 nvgpudecode::~nvgpudecode()
 {
     clear_pending();
+    release_remote();
+}
+
+// ==============================================================
+// マルチ GPU デコード: 別 GPU のタイルの転送（docs/MULTI_GPU_DECODE.md）
+// ==============================================================
+AVBufferRef* nvgpudecode::remote_hw_ctx(int gpu)
+{
+    auto it = remote_ctx_.find(gpu);
+    if (it != remote_ctx_.end()) return it->second;
+
+    AVBufferRef* ctx = nullptr;
+    AVDictionary* opts = nullptr;
+    av_dict_set(&opts, "primary_ctx", "1", 0);   // Runtime API と同じコンテキスト（イベントで順序を取るため）
+    const int ret = av_hwdevice_ctx_create(&ctx, AV_HWDEVICE_TYPE_CUDA,
+                                           QString::number(gpu).toUtf8().constData(), opts, 0);
+    av_dict_free(&opts);
+    if (ret < 0) {
+        qWarning() << "[nvgpudecode] GPU" << gpu << "のデバイスコンテキストを作れません:" << ffmpegErrStr(ret);
+        return nullptr;
+    }
+    remote_ctx_[gpu] = ctx;
+    return ctx;
+}
+
+bool nvgpudecode::init_remote()
+{
+    if (remote_init_) return true;
+    cudaSetDevice(g_openglDeviceID);
+    if (cudaStreamCreateWithFlags(&xfer_stream_, cudaStreamNonBlocking) != cudaSuccess) return false;
+    for (int s = 0; s < kStage; s++) {
+        cudaEventCreateWithFlags(&local_ev_[s], cudaEventDisableTiming);
+        cudaEventCreateWithFlags(&h2d_ev_[s],   cudaEventDisableTiming);
+    }
+    for (auto& [g, ctx] : remote_ctx_) {
+        Q_UNUSED(ctx);
+        cudaSetDevice(g);
+        RemoteGpu& r = remote_[g];
+        for (int s = 0; s < kStage; s++) {   // 時間を測るので DisableTiming なし
+            cudaEventCreate(&r.beg[s]);
+            cudaEventCreate(&r.end[s]);
+        }
+    }
+    cudaSetDevice(g_openglDeviceID);
+    remote_init_ = (cudaGetLastError() == cudaSuccess);
+    return remote_init_;
+}
+
+// 圧縮転送のタイルを詰めたまま GUI に渡せるか（QML 版、1 行が 16 バイトの倍数・高さ偶数）。
+//   渡せるなら差分は GUI の変換カーネル（tile_rows.cuh）が戻すので、転送先リング r_y / r_uv は要らない
+bool nvgpudecode::packed_eligible(const AVFrame* f) const
+{
+    const int bps = VideoInfo.bitdepth > 8 ? 2 : 1;
+    return xferAlgo_ != XferCodec::None && g_AppSettings.gui_reads_packed_tiles
+        && (f->width * bps) % 16 == 0 && f->height % 2 == 0;
+}
+
+// 転送先リング（詰めたまま渡すときは不要）と、圧縮しない転送の中継（圧縮するときは不要）
+bool nvgpudecode::alloc_remote_tile(int i, AVFrame* f)
+{
+    VideoDecorder& d = vd[i];
+    const bool needRing  = !packed_eligible(f) && d.r_y.empty();
+    const bool needStage = xferAlgo_ == XferCodec::None && d.h_y.empty();
+    if (!needRing && !needStage) return true;
+    const int    bps    = VideoInfo.bitdepth > 8 ? 2 : 1;   // P010 は 2 バイト
+    const size_t wBytes = size_t(f->width) * bps;
+    const int    h      = f->height;
+
+    cudaSetDevice(g_openglDeviceID);
+    if (needRing) {
+        // 転送先（表示用 GPU。hw_frames と同じ段数）
+        d.r_y.assign(ringSize, nullptr);
+        d.r_uv.assign(ringSize, nullptr);
+        for (int j = 0; j < ringSize; j++) {
+            if (cudaMallocPitch((void**)&d.r_y[j],  &d.r_ypitch,  wBytes, h)     != cudaSuccess ||
+                cudaMallocPitch((void**)&d.r_uv[j], &d.r_uvpitch, wBytes, h / 2) != cudaSuccess) {
+                cudaGetLastError();
+                qWarning() << "[nvgpudecode] 転送先の確保に失敗 tile" << i;
+                return false;
+            }
+        }
+    }
+    if (needStage) {
+        // 中継（ページ固定。Portable = どの GPU からも非同期コピーできる）
+        d.h_y.assign(kStage, nullptr);
+        d.h_uv.assign(kStage, nullptr);
+        for (int s = 0; s < kStage; s++) {
+            if (cudaHostAlloc((void**)&d.h_y[s],  wBytes * h,       cudaHostAllocPortable) != cudaSuccess ||
+                cudaHostAlloc((void**)&d.h_uv[s], wBytes * (h / 2), cudaHostAllocPortable) != cudaSuccess) {
+                cudaGetLastError();
+                qWarning() << "[nvgpudecode] 中継バッファ（ページ固定メモリ）の確保に失敗 tile" << i;
+                return false;
+            }
+        }
+        d.h_rowBytes = wBytes;
+        d.h_rows     = h;
+        qDebug().noquote() << QString("[nvgpudecode] tile%1: GPU%2 → メインメモリ → GPU%3 で転送（1 枚 %4 MB）")
+                                  .arg(i).arg(d.gpu).arg(g_openglDeviceID).arg(wBytes * h * 1.5 / 1e6, 0, 'f', 1);
+    }
+    return true;
+}
+
+// xfer_stream_ に積んだ転送の完了を decode_ready にする（GUI はこれだけ待つ）
+void nvgpudecode::record_decode_ready()
+{
+    if (dec_sync_by_event && ringNo < (int)decode_ready_ev.size() && decode_ready_ev[ringNo]
+        && cudaEventRecord(decode_ready_ev[ringNo], xfer_stream_) == cudaSuccess) {
+        Frame.decode_ready = decode_ready_ev[ringNo];
+    } else {
+        cudaGetLastError();
+        cudaStreamSynchronize(xfer_stream_);
+        Frame.decode_ready = nullptr;
+    }
+}
+
+// 別 GPU のタイルを表示用 GPU のリング（r_y / r_uv の ringNo）へ送る
+bool nvgpudecode::transfer_remote(const std::vector<int>& tiles)
+{
+    if (!init_remote()) { qWarning() << "[nvgpudecode] 転送の準備に失敗"; return false; }
+    const int s = stage_;
+    stage_ = (stage_ + 1) % kStage;
+
+    // 圧縮転送。失敗したらこのコマは前フレームを再送。準備に失敗したときは xferAlgo_ が None になり、
+    //   次のコマから（バッファを確保し直して）下の 2 段コピー
+    if (xferAlgo_ != XferCodec::None) return transfer_compressed(tiles, s);
+
+    // 1 段目: その GPU の既定ストリーム（cuvid の出力コピーの後）で → メインメモリ
+    std::vector<int> gpus;
+    for (int i : tiles) if (std::find(gpus.begin(), gpus.end(), vd[i].gpu) == gpus.end()) gpus.push_back(vd[i].gpu);
+    double doneMs = 0, doneBytes = 0;
+    bool ok = true;
+    for (int g : gpus) {
+        RemoteGpu& r = remote_[g];
+        cudaSetDevice(g);
+        // 前回この枠の D2H の時間（終わっていれば。待たない）
+        if (r.used[s] && cudaEventQuery(r.end[s]) == cudaSuccess) {
+            float ms = 0;
+            if (cudaEventElapsedTime(&ms, r.beg[s], r.end[s]) == cudaSuccess) { doneMs += ms; doneBytes += r.bytes[s]; }
+        }
+        cudaGetLastError();
+        if (h2d_used_[s]) cudaStreamWaitEvent(0, h2d_ev_[s], 0);
+        cudaEventRecord(r.beg[s], 0);
+        double bytes = 0;
+        for (int i : tiles) {
+            if (vd[i].gpu != g) continue;
+            const VideoDecorder& d = vd[i];
+            const AVFrame* f = d.hw_frames[ringNo];
+            ok = ok
+              && cudaMemcpy2DAsync(d.h_y[s],  d.h_rowBytes, f->data[0], size_t(f->linesize[0]),
+                                   d.h_rowBytes, d.h_rows,     cudaMemcpyDeviceToHost, 0) == cudaSuccess
+              && cudaMemcpy2DAsync(d.h_uv[s], d.h_rowBytes, f->data[1], size_t(f->linesize[1]),
+                                   d.h_rowBytes, d.h_rows / 2, cudaMemcpyDeviceToHost, 0) == cudaSuccess;
+            bytes += double(d.h_rowBytes) * d.h_rows * 1.5;
+        }
+        cudaEventRecord(r.end[s], 0);
+        r.used[s]  = true;
+        r.bytes[s] = bytes;
+    }
+    cudaSetDevice(g_openglDeviceID);
+    if (doneMs > 0) emit transfer_time_ms(doneMs, doneBytes / (doneMs * 1e6));
+
+    // 2 段目: 表示用 GPU のタイルと D2H の完了を待って → 表示用 GPU
+    cudaEventRecord(local_ev_[s], dec_stream);
+    cudaStreamWaitEvent(xfer_stream_, local_ev_[s], 0);
+    for (int g : gpus) cudaStreamWaitEvent(xfer_stream_, remote_[g].end[s], 0);
+    for (int i : tiles) {
+        const VideoDecorder& d = vd[i];
+        ok = ok
+          && cudaMemcpy2DAsync(d.r_y[ringNo],  d.r_ypitch,  d.h_y[s],  d.h_rowBytes,
+                               d.h_rowBytes, d.h_rows,     cudaMemcpyHostToDevice, xfer_stream_) == cudaSuccess
+          && cudaMemcpy2DAsync(d.r_uv[ringNo], d.r_uvpitch, d.h_uv[s], d.h_rowBytes,
+                               d.h_rowBytes, d.h_rows / 2, cudaMemcpyHostToDevice, xfer_stream_) == cudaSuccess;
+    }
+    cudaEventRecord(h2d_ev_[s], xfer_stream_);
+    h2d_used_[s] = true;
+    if (!ok) {
+        qWarning() << "[nvgpudecode] タイルの転送に失敗:" << cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    record_decode_ready();
+    return true;
+}
+
+// 圧縮転送（XferCodec は 1 枚の別 GPU のタイルをまとめて扱う）。順序の取り方は 2 段コピーと同じ
+bool nvgpudecode::transfer_compressed(const std::vector<int>& tiles, int s)
+{
+    std::map<int, std::vector<int>> byGpu;
+    for (int i : tiles) byGpu[vd[i].gpu].push_back(i);
+
+    const int bps = VideoInfo.bitdepth > 8 ? 2 : 1;
+    // 性能 HUD: 圧縮・送出は GPU ごとに並行なので最大、展開は xfer_stream_ で順に進むので合計
+    double cmpMs = 0, sendMs = 0, decMs = 0, raw = 0, comp = 0;
+    double fetchMs = 0, decompMs = 0, invMs = 0;
+    bool haveStats = false, ok = true;
+    for (auto& [g, idx] : byGpu) {
+        std::unique_ptr<XferCodec>& c = codecs_[g];
+        if (!c) {
+            std::vector<int> w, h;
+            for (int i : idx) { w.push_back(vd[i].hw_frames[ringNo]->width); h.push_back(vd[i].hw_frames[ringNo]->height); }
+            c = std::make_unique<XferCodec>();
+            const bool pack = packed_eligible(vd[idx[0]].hw_frames[ringNo]);   // 詰めたまま GUI へ（差分は変換で戻す）
+            if (!c->init(g, g_openglDeviceID, xferAlgo_, xferDelta_, bps, w, h, kStage, pack ? ringSize : 0)) {
+                qWarning() << "[nvgpudecode] 圧縮転送を使えないので、圧縮しない転送に戻します";
+                codecs_.clear();
+                cudaSetDevice(g_openglDeviceID);
+                xferAlgo_ = XferCodec::None;
+                return false;
+            }
+        }
+        XferCodec::Stats st;   // この枠の前回の結果（待たない）
+        if (c->takeStats(s, st)) {
+            cmpMs  = (std::max)(cmpMs, st.compressMs);
+            sendMs = (std::max)(sendMs, st.sendMs);
+            decMs    += st.expandMs;
+            fetchMs  += (std::max)(0.0, st.fetchMs);
+            decompMs += (std::max)(0.0, st.decompMs);
+            invMs    += (std::max)(0.0, st.invMs);
+            raw += st.rawBytes; comp += st.compBytes; haveStats = true;
+        }
+        std::vector<const AVFrame*> frames;
+        for (int i : idx) frames.push_back(vd[i].hw_frames[ringNo]);
+        ok = ok && c->encode(s, frames, h2d_used_[s] ? h2d_ev_[s] : nullptr);
+    }
+    cudaSetDevice(g_openglDeviceID);
+    if (haveStats && cmpMs + sendMs > 0) {
+        // 実効速度 = 元の大きさ ÷ 圧縮と送出の遅い方（2 組を交互に使って重ねているため）
+        emit transfer_time_ms(sendMs, raw / ((std::max)(cmpMs, sendMs) * 1e6));
+        emit transfer_codec_stats(comp > 0 ? raw / comp : 0.0, cmpMs, decMs);
+        emit transfer_expand_parts(fetchMs, decompMs, invMs);
+    }
+
+    // 表示用 GPU: 表示用 GPU のタイルと各 GPU の圧縮の完了を待って展開
+    cudaEventRecord(local_ev_[s], dec_stream);
+    cudaStreamWaitEvent(xfer_stream_, local_ev_[s], 0);
+    for (auto& [g, idx] : byGpu) cudaStreamWaitEvent(xfer_stream_, codecs_[g]->encodedEvent(s), 0);
+    for (auto& [g, idx] : byGpu) {
+        XferCodec& c = *codecs_[g];
+        std::vector<XferCodec::Dst> dst;   // 詰めたまま渡すときは転送先リング r_y が無い（使わない）
+        if (!c.packed())
+            for (int i : idx) dst.push_back({ vd[i].r_y[ringNo], vd[i].r_ypitch, vd[i].r_uv[ringNo], vd[i].r_uvpitch });
+        ok = ok && c.decode(s, ringNo, xfer_stream_, dst);
+        if (c.packed()) {
+            // 詰めたまま渡す: Frame のタイルを展開先（リングの ringNo 段）に向ける
+            for (size_t k = 0; k < idx.size(); k++) {
+                const int i = idx[k];
+                Frame.d_y[i]         = c.packedPlane(ringNo, int(2 * k));
+                Frame.y_pitch[i]     = c.planeRowBytes(int(2 * k));
+                Frame.d_uv[i]        = c.packedPlane(ringNo, int(2 * k + 1));
+                Frame.uv_pitch[i]    = c.planeRowBytes(int(2 * k + 1));
+                Frame.tile_packed[i] = 1;
+            }
+            Frame.packed_delta = xferDelta_ ? 1 : 0;
+        }
+    }
+    cudaSetDevice(g_openglDeviceID);
+    cudaEventRecord(h2d_ev_[s], xfer_stream_);
+    h2d_used_[s] = true;
+    if (!ok) return false;
+    record_decode_ready();
+    return true;
+}
+
+void nvgpudecode::release_remote()
+{
+    codecs_.clear();   // 中で各 GPU を待ってから解放する
+    for (auto& [g, r] : remote_) {
+        cudaSetDevice(g);
+        cudaDeviceSynchronize();
+        for (int s = 0; s < kStage; s++) {
+            if (r.beg[s]) cudaEventDestroy(r.beg[s]);
+            if (r.end[s]) cudaEventDestroy(r.end[s]);
+        }
+    }
+    remote_.clear();
+    cudaSetDevice(g_openglDeviceID);
+    if (xfer_stream_) { cudaStreamSynchronize(xfer_stream_); cudaStreamDestroy(xfer_stream_); xfer_stream_ = nullptr; }
+    for (int s = 0; s < kStage; s++) {
+        if (local_ev_[s]) { cudaEventDestroy(local_ev_[s]); local_ev_[s] = nullptr; }
+        if (h2d_ev_[s])   { cudaEventDestroy(h2d_ev_[s]);   h2d_ev_[s] = nullptr; }
+    }
+    remote_init_ = false;
+    for (VideoDecorder& d : vd) {
+        for (uint8_t* p : d.r_y)  if (p) cudaFree(p);
+        for (uint8_t* p : d.r_uv) if (p) cudaFree(p);
+        for (uint8_t* p : d.h_y)  if (p) cudaFreeHost(p);
+        for (uint8_t* p : d.h_uv) if (p) cudaFreeHost(p);
+        d.r_y.clear(); d.r_uv.clear(); d.h_y.clear(); d.h_uv.clear();
+    }
+    // デコーダ（codec_ctx）も参照を持っているので、ここで外しても先には壊れない
+    for (auto& [g, ctx] : remote_ctx_) if (ctx) av_buffer_unref(&ctx);
+    remote_ctx_.clear();
 }
 
 
@@ -601,12 +991,18 @@ bool nvgpudecode::pump_stream(int i, std::vector<bool>& got,
 
     AVPacket* p = pending_[i].front();
 
+    QElapsedTimer tm;   // 性能 HUD の内訳（prof_）
+    tm.start();
     int r = avcodec_send_packet(vd[i].codec_ctx, p);
+    prof_.send[tileGpu(i)] += tm.nsecsElapsed() / 1e6;
 
     if (r == AVERROR(EAGAIN)) {
         // 出力キューが満杯。1 枚受け取って空けてから送り直す。
         // ★ ここで pending_ から取り除かないこと（＝捨てない）
-        if (receive_into_slot(i, &pts[i])) {
+        tm.restart();
+        const bool ok = receive_into_slot(i, &pts[i]);
+        prof_.recv[tileGpu(i)] += tm.nsecsElapsed() / 1e6;
+        if (ok) {
             if (!got[i]) { got[i] = true; got_count++; }
             return true;
         }
@@ -619,7 +1015,10 @@ bool nvgpudecode::pump_stream(int i, std::vector<bool>& got,
 
     if (r < 0) return false;
 
-    if (receive_into_slot(i, &pts[i])) {
+    tm.restart();
+    const bool ok = receive_into_slot(i, &pts[i]);
+    prof_.recv[tileGpu(i)] += tm.nsecsElapsed() / 1e6;
+    if (ok) {
         if (!got[i]) { got[i] = true; got_count++; }
         return true;
     }
@@ -888,6 +1287,9 @@ void nvgpudecode::get_singledecode_image() {
 
 //映像マルチストリーム
 void nvgpudecode::get_multidecode_image() {
+    QElapsedTimer total;   // 性能 HUD の内訳（全体。残りを「その他」にする）
+    total.start();
+    prof_.clear();
     const int N = (int)vd.size();
     if ((int)pending_.size() != N) pending_.resize(N);
 
@@ -954,7 +1356,11 @@ void nvgpudecode::get_multidecode_image() {
         if (got_count >= N) break;
 
         // ② 足りなければ読み足す（pending_ に積むだけ）
-        if (!read_into_pending()) { eof = true; break; }
+        QElapsedTimer tr;
+        tr.start();
+        const bool more = read_into_pending();
+        prof_.read += tr.nsecsElapsed() / 1e6;
+        if (!more) { eof = true; break; }
         read_guard++;
     }
 
@@ -997,6 +1403,31 @@ void nvgpudecode::get_multidecode_image() {
     }
 
     publish_decode_frame(&got_frame);
+    emit_decode_breakdown(total.nsecsElapsed() / 1e6);
+}
+
+// 性能 HUD: デコード（待ち）の内訳を送る（表示用 GPU を先頭に、GPU ごとの送る・受け取る）
+void nvgpudecode::emit_decode_breakdown(double totalMs)
+{
+    QVariantList parts;
+    double sum = prof_.read + prof_.xfer;
+    auto add = [&](const QString& key, const QString& label, double ms) {
+        parts << QVariantMap{ {"key", key}, {"label", label}, {"ms", ms} };
+    };
+    add("read", QStringLiteral("読み込み"), prof_.read);
+    std::vector<int> gpus{ g_openglDeviceID };
+    for (const auto& [g, ms] : prof_.recv) if (g != g_openglDeviceID) gpus.push_back(g);
+    for (int g : gpus) {
+        const double s = prof_.send.count(g) ? prof_.send[g] : 0.0;
+        const double r = prof_.recv.count(g) ? prof_.recv[g] : 0.0;
+        if (!prof_.send.count(g) && !prof_.recv.count(g)) continue;
+        add(QString("send%1").arg(g), QString("GPU%1 送る").arg(g), s);
+        add(QString("recv%1").arg(g), QString("GPU%1 受取").arg(g), r);
+        sum += s + r;
+    }
+    add("xfer",  QStringLiteral("転送の発行"), prof_.xfer);
+    add("other", QStringLiteral("その他"), (std::max)(0.0, totalMs - sum));
+    emit decode_breakdown(parts);
 }
 
 // ==============================================================
@@ -1076,8 +1507,25 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
     Frame.tile_w     = VideoInfo.width;
     Frame.tile_h     = VideoInfo.height;
 
+    std::vector<int> remoteTiles;   // このコマで別の GPU から送るタイル（transfer_remote）
+    for (uint8_t& p : Frame.tile_packed) p = 0;   // 詰めたタイルは transfer_compressed が付け直す
+    Frame.packed_delta = 0;
     for (int i = 0; i < (int)vd.size() && i < VideoFrame::MAX_TILES; i++) {
         AVFrame* f = vd[i].hw_frames[ringNo];
+        if (vd[i].gpu >= 0 && vd[i].gpu != g_openglDeviceID) {
+            // 別の GPU でデコードしたタイル: 表示用 GPU のリングへ送ってから、そちらを渡す
+            if (!alloc_remote_tile(i, f)) {
+                resend_last_frame();
+                return;
+            }
+            // 詰めたまま渡すときは r_y が無い（transfer_compressed が展開先に向け直す）
+            Frame.d_y[i]      = vd[i].r_y.empty()  ? nullptr : vd[i].r_y[ringNo];
+            Frame.y_pitch[i]  = vd[i].r_ypitch;
+            Frame.d_uv[i]     = vd[i].r_uv.empty() ? nullptr : vd[i].r_uv[ringNo];
+            Frame.uv_pitch[i] = vd[i].r_uvpitch;
+            remoteTiles.push_back(i);
+            continue;
+        }
         Frame.d_y[i]      = f->data[0];
         Frame.y_pitch[i]  = (size_t)f->linesize[0];
         Frame.d_uv[i]     = f->data[1];
@@ -1096,7 +1544,17 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
     //   ★ dec_stream は NULL（既定ストリーム）でも正常。判定は
     //     dec_sync_by_event で行うこと。
     // ==============================================================
-    if (dec_sync_by_event && ringNo < (int)decode_ready_ev.size() && decode_ready_ev[ringNo]) {
+    if (!remoteTiles.empty()) {
+        // 別の GPU のタイルがあるコマ: 転送して decode_ready を記録（transfer_remote）
+        QElapsedTimer tx;   // 性能 HUD の内訳（転送の発行）
+        tx.start();
+        const bool sent = transfer_remote(remoteTiles);
+        prof_.xfer += tx.nsecsElapsed() / 1e6;
+        if (!sent) {
+            resend_last_frame();
+            return;
+        }
+    } else if (dec_sync_by_event && ringNo < (int)decode_ready_ev.size() && decode_ready_ev[ringNo]) {
         if (cudaEventRecord(decode_ready_ev[ringNo], dec_stream) == cudaSuccess) {
             Frame.decode_ready = decode_ready_ev[ringNo];
         } else {

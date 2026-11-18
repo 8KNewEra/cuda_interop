@@ -5,6 +5,7 @@
 #include "qobject.h"
 #include <QFileDialog>
 #include <string>
+#include <map>
 #include <cuda_runtime.h>
 #define STATE_NOT_ENCODE 0
 #define STATE_ENCODE_READY 1
@@ -23,6 +24,12 @@ struct AppSettings
 
     // Info
     bool videoInfo_flag = false;
+    bool perf_hud = false;              // 性能 HUD（QML 版。映像の左下に処理段ごとの時間）
+    // マルチ GPU デコードの転送の圧縮: "none" / "ans" / "cascaded" / "bitcomp"、差分（docs/MULTI_GPU_DECODE.md）
+    QString decode_xfer_codec = "ans";
+    bool    decode_xfer_delta = true;
+    // 実行時だけ（保存しない）: GUI が詰めたタイル（VideoFrame::tile_packed）を変換できるか。QML 版の VideoEngine だけ対応
+    bool    gui_reads_packed_tiles = false;
     bool histgram_flag  = false;
 
     // Playback
@@ -39,6 +46,60 @@ struct AppSettings
     bool sobelfilterEnabled = false;
     bool gaussianfilterEnabled = false;
     bool averagingfilterEnabled = false;
+    // ---- 以下は QML 版の画像処理・表示ツール（ini の [Filter] に保存。logfile_control.cpp）----
+    // フィルタの係数パラメータ（直接編集した係数は保存しない）
+    int  gaussian_kernel_size = 7;      // 3 / 5 / 7 / 9
+    int  gaussian_sigma100 = 84;        // σ × 100（既定は旧固定 7x7 カーネルに近い値）
+    bool gaussian_normalize = true;
+    int  gaussian_mode = 0;             // 0 = ぼかし、1 = シャープ化（アンシャープマスク）
+    int  sharpen_amount = 100;          // シャープ化の強さ %（0..500）
+    int  averaging_kernel_size = 7;
+    bool averaging_normalize = true;
+    // ソーベル: 0 = エッジのみ、1 = ピーキング（シェーダの u_mode には 1 / 2 で渡す）
+    int  sobel_mode = 0;
+    int  peaking_threshold = 25;        // 0..100
+    int  peaking_color = 0;             // 0 赤 / 1 緑 / 2 青 / 3 黄 / 4 白
+    // 画像補正（明るさ・コントラスト・シャドウ・ハイライト: -100..100、ガンマ ×100）
+    bool colorEnabled = false;          // 画像補正の ON/OFF（変数名・ini キーは互換のため colorEnabled のまま）
+    int  color_brightness = 0;
+    int  color_contrast = 0;
+    int  color_shadows = 0;             // -100..100（＋で暗部を持ち上げる）
+    int  color_highlights = 0;          // -100..100（－で明部を抑える）
+    int  color_gamma100 = 100;
+    int  color_saturation = 100;        // 彩度 %（0..200）。UI では「色補正」側の項目
+    // 色補正: 色温度・ティント・彩度 ＋ R/G/B ごとのゲイン %（0..200）、オフセット（-100..100）、ガンマ ×100（10..300）
+    bool rgbEnabled = false;
+    int  color_temperature = 0;         // -100..100（＋で暖色、－で寒色）
+    int  color_tint = 0;                // -100..100（＋でマゼンタ寄り、－でグリーン寄り）
+    int  rgb_gain[3]    = {100, 100, 100};
+    int  rgb_offset[3]  = {0, 0, 0};
+    int  rgb_gamma100[3] = {100, 100, 100};
+    // チャンネル表示（表示専用）：0 = R、1 = G、2 = B、3 = 輝度
+    bool channelEnabled = false;
+    int  channel_mode = 3;
+    // トーンカーブ：0 = RGB 全体、1 = R、2 = G、3 = B。点は "入力:出力,..."（0..255）
+    bool curveEnabled = false;
+    QString curve_pts[4] = { "0:0,255:255", "0:0,255:255", "0:0,255:255", "0:0,255:255" };
+    // 比較表示（表示専用）：方向 0 = 左右（左が補正前）、1 = 上下（上が補正前）、位置 0.1% 単位（0..1000）
+    bool compareEnabled = false;
+    int  compare_dir = 0;
+    int  compare_pos10 = 500;
+    // タイル境界チェック（表示専用）：境界線・段差の強調、しきい値は 8bit 階調（1..64）
+    bool seamEnabled = false;
+    bool seam_grid = true;
+    bool seam_highlight = true;
+    int  seam_threshold = 8;
+    int  seam_grid_color = 0;           // 0 水色 / 1 マゼンタ / 2 赤 / 3 緑 / 4 黄 / 5 白
+    int  seam_highlight_color = 1;
+    // スポイト（表示専用）：表示する値 0 = 補正後、1 = 補正前、2 = 両方
+    bool eyedropperEnabled = false;
+    int  eyedropper_mode = 2;
+    // ゼブラ（表示専用。ヒストグラム・画像保存・エンコードには入らない）
+    bool zebraEnabled = false;
+    bool zebra_high_on = true;
+    int  zebra_high_level = 95;         // 輝度 %（以上で縞）
+    bool zebra_low_on = false;
+    int  zebra_low_level = 5;           // 輝度 %（以下で縞）
 
     QString screenshot_format = "png";
     QString screenshot_mode = "high";
@@ -48,6 +109,10 @@ struct AppSettings
     int screenshot_jpeg_quality = 90;
     // JPEG の色差サンプリング: "444" / "422" / "420"
     QString screenshot_jpeg_subsampling = "420";
+    // PNG / TIFF のビット深度: "16"（10bit 以上の動画は 16bit で保存）/ "8"（常に 8bit）。JPEG / BMP は常に 8bit
+    QString screenshot_depth = "16";
+    // 10bit 以上の動画を 8bit で保存するときのディザ: "on"（縞を抑える）/ "off"（値そのまま。解析向け）
+    QString screenshot_dither = "on";
 };
 
 // エンコード設定の構造体
@@ -97,7 +162,20 @@ struct EncodeSettings {
     int width_tile = 1;
     int height_tile = 1;
     std::vector<int> tile_gpu_map;
+
+    // 書き出しのビット深度の希望（8 / 10）。10 でも実際に 10bit（P010）で出すのは
+    //   「素材が 10bit 経路（RGBA16）」かつ「HEVC / AV1」のときだけ（encode_out_10bit）
+    int output_depth = 10;
+    // 10bit 経路の素材を 8bit（NV12）で書き出すときのディザ（true = 縞を抑える / false = 値そのまま）
+    bool dither = true;
 };
+
+// 実際に 10bit（P010）で書き出すか。save_encode と設定画面で同じ判定を使う
+//   srcHighBit: 素材を 10bit 経路（RGBA16）で処理しているか（QML 版のみ。Widgets 版は常に false）
+inline bool encode_out_10bit(const EncodeSettings& s, bool srcHighBit)
+{
+    return srcHighBit && s.output_depth >= 10 && !s.codec.contains("h264");
+}
 
 // ★ ストリーム 1 本あたりのビットレート上限（bps）。コーデックのレベル由来。
 //   target と max は必ず別々に通すこと。
@@ -139,14 +217,16 @@ inline int encode_ring_size(int b_frames)
 }
 
 // プール全体の VRAM（MB）。ring + 4 は FFmpeg の hwframe 側の予備。
-inline int encode_pool_mb(int tile_w, int tile_h, int ring, int tiles)
+//   bytes_per_sample: NV12 は 1、P010（10bit 出力）は 2
+inline int encode_pool_mb(int tile_w, int tile_h, int ring, int tiles, int bytes_per_sample = 1)
 {
     if (tile_w <= 0 || tile_h <= 0 || tiles <= 0) return 0;
-    return (int)((double)tile_w * tile_h * 1.5 * (ring + 4) * tiles / (1024.0 * 1024.0));
+    return (int)((double)tile_w * tile_h * 1.5 * bytes_per_sample * (ring + 4) * tiles / (1024.0 * 1024.0));
 }
 
 // ★書き込みを許可したいクラスをここで「前方宣言」
 class encode_setting;
+class EncodeController;
 
 // 設定を管理するシングルトンクラス
 class EncodeSettingsManager
@@ -170,6 +250,7 @@ private:
     // 3. ★書き込みクラスとして 'encode_setting' を指定
     friend class logfile_control;
     friend class encode_setting;
+    friend class EncodeController;   // Qt Quick 版のエンコード設定
 
     // 4.【書き込み用】
     //    'encode_setting' クラスだけが呼び出せる
@@ -209,6 +290,10 @@ struct DecodeInfo {
     int width_scale=1;
     int height_scale=1;
     QString decode_mode="";
+    // タイルごとのデコード GPU（CUDA デバイス番号。nvgpudecode が開くときに決める。CPU デコードは空）
+    std::vector<int> tile_gpu;
+    // GPU 番号 → NVDEC の基数（このコーデックで使える数。取れない GPU は入れない）。性能 HUD の上限の目安用
+    std::map<int, int> gpu_nvdecs;
 
     //時間
     int max_hour = 0;
@@ -318,6 +403,10 @@ struct VideoFrame {
     size_t   y_pitch [MAX_TILES] = {};
     uint8_t* d_uv    [MAX_TILES] = {};
     size_t   uv_pitch[MAX_TILES] = {};
+    // 圧縮転送で詰めたまま届いたタイル（docs/MULTI_GPU_DECODE.md 5.2）。tile_packed[i] = 1 なら d_y / d_uv は
+    //   詰めた並び（pitch = 1 行のバイト数）で値はそのまま（P010 も >>6 済み）。packed_delta = 1 なら差分のまま（変換で戻す）
+    uint8_t  tile_packed[MAX_TILES] = {};
+    int      packed_delta = 0;
 
     // --- SRC_YUV_PLANE のとき使用 ---
     //   CPUデコード結果をGPUへ上げただけのプレーンを直接指す（RGBA化しない）
@@ -394,10 +483,16 @@ struct GPUInfo {
     int Max_Memory_Usage = 0;
     int Memory_Usage = 0;
     int GPU_Usage = 0;
+    int Encoder_Usage = 0;   // NVENC 使用率（%）
+    int Decoder_Usage = 0;   // NVDEC 使用率（%）
+    int Graphics3D_Usage = -1; // 3D エンジン使用率（%、タスクマネージャーの「3D」）。取れない環境は -1
+    int Cuda_Usage = -1;       // CUDA エンジン使用率（%、タスクマネージャーの「Cuda」「Compute_n」）。取れない環境は -1
     //エンコード設定用
     int tile_weight = 10;
     int backup_tile_weight = -1;
     bool av1_forced_disabled = false;
+    //デコード設定用（マルチ GPU デコードの重み 0..10、-1 = 未設定 = 表示用 GPU だけ 10。decode_gpu_map.h）
+    int decode_weight = -1;
 };
 
 extern AppSettings g_AppSettings;

@@ -187,6 +187,10 @@ private:
     GLuint fbo = 0;
     GLuint vao = 0;
     GLuint vbo = 0;
+    // 2 パス目以降用（上下反転しない quad）。vao は 1 パス目で CUDA の上下逆のデータを
+    //   反転させる。全パスで反転するとパス数が偶数のときに逆さまになる
+    GLuint vaoNoFlip = 0;
+    GLuint vboNoFlip = 0;
     GLuint tempfbo = 0;
     QPainter painter;
 

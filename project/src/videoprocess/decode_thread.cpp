@@ -3,6 +3,7 @@
 #include "qfileinfo.h"
 #include <QDebug>
 #include <QThread>
+#include <QElapsedTimer>
 #include <cmath>
 
 extern "C" {
@@ -450,6 +451,30 @@ void decode_thread::get_decode_audio()
 //     デコードが走ると hw_frames リングを追い越し、GUI が変換中の面を
 //     上書きする（エンコード結果が帯状にズレる）。
 // ==============================================================
+
+// ==============================================================
+// デコードの先行（描画と次のデコードを重ねる。順方向の通常再生だけ）
+//   GUI の未受け取り（inflight_frames）が上限未満なら、受け取りを待たずに次の刻みでもデコードする。
+//   リング 6 段に対し 未受け取り ≦ 2 ＋ GUI の GPU 処理中 2 ＋ デコード中 1 = 5。上限を上げるならリングも増やすこと
+//   CUDA_VIEWER_DECODE_AHEAD=0（または 1）で従来の 1:1
+// ==============================================================
+int decode_thread::decode_ahead_limit()
+{
+    static const int n = [] {
+        bool ok = false;
+        const int v = qEnvironmentVariableIntValue("CUDA_VIEWER_DECODE_AHEAD", &ok);
+        return ok ? std::clamp(v, 0, 2) : 2;
+    }();
+    return n;
+}
+
+bool decode_thread::can_decode_ahead() const
+{
+    return encode_state.load() == STATE_NOT_ENCODE
+        && video_play_flag && !video_reverse_flag
+        && inflight_frames.load() < decode_ahead_limit();
+}
+
 void decode_thread::receve_decode_flag(){
     QMutexLocker locker(&mutex);
 
@@ -613,6 +638,7 @@ void decode_thread::processFrame() {
             decode_state=STATE_DECODING;
 
             // ★ この経路は画像を書き換えないので slot は進めない
+            ++inflight_frames;   // GUI が受け取ると receve_decode_flag で減る（先行の枚数の勘定を合わせる）
             emit send_decode_image(Frame,true,video_reverse_flag);
             decode_state=STATE_WAIT_DECODE_FLAG;
         }
@@ -622,8 +648,11 @@ void decode_thread::processFrame() {
     //デコード
     if(decode_state==STATE_DECODE_READY){
         decode_state=STATE_DECODING;
+        QElapsedTimer t;      // 性能 HUD 用（NVDEC の完了待ちを含む実時間）
+        t.start();
         get_decode_image();
-        decode_state=STATE_WAIT_DECODE_FLAG;
+        emit decode_time_ms(t.nsecsElapsed() / 1e6);
+        decode_state = can_decode_ahead() ? STATE_DECODE_READY : STATE_WAIT_DECODE_FLAG;
     }else{
         drop_flag=true;
     }

@@ -136,6 +136,8 @@ GLWidget::~GLWidget() {
         glDeleteBuffers(1, &vbo_hist);
         vbo_hist = 0;
     }
+    if (vboNoFlip != 0) { glDeleteBuffers(1, &vboNoFlip); vboNoFlip = 0; }
+    if (vaoNoFlip != 0) { glDeleteVertexArrays(1, &vaoNoFlip); vaoNoFlip = 0; }
 
     //CUDA Mallocされたやつ
     if (d_hist_stats) {
@@ -198,6 +200,26 @@ void GLWidget::initializeGL()
     glVertexAttribPointer(texLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
 
     glBindVertexArray(0);
+
+    // 2 パス目以降用：テクスチャ座標を反転しない quad（インデックスは共用）
+    static const float verticesNoFlip[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+        1.0f, -1.0f, 1.0f, 0.0f,
+        1.0f,  1.0f, 1.0f, 1.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f
+    };
+    glGenVertexArrays(1, &vaoNoFlip);
+    glBindVertexArray(vaoNoFlip);
+    glGenBuffers(1, &vboNoFlip);
+    glBindBuffer(GL_ARRAY_BUFFER, vboNoFlip);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verticesNoFlip), verticesNoFlip, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glEnableVertexAttribArray(posLoc);
+    glVertexAttribPointer(posLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(texLoc);
+    glVertexAttribPointer(texLoc, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // === シェーダ読み込み ===
     Sobel_program.addShaderFromSourceFile(QOpenGLShader::Vertex, "../../project/shaders/sobel.vert");
@@ -288,7 +310,7 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
     const shader* passes[3];
     int nPass = 0;
 
-    //適用順は従来どおり Gaussian → Sobel → Averaging
+    // 適用順は Gaussian → Sobel → Averaging（ON のものだけ）
     if (g_AppSettings.gaussianfilterEnabled)  passes[nPass++] = &Gaussian_shader;
     if (g_AppSettings.sobelfilterEnabled)     passes[nPass++] = &Sobel_shader;
     if (g_AppSettings.averagingfilterEnabled) passes[nPass++] = &Averaging_shader;
@@ -299,8 +321,6 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
     }
 
     //FBO描画開始
-    glBindVertexArray(vao);
-
     GLuint srcTex = inputTextureID;
     bool   toFbo  = ((nPass % 2) == 1);   // 最終パスが fbo に着地するように開始側を決める
 
@@ -310,6 +330,11 @@ void GLWidget::FBO_Rendering(VideoFrame Frame){
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(passes[i]->progId);
+        // 上下反転は 1 パス目（CUDA の入力 → GL の向き）だけ。2 パス目以降は前のパスの
+        //   結果（すでに GL の向き）を読むので反転しない。texelSize.y の符号も合わせ、
+        //   カーネルの「上の行」が常に画像の上を指すようにする
+        glBindVertexArray(i == 0 ? vao : vaoNoFlip);
+        glUniform2f(passes[i]->loc_texelSize, 1.0f / width_, (i == 0 ? 1.0f : -1.0f) / height_);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, srcTex);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
