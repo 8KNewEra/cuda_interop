@@ -38,6 +38,8 @@ __global__ void xfer_fwd_kernel(const uint8_t* src, size_t srcPitch, uint8_t* ds
 }
 
 // 逆変換: 詰めた並び → pitched。差分なら行ごとに累積和（1 ブロック 1 行、LAG 系列ごとに走査）
+//   逆変換は「詰めたまま GUI に渡せない」とき（Widgets 版、1 行が 16 バイトの倍数でない）だけ使う。
+//   渡せるときは GUI の変換カーネル（tile_rows.cuh）が同じ計算で差分を戻す
 constexpr int kScanThreads = 256;
 
 template <typename T, int LAG>
@@ -107,10 +109,9 @@ __global__ void xfer_inv_kernel(const uint8_t* src, uint8_t* dst, size_t dstPitc
     }
 }
 
-// 逆変換（16 バイト単位で読み書きする版）。1 ブロック 1 行、1 スレッドが連続する V 要素（16 バイト）を受け持つ
-//   スレッドの中で V 要素を順に足してから（系列ごと）、スレッドの合計をブロックで走査して前の分を足す。
-//   16K のタイル幅（3840）なら 1 行が 1 回の走査で終わる（元の版は 256 要素ごとに走査を繰り返していた）
-//   条件: 1 行のバイト数と転送先の pitch・先頭が 16 の倍数（xfer_inv が判定して、満たさなければ元の版）
+// 逆変換（16 バイト単位で読み書きする版）。1 スレッドが連続する V 要素（16 バイト）を受け持ち、
+//   スレッド内で系列ごとに足してから、スレッドの合計をブロックで走査して前の分を足す
+//   条件: 1 行のバイト数と転送先の pitch・先頭が 16 の倍数（xfer_inv が判定して、満たさなければ上の版）
 template <typename T, int LAG>
 __global__ void xfer_inv_vec_kernel(const uint8_t* src, uint8_t* dst, size_t dstPitch,
                                     int elems, int rows, int shift, int bits, int delta)

@@ -113,10 +113,11 @@ protected:
     int mismatch_total_ = 0;
 
     // ---- マルチ GPU デコード（docs/MULTI_GPU_DECODE.md）----
-    //   別 GPU のタイルは表示用 GPU の r_y / r_uv へ送ってから GUI に渡す（transfer_remote）。
-    //   圧縮しない: その GPU → メインメモリ（h_y / h_uv）→ 表示用 GPU の 2 段コピー
-    //   圧縮する  : XferCodec（GPU ごと。nvCOMP）
-    //   メインメモリの受け渡しは kStage 枠を順に使い、同じ枠の再利用は前回の取り込み完了（h2d_ev_）を待つ
+    //   別 GPU のタイルは publish_decode_frame → transfer_remote で表示用 GPU へ送ってから GUI に渡す。
+    //   圧縮しない: その GPU → メインメモリ（h_y / h_uv）→ 表示用 GPU の r_y / r_uv（2 段コピー）
+    //   圧縮する  : XferCodec（別 GPU ごと）。詰めたまま渡せるときは展開先を Frame に載せ、差分は GUI の変換で戻す
+    //   メインメモリの受け渡しは kStage 枠を順に使い、同じ枠の再利用は前回の取り込み完了（h2d_ev_）を待つ。
+    //   decode_ready は xfer_stream_ の最後（表示用 GPU のタイル local_ev_ も待たせてから）で記録する
     static constexpr int kStage = 3;
     struct RemoteGpu {                       // 圧縮しない転送の D2H（時間は性能 HUD の「転送」）
         cudaEvent_t beg[kStage] = {};
@@ -145,7 +146,8 @@ protected:
     void record_decode_ready();                             // xfer_stream_ の最後で decode_ready を記録
     void release_remote();
 
-    // ---- 性能 HUD: デコード（待ち）の内訳（1 コマ分の CPU 実時間 ms）----
+    // ---- 性能 HUD: デコード（待ち）の内訳（get_multidecode_image 1 回分の CPU 実時間 ms）----
+    //   cuvid は avcodec_send_packet の中でパース〜出力コピーまで進むので、待ちはほぼ send に出る
     struct DecodeProf {
         double read = 0, xfer = 0;
         std::map<int, double> send, recv;   // GPU 番号 → ms

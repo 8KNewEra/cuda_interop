@@ -25,7 +25,7 @@ inline bool gpuCanDecode(const GPUInfo& g, const char* codec)
     return true;   // H.264 / HEVC は対象 GPU（sm_75 以降）すべて
 }
 
-// gpus: 重みを読む GPU の一覧（設定画面は編集中の値を渡す）。使える GPU が無ければ全部を表示用 GPU に
+// gpus: 重みを読む GPU の一覧（設定画面は編集中の値を渡す）。使える GPU が無い・1 タイルなら全部を表示用 GPU に
 inline std::vector<int> assignDecodeTiles(int nTiles, const char* codec,
                                           const std::vector<GPUInfo>& gpus = g_GPUInfo)
 {
@@ -40,7 +40,8 @@ inline std::vector<int> assignDecodeTiles(int nTiles, const char* codec,
     }
     std::vector<int> out;
     if (nTiles <= 0) return out;
-    if (c.empty() || sum <= 0) return std::vector<int>(nTiles, g_openglDeviceID);
+    // タイル分割していない動画（1 本）は表示用 GPU に固定（別 GPU に回しても分担にならず、転送が増えるだけ）
+    if (nTiles == 1 || c.empty() || sum <= 0) return std::vector<int>(nTiles, g_openglDeviceID);
 
     // 端数は 余りの大きい順 → 重みの大きい順 → 表示用 GPU → 番号の小さい順
     std::vector<int> cnt(c.size(), 0);

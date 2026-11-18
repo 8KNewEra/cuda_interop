@@ -2,8 +2,9 @@
 #define XFER_CODEC_H
 
 // マルチ GPU デコードの圧縮転送（nvCOMP）。1 つの XferCodec = 1 枚の別 GPU が受け持つタイル
-//   encode（別 GPU）  : xfer_fwd（詰めた並び・差分）→ nvCOMP 圧縮 → xfer_pack（メインメモリへ直接書く）
-//   decode（表示用 GPU）: xfer_fetch（DMA ＋ 見込み超過分はカーネル）→ nvCOMP 展開 → xfer_inv（差分を戻して転送先へ）
+//   encode（別 GPU）    : xfer_fwd（詰めた並び・差分）→ 圧縮 → xfer_pack（メインメモリへカーネルが直接書く）
+//   decode（表示用 GPU）: xfer_fetch（見込みまで DMA、超過分はカーネル）→ 展開
+//                         → 詰めたまま GUI へ（変換カーネルが差分を戻す）か、xfer_inv で戻して転送先へ
 //   流れ・同期・バッファの関係は docs/MULTI_GPU_DECODE.md、カーネルは cuda_kernels/xfer_compress.cu
 
 #include <cuda_runtime.h>
@@ -19,39 +20,45 @@ class XferCodec
 {
 public:
     enum Algo { None = 0, Cascaded, Bitcomp, ANS };
-    static Algo    parse(const QString& s);     // "cascaded" / "bitcomp" / "ans"、それ以外は None
-    static QString name(Algo a);
+    static Algo parse(const QString& s);   // "cascaded" / "bitcomp" / "ans"、それ以外は None
 
-    // 転送先（表示用 GPU 上の面。タイルごと）
+    // 転送先（表示用 GPU 上の 1 タイル。詰めたまま渡すときは使わない）
     struct Dst { uint8_t* y; size_t yPitch; uint8_t* uv; size_t uvPitch; };
+
+    // 1 フレーム分の計測（性能 HUD）。ms は GPU 上の経過時間
+    struct Stats {
+        double compressMs = 0;   // 別 GPU: 前処理 + 圧縮
+        double sendMs = 0;       // 別 GPU: メインメモリへの書き出し（枠の空き待ちは除く）
+        double expandMs = 0;     // 表示用 GPU: 取り込み〜差分戻し
+        double fetchMs = -1, decompMs = -1, invMs = -1;   // その内訳（-1 = 取れない）
+        double rawBytes = 0, compBytes = 0;
+    };
 
     ~XferCodec() { release(); }
 
-    // tileW / tileH: このコーデックが受け持つタイルの大きさ（タイル順）、bps: 1 = NV12、2 = P010
-    //   ringSize > 0: 詰めたまま渡す（差分は GUI の変換カーネルが戻す）。展開先をリングの段数ぶん持つ
+    // tileW / tileH: 受け持つタイルの大きさ（タイル順）、bps: 1 = NV12、2 = P010、nStage: メインメモリの枠数
+    //   ringSize > 0 なら詰めたまま渡す（差分は GUI の変換カーネルが戻す）。展開先をリングの段数ぶん持つ
     bool init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
               const std::vector<int>& tileW, const std::vector<int>& tileH, int nStage, int ringSize = 0);
-    bool ready() const { return ready_; }
+    void release();
 
     // 別 GPU で圧縮してメインメモリの枠 s へ（戻るときは dstGpu が current）
     //   frames: タイル順（data[0] = Y、data[1] = UV）。stageFree: 枠 s を前回読み終えたイベント（無ければ nullptr）
     bool encode(int s, const std::vector<const AVFrame*>& frames, cudaEvent_t stageFree);
     cudaEvent_t encodedEvent(int s) const { return encEnd_[s]; }
 
-    // 表示用 GPU のストリーム st で枠 s を展開して転送先 dst へ（st は encodedEvent(s) を待たせてから呼ぶ）
-    //   詰めたまま渡すときは展開先リングの ring 段へ展開するだけ（dst は使わない。packedPlane で読む）
+    // 表示用 GPU のストリーム st で枠 s を展開する（st には先に encodedEvent(s) を待たせる）
+    //   普段は差分を戻して dst へ。詰めたまま渡すときは展開先リングの ring 段へ展開するだけ（packedPlane で読む）
     bool decode(int s, int ring, cudaStream_t st, const std::vector<Dst>& dst);
-    bool    packed() const { return ringSize_ > 0; }
+    bool     packed() const { return ringSize_ > 0; }
     uint8_t* packedPlane(int ring, int plane) const { return dTight_[ring] + planes_[plane].off; }   // plane: タイル t の Y = 2t、UV = 2t+1
-    size_t  planeRowBytes(int plane) const { return size_t(planes_[plane].elems) * size_t(bps_); }
+    size_t   planeRowBytes(int plane) const { return size_t(planes_[plane].elems) * size_t(bps_); }
 
-    // 枠 s の前回の計測（終わっていれば true。待たない）。圧縮 / 送出 / 展開と内訳の ms、元と圧縮後のバイト数
-    bool takeStats(int s, double& cmpMs, double& sendMs, double& decMs, double& rawBytes, double& compBytes,
-                   double* fetchMs = nullptr, double* decompMs = nullptr, double* invMs = nullptr);
-
-    void release();
+    // 枠 s の前回の計測（終わっていれば true。待たない）
+    bool takeStats(int s, Stats& out);
 
 private:
+    static QString name(Algo a);
     struct Plane { size_t off; int elems; int rows; int lag; };   // 詰めた並びの 1 面（lag: 差分の相手。Y = 1、UV = 2）
     bool ready_ = false;
     int  src_ = -1, dst_ = -1, nStage_ = 0, bps_ = 1, ringSize_ = 0;

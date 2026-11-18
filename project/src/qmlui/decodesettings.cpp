@@ -53,6 +53,13 @@ bool DecodeSettings::multiGpu() const
     return used.size() > 1;
 }
 
+QString DecodeSettings::weightsNote() const
+{
+    if (g_GPUInfo.size() <= 1) return QStringLiteral("GPU が 1 基のため使用できません");
+    if (fileTiles_ == 1)       return QStringLiteral("タイル分割されていない動画は表示用 GPU でデコードします");
+    return QString();
+}
+
 QVariantList DecodeSettings::gpus() const
 {
     const std::vector<GPUInfo> tmp = editedGpus(weights_);

@@ -104,7 +104,8 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
-                    text: "タイルを重みの比で GPU に割り振ってデコードします。重み 0 の GPU は使いません。"
+                    text: decodeSettings.weightsEnabled ? "タイルを重みの比で GPU に割り振ってデコードします。重み 0 の GPU は使いません。"
+                                                        : decodeSettings.weightsNote
                     color: Theme.muted; font.family: Theme.font; font.pixelSize: 13
                     lineHeight: 1.25
                 }
@@ -166,7 +167,7 @@ Item {
                                 width: 150
                                 from: 0; to: 10
                                 value: cell.g.weight || 0
-                                enabled: cell.g.canDecode !== false
+                                enabled: cell.g.canDecode !== false && decodeSettings.weightsEnabled
                                 onMoved: (v) => decodeSettings.setWeight(cell.g.id, v)
                             }
                             Text {

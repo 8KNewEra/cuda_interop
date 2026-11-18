@@ -787,11 +787,15 @@ bool nvgpudecode::transfer_compressed(const std::vector<int>& tiles, int s)
                 return false;
             }
         }
-        double cm, sm, d, rb, cb, fm = -1, xm = -1, im = -1;   // この枠の前回の結果（待たない）
-        if (c->takeStats(s, cm, sm, d, rb, cb, &fm, &xm, &im)) {
-            cmpMs = (std::max)(cmpMs, cm); sendMs = (std::max)(sendMs, sm); decMs += d;
-            fetchMs += (std::max)(0.0, fm); decompMs += (std::max)(0.0, xm); invMs += (std::max)(0.0, im);
-            raw += rb; comp += cb; haveStats = true;
+        XferCodec::Stats st;   // この枠の前回の結果（待たない）
+        if (c->takeStats(s, st)) {
+            cmpMs  = (std::max)(cmpMs, st.compressMs);
+            sendMs = (std::max)(sendMs, st.sendMs);
+            decMs    += st.expandMs;
+            fetchMs  += (std::max)(0.0, st.fetchMs);
+            decompMs += (std::max)(0.0, st.decompMs);
+            invMs    += (std::max)(0.0, st.invMs);
+            raw += st.rawBytes; comp += st.compBytes; haveStats = true;
         }
         std::vector<const AVFrame*> frames;
         for (int i : idx) frames.push_back(vd[i].hw_frames[ringNo]);

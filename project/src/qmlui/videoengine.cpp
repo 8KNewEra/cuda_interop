@@ -1054,9 +1054,9 @@ static P010Tiles tilesForRows(const VideoFrame& Frame, int cols, bool& aligned, 
     return t;
 }
 
-// 8bit 経路: NVDEC の NV12 タイル → RGBA8
+// 8bit 経路: NVDEC の NV12 タイル → RGBA8（10bit は p010ToSurface）
 //   本線は行ごとのカーネル（圧縮転送の詰めたタイルもこれで差分を戻す）。先頭・pitch が 16 の倍数でないときだけ
-//   タイル数ごとの旧版（詰めたタイルは読めない）
+//   タイル数ごとの旧版（通常は通らない。詰めたタイルは読めない）
 bool VideoEngine::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
 {
     const int outW = width_;
@@ -1067,7 +1067,7 @@ bool VideoEngine::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t su
     if (Frame.tile_count == 1 || Frame.tile_count == 2 || Frame.tile_count == 4 || Frame.tile_count == 8) {
         bool aligned = false, packed = false;
         const P010Tiles t = tilesForRows(Frame, VideoInfo.width_scale, aligned, packed);
-        if (aligned && VideoInfo.bitdepth <= 8)
+        if (aligned)
             return CUDA_IMG_Proc->nv12_tiles_rows_to_rgba8_surf(surf, t, outW, outH, interop_stream);
         if (packed) {
             qWarning() << "[VideoEngine] 詰めたタイルの先頭・pitch が 16 の倍数ではありません";
@@ -1088,8 +1088,6 @@ bool VideoEngine::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t su
 
     switch (Frame.tile_count) {
     case 1:
-        if (VideoInfo.bitdepth == 10)
-            return CUDA_IMG_Proc->NV12_to_RGBA_10bit_surf(surf, y[0], yp[0], uv[0], up[0], outW, outH, interop_stream);
         return CUDA_IMG_Proc->NV12_to_RGBA_8bit_surf(surf, y[0], yp[0], uv[0], up[0], outW, outH, interop_stream);
     case 2:
         return CUDA_IMG_Proc->nv12x2_to_rgba_merge_surf(

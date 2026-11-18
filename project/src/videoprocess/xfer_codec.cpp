@@ -22,6 +22,20 @@ extern "C" cudaError_t xfer_fetch(const uint64_t* hostHdr, uint64_t* devHdr, int
 namespace {
 size_t align16(size_t v) { return (v + 15) & ~size_t(15); }
 
+// 時間を測るイベント（DisableTiming なし）を n 個
+bool createEvents(std::vector<cudaEvent_t>& v, int n)
+{
+    v.assign(n, nullptr);
+    bool ok = true;
+    for (cudaEvent_t& e : v) ok = cudaEventCreate(&e) == cudaSuccess && ok;
+    return ok;
+}
+void destroyEvents(std::vector<cudaEvent_t>& v)
+{
+    for (cudaEvent_t e : v) if (e) cudaEventDestroy(e);
+    v.clear();
+}
+
 // nvCOMP のオプション（データ型: NV12 = 1 バイト、P010 = 2 バイト。ANS はバイト列のみ）
 nvcompBatchedCascadedCompressOpts_t cascadedOpts(int bps)
 {
@@ -147,12 +161,9 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
         chk(cudaMemcpy(k.inPtrs, in.data(), sizeof(void*) * n_, cudaMemcpyHostToDevice));
         chk(cudaMemcpy(k.slotPtrs, slot.data(), sizeof(void*) * n_, cudaMemcpyHostToDevice));
     }
-    encBeg_.assign(nStage_, nullptr); encEnd_.assign(nStage_, nullptr); used_.assign(nStage_, false);
-    cmpEnd_.assign(nStage_, nullptr); sendBeg_.assign(nStage_, nullptr);
-    for (int s = 0; s < nStage_; s++) {
-        chk(cudaEventCreate(&encBeg_[s])); chk(cudaEventCreate(&encEnd_[s]));
-        chk(cudaEventCreate(&cmpEnd_[s])); chk(cudaEventCreate(&sendBeg_[s]));
-    }
+    used_.assign(nStage_, false);
+    ok = createEvents(encBeg_, nStage_) && createEvents(cmpEnd_, nStage_)
+      && createEvents(sendBeg_, nStage_) && createEvents(encEnd_, nStage_) && ok;
 
     // ---- メインメモリ（Portable: どの GPU からも使える、Mapped: カーネルから直接書ける）----
     hHdr_.assign(nStage_, nullptr); hData_.assign(nStage_, nullptr);
@@ -189,12 +200,8 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
         }
         chk(cudaMemcpy(dOutBufBytes_, chunkBytes.data(), sizeof(size_t) * n_, cudaMemcpyHostToDevice));
     }
-    decBeg_.assign(nStage_, nullptr); decEnd_.assign(nStage_, nullptr);
-    fetchEnd_.assign(nStage_, nullptr); decompEnd_.assign(nStage_, nullptr);
-    for (int s = 0; s < nStage_; s++) {
-        chk(cudaEventCreate(&decBeg_[s]));   chk(cudaEventCreate(&decEnd_[s]));
-        chk(cudaEventCreate(&fetchEnd_[s])); chk(cudaEventCreate(&decompEnd_[s]));
-    }
+    ok = createEvents(decBeg_, nStage_) && createEvents(fetchEnd_, nStage_)
+      && createEvents(decompEnd_, nStage_) && createEvents(decEnd_, nStage_) && ok;
 
     if (!ok) {
         qWarning() << "[xfer] メモリの確保に失敗:" << cudaGetErrorString(cudaGetLastError());
@@ -311,8 +318,7 @@ bool XferCodec::decode(int s, int ring, cudaStream_t st, const std::vector<Dst>&
     return ok;
 }
 
-bool XferCodec::takeStats(int s, double& cmpMs, double& sendMs, double& decMs, double& rawBytes, double& compBytes,
-                          double* fetchMs, double* decompMs, double* invMs)
+bool XferCodec::takeStats(int s, Stats& out)
 {
     if (!ready_ || !used_[s]) return false;
     if (cudaEventQuery(encEnd_[s]) != cudaSuccess || cudaEventQuery(decEnd_[s]) != cudaSuccess) { cudaGetLastError(); return false; }
@@ -320,22 +326,21 @@ bool XferCodec::takeStats(int s, double& cmpMs, double& sendMs, double& decMs, d
     if (cudaEventElapsedTime(&c, encBeg_[s], cmpEnd_[s]) != cudaSuccess ||
         cudaEventElapsedTime(&w, sendBeg_[s], encEnd_[s]) != cudaSuccess ||
         cudaEventElapsedTime(&d, decBeg_[s], decEnd_[s]) != cudaSuccess) { cudaGetLastError(); return false; }
-    cmpMs = c; sendMs = w; decMs = d;
-    rawBytes  = double(total_);
-    compBytes = double(hHdr_[s][1]);   // xfer_pack が書いたヘッダ（合計バイト）
-    lastComp_ = size_t(hHdr_[s][1]);   // 次の取り込みの見込みに使う
-    // 展開の内訳（取り込み / nvCOMP の展開 / 差分を戻して書く）
+    out = Stats{};
+    out.compressMs = c;
+    out.sendMs     = w;
+    out.expandMs   = d;
+    out.rawBytes   = double(total_);
+    out.compBytes  = double(hHdr_[s][1]);   // xfer_pack が書いたヘッダの合計バイト
+    lastComp_      = size_t(hHdr_[s][1]);   // 次の取り込みの見込みに使う
     float f = 0, x = 0;
     if (cudaEventElapsedTime(&f, decBeg_[s], fetchEnd_[s]) == cudaSuccess &&
         cudaEventElapsedTime(&x, fetchEnd_[s], decompEnd_[s]) == cudaSuccess) {
-        if (fetchMs)  *fetchMs  = f;
-        if (decompMs) *decompMs = x;
-        if (invMs)    *invMs    = (std::max)(0.0f, d - f - x);
+        out.fetchMs  = f;
+        out.decompMs = x;
+        out.invMs    = (std::max)(0.0f, d - f - x);
     } else {
         cudaGetLastError();
-        if (fetchMs) *fetchMs = -1;
-        if (decompMs) *decompMs = -1;
-        if (invMs) *invMs = -1;
     }
     return true;
 }
@@ -356,10 +361,7 @@ void XferCodec::release()
             if (k.stream) { cudaStreamDestroy(k.stream); k.stream = nullptr; }
             k.used = false;
         }
-        for (cudaEvent_t& e : encBeg_) if (e) { cudaEventDestroy(e); e = nullptr; }
-        for (cudaEvent_t& e : encEnd_) if (e) { cudaEventDestroy(e); e = nullptr; }
-        for (cudaEvent_t& e : cmpEnd_) if (e) { cudaEventDestroy(e); e = nullptr; }
-        for (cudaEvent_t& e : sendBeg_) if (e) { cudaEventDestroy(e); e = nullptr; }
+        destroyEvents(encBeg_); destroyEvents(cmpEnd_); destroyEvents(sendBeg_); destroyEvents(encEnd_);
     }
     if (dst_ >= 0) {
         cudaSetDevice(dst_);
@@ -370,13 +372,12 @@ void XferCodec::release()
         dTight_.clear(); dOutPtrs_.clear();
         freeDev(dOutBufBytes_); freeDev(dOutBytes_); freeDev(dStatus_); freeDev(dTemp_); freeDev(dHdr_);
         if (dPlan_) { bitcompDestroyPlan(static_cast<bitcompHandle_t>(dPlan_)); dPlan_ = nullptr; }
-        for (cudaEvent_t& e : fetchEnd_)  if (e) { cudaEventDestroy(e); e = nullptr; }
-        for (cudaEvent_t& e : decompEnd_) if (e) { cudaEventDestroy(e); e = nullptr; }
-        for (cudaEvent_t& e : decBeg_) if (e) { cudaEventDestroy(e); e = nullptr; }
-        for (cudaEvent_t& e : decEnd_) if (e) { cudaEventDestroy(e); e = nullptr; }
+        destroyEvents(decBeg_); destroyEvents(fetchEnd_); destroyEvents(decompEnd_); destroyEvents(decEnd_);
     }
-    for (uint64_t*& p : hHdr_)  if (p) { cudaFreeHost(p); p = nullptr; }
-    for (uint8_t*&  p : hData_) if (p) { cudaFreeHost(p); p = nullptr; }
+    for (uint64_t* p : hHdr_)  if (p) cudaFreeHost(p);
+    for (uint8_t*  p : hData_) if (p) cudaFreeHost(p);
+    hHdr_.clear(); hData_.clear();
+    used_.clear();
     sTempBytes_ = dTempBytes_ = 0;
     ready_ = false;
 }

@@ -36,7 +36,8 @@ struct VideoDecorder {
 
     // マルチ GPU デコード（NVDEC 経路のみ。docs/MULTI_GPU_DECODE.md）
     //   gpu: デコードする GPU（-1 = 表示用 GPU）。別 GPU のタイルは表示用 GPU 上の r_y / r_uv（hw_frames と同じ段数）へ
-    //   送ってから GUI に渡す。h_y / h_uv は圧縮しない転送の中継（ページ固定、nvgpudecode::kStage 枠）
+    //   送ってから GUI に渡す（圧縮転送で詰めたまま渡すときは XferCodec の展開先を使うので空）。
+    //   h_y / h_uv は圧縮しない転送の中継（ページ固定、nvgpudecode::kStage 枠）
     int gpu = -1;
     std::vector<uint8_t*> r_y, r_uv;
     size_t r_ypitch = 0, r_uvpitch = 0;

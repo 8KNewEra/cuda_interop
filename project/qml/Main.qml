@@ -390,7 +390,7 @@ ApplicationWindow {
                     anchors.bottom: parent.bottom
                     anchors.margins: 16
                     width: Math.min(implicitWidth, parent.width - 32)   // 幅は HUD が文字の大きさから決める（最小 320）
-                    height: implicitHeight
+                    height: Math.min(implicitHeight, parent.height - 32)   // 入りきらなければ中をスクロール
                     perf: player.perf
                     fileOpen: player.fileOpen
                     fileKey: player.fileOpen ? (player.videoInfo.fileName || "") : ""

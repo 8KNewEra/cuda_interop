@@ -17,7 +17,7 @@
 //     描画スレッド : VideoEngine::upload 全体の CPU 時間（GPU 待ち・フェンス待ちを含む）
 //     圧縮         : 圧縮転送のとき、別 GPU で差分の前処理と圧縮にかかった時間（その GPU の CUDA イベント間）
 //     転送         : マルチ GPU デコードで別 GPU → メインメモリに送った時間（その GPU の CUDA イベント間）と速度
-//     展開         : 圧縮転送のとき、表示用 GPU で取り込んで展開した時間
+//     展開         : 圧縮転送のとき、表示用 GPU で取り込んで展開した時間（詰めたまま渡すときの差分戻しは「変換」に入る）
 //     フレーム間隔 : 新しいフレームを受け取った間隔（= 実際の描画のフレーム時間）
 //
 //   GPU の計測結果は後から届く（待たない）。数フレームぶんのリングで発行して、届いたものから集計する
@@ -55,7 +55,7 @@ public:
     void addTransfer(double ms, double gbps);
     // 圧縮転送（nvCOMP）の圧縮率と、別 GPU での圧縮・表示用 GPU での取り込みと展開の時間（ms）
     void addTransferCodec(double ratio, double compressMs, double expandMs);
-    // 展開の内訳（取り込み / nvCOMP の展開 / 差分を戻して書く。ms）
+    // 展開の内訳（取り込み / nvCOMP の展開 / 差分を戻して書く。ms、-1 = 無し）
     void addExpandParts(double fetchMs, double decompMs, double invMs);
     // デコード（待ち）の内訳（nvgpudecode::decode_breakdown。[{key, label, ms}]）
     void addDecodeBreakdown(const QVariantList& parts);

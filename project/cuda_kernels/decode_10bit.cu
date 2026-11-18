@@ -5,7 +5,9 @@
 //   切り替えは VideoEngine::upload が素材ごとに自動で行う。
 //
 //   前半: NVDEC の P010（10bit を 16bit の上位に詰めた NV12 形式）。タイル分割 x1 / x2 / x4 / x8 は
-//         1 本のカーネルで扱う（タイルは左上から行ごとの順。列数 cols で位置を決める）
+//         1 本のカーネルで扱う（タイルは左上から行ごとの順。列数 cols で位置を決める）。
+//         本線は行ごとのカーネル（p010_tiles_rows_to_rgba16_surf_kernel、tile_rows.cuh。圧縮転送の詰めたタイルも読む）、
+//         画素ごとの p010_tiles_to_rgba16_surf_kernel は先頭・pitch が 16 の倍数でないときの予備
 //   後半: CPU デコード（cpudecode / avidecode）の 10bit プレーン（YUV420P / YUV422P / GBRP）
 //
 //   変換式は decode_8bit.cu の 10bit 入力用カーネルと同じ（BT.709 limited range）。

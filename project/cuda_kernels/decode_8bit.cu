@@ -2,7 +2,9 @@
 // 8bit 経路: デコード結果 → RGBA8（OpenGL テクスチャへ surface 経由で直接書く）
 //   入力は 8bit / 10bit どちらもあるが、出力は常に RGBA8（10bit 入力も 8bit に落とす）
 //
-//   前半: NVDEC の NV12（1 ストリーム 8bit / 10bit、タイル分割 x2 / x4 / x8 の結合）
+//   前半: NVDEC の NV12。QML 版は行ごとのカーネル（nv12_tiles_rows_to_rgba8_surf_kernel、tile_rows.cuh）が本線で、
+//         圧縮転送の詰めたタイルもこれで読む。画素ごとの旧版（1 ストリーム、x2 / x4 / x8 の結合）は
+//         Widgets 版と、先頭・pitch が 16 の倍数でないときの予備
 //   後半: CPU デコード（cpudecode / avidecode）の YUV / RGB プレーン
 //   起動口は CUDA_ImageProcess（src/imageprocess/cuda_imageprocess.cpp）
 //

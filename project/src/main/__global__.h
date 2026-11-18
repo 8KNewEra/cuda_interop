@@ -403,8 +403,8 @@ struct VideoFrame {
     size_t   y_pitch [MAX_TILES] = {};
     uint8_t* d_uv    [MAX_TILES] = {};
     size_t   uv_pitch[MAX_TILES] = {};
-    // 圧縮転送で届いた 10bit のタイル（docs/MULTI_GPU_DECODE.md）。tile_packed[i] = 1 なら d_y / d_uv は
-    //   詰めた並び（pitch = 1 行のバイト数）で値は 10bit。packed_delta = 1 なら差分のまま（変換で戻す）
+    // 圧縮転送で詰めたまま届いたタイル（docs/MULTI_GPU_DECODE.md 5.2）。tile_packed[i] = 1 なら d_y / d_uv は
+    //   詰めた並び（pitch = 1 行のバイト数）で値はそのまま（P010 も >>6 済み）。packed_delta = 1 なら差分のまま（変換で戻す）
     uint8_t  tile_packed[MAX_TILES] = {};
     int      packed_delta = 0;
 
