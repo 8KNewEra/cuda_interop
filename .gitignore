@@ -38,6 +38,7 @@ obj_out/
 RIFE/
 engines/
 gpuimg/
+3rdparty/
 
 # ---- Logs / Temp ----
 *.log
