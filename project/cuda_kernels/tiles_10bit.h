@@ -18,6 +18,10 @@ struct P010Tiles {
     int            count;   // タイル数（1 / 2 / 4 / 8）
     int            srcW;    // 1 タイルの幅・高さ
     int            srcH;
+    // 圧縮転送で届いたタイル（docs/MULTI_GPU_DECODE.md）。packed[q] = 1 なら y / uv は詰めた並び
+    //   （pitch = 1 行のバイト数）で、値は 10bit（>>6 済み）。delta = 1 なら行内の差分（ジグザグ）で、変換と一緒に戻す
+    uint8_t        packed[8];
+    int            delta;
 };
 
 // NVENC へ渡す NV12 タイル（エンコード出力）。タイルは左上から行ごとの順

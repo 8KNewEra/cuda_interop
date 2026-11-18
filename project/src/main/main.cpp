@@ -152,6 +152,7 @@ int main(int argc, char *argv[])
     const bool qmlUi = useQmlUi(argc, argv);
     if (qmlUi)
         prepareQmlUi();
+    g_AppSettings.gui_reads_packed_tiles = qmlUi;   // Widgets 版（GLWidget）は詰めたタイルを読めない
 
     QApplication app(argc, argv);
 

@@ -107,6 +107,95 @@ __global__ void xfer_inv_kernel(const uint8_t* src, uint8_t* dst, size_t dstPitc
     }
 }
 
+// 逆変換（16 バイト単位で読み書きする版）。1 ブロック 1 行、1 スレッドが連続する V 要素（16 バイト）を受け持つ
+//   スレッドの中で V 要素を順に足してから（系列ごと）、スレッドの合計をブロックで走査して前の分を足す。
+//   16K のタイル幅（3840）なら 1 行が 1 回の走査で終わる（元の版は 256 要素ごとに走査を繰り返していた）
+//   条件: 1 行のバイト数と転送先の pitch・先頭が 16 の倍数（xfer_inv が判定して、満たさなければ元の版）
+template <typename T, int LAG>
+__global__ void xfer_inv_vec_kernel(const uint8_t* src, uint8_t* dst, size_t dstPitch,
+                                    int elems, int rows, int shift, int bits, int delta)
+{
+    constexpr int V = 16 / int(sizeof(T));   // 16（8bit）/ 8（P010）。LAG（1 / 2）の倍数
+    const int y = blockIdx.x;
+    if (y >= rows) return;
+    const uint4* in  = reinterpret_cast<const uint4*>(src + size_t(y) * size_t(elems) * sizeof(T));
+    uint4*       out = reinterpret_cast<uint4*>(dst + size_t(y) * dstPitch);
+    const int vecs = elems / V;
+    const uint32_t mask = (1u << bits) - 1u;
+
+    if (!delta) {
+        for (int i = threadIdx.x; i < vecs; i += blockDim.x) {
+            uint4 w = in[i];
+            T* e = reinterpret_cast<T*>(&w);
+            #pragma unroll
+            for (int j = 0; j < V; j++) e[j] = T(uint32_t(e[j]) << shift);
+            out[i] = w;
+        }
+        return;
+    }
+
+    __shared__ int32_t warpSum[kScanThreads / 32][LAG];
+    __shared__ int32_t carry[LAG];
+    if (threadIdx.x < LAG) carry[threadIdx.x] = 0;
+    __syncthreads();
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+
+    for (int base = 0; base < vecs; base += kScanThreads) {
+        const int i = base + threadIdx.x;
+        uint4 w = make_uint4(0, 0, 0, 0);
+        if (i < vecs) w = in[i];
+        T* e = reinterpret_cast<T*>(&w);
+        // スレッドの中の累積和（系列ごと）
+        int32_t val[V];
+        int32_t tot[LAG];
+        #pragma unroll
+        for (int k = 0; k < LAG; k++) tot[k] = 0;
+        #pragma unroll
+        for (int j = 0; j < V; j++) { tot[j % LAG] += unzigzag(uint32_t(e[j])); val[j] = tot[j % LAG]; }
+        // スレッドの合計をブロックで走査（含む → 自分の分を引いて「前まで」にする）
+        int32_t inc[LAG];
+        #pragma unroll
+        for (int k = 0; k < LAG; k++) {
+            inc[k] = tot[k];
+            #pragma unroll
+            for (int o = 1; o < 32; o <<= 1) {
+                const int32_t t = __shfl_up_sync(0xffffffffu, inc[k], o);
+                if (lane >= o) inc[k] += t;
+            }
+        }
+        if (lane == 31) {
+            #pragma unroll
+            for (int k = 0; k < LAG; k++) warpSum[warp][k] = inc[k];
+        }
+        __syncthreads();
+        if (warp == 0) {
+            #pragma unroll
+            for (int k = 0; k < LAG; k++) {
+                int32_t s = (lane < kScanThreads / 32) ? warpSum[lane][k] : 0;
+                #pragma unroll
+                for (int o = 1; o < 32; o <<= 1) {
+                    const int32_t t = __shfl_up_sync(0xffffffffu, s, o);
+                    if (lane >= o) s += t;
+                }
+                if (lane < kScanThreads / 32) warpSum[lane][k] = s;
+            }
+        }
+        __syncthreads();
+        int32_t prefix[LAG];
+        #pragma unroll
+        for (int k = 0; k < LAG; k++)
+            prefix[k] = (warp > 0 ? warpSum[warp - 1][k] : 0) + carry[k] + (inc[k] - tot[k]);
+        if (i < vecs) {
+            #pragma unroll
+            for (int j = 0; j < V; j++) e[j] = T((uint32_t(val[j] + prefix[j % LAG]) & mask) << shift);
+            out[i] = w;
+        }
+        __syncthreads();
+        if (threadIdx.x < LAG) carry[threadIdx.x] += warpSum[kScanThreads / 32 - 1][threadIdx.x];
+        __syncthreads();
+    }
+}
+
 // 圧縮チャンクの位置（16 バイト境界）を決めてヘッダへ書く（1 スレッド。チャンクは数千まで）
 //   hdr: [0] = チャンク数、[1] = 合計バイト、[2..2+n) = 大きさ、[2+n..2+2n) = 位置（データ域の先頭から）
 __global__ void xfer_scan_kernel(const size_t* compBytes, int n, uint64_t* hdr)
@@ -190,6 +279,20 @@ extern "C" cudaError_t xfer_inv(const uint8_t* src, uint8_t* dst, size_t dstPitc
     const int shift = (bps == 2) ? 6 : 0;
     const int bits  = (bps == 2) ? 10 : 8;
     dim3 block(kScanThreads), grid(rows);
+    // 16 バイト単位で読み書きできるなら速い版（1 行のバイト数・pitch・先頭が 16 の倍数）
+    const size_t rowBytes = size_t(elems) * size_t(bps);
+    const bool vec = rowBytes % 16 == 0 && dstPitch % 16 == 0
+                  && (reinterpret_cast<uintptr_t>(src) & 15) == 0 && (reinterpret_cast<uintptr_t>(dst) & 15) == 0;
+    if (vec) {
+        if (bps == 2) {
+            if (lag == 2) xfer_inv_vec_kernel<uint16_t, 2><<<grid, block, 0, st>>>(src, dst, dstPitch, elems, rows, shift, bits, delta);
+            else          xfer_inv_vec_kernel<uint16_t, 1><<<grid, block, 0, st>>>(src, dst, dstPitch, elems, rows, shift, bits, delta);
+        } else {
+            if (lag == 2) xfer_inv_vec_kernel<uint8_t, 2><<<grid, block, 0, st>>>(src, dst, dstPitch, elems, rows, shift, bits, delta);
+            else          xfer_inv_vec_kernel<uint8_t, 1><<<grid, block, 0, st>>>(src, dst, dstPitch, elems, rows, shift, bits, delta);
+        }
+        return cudaGetLastError();
+    }
     if (bps == 2) {
         if (lag == 2) xfer_inv_kernel<uint16_t, 2><<<grid, block, 0, st>>>(src, dst, dstPitch, elems, rows, shift, bits, delta);
         else          xfer_inv_kernel<uint16_t, 1><<<grid, block, 0, st>>>(src, dst, dstPitch, elems, rows, shift, bits, delta);

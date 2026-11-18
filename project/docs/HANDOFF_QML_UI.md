@@ -176,7 +176,7 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
   更新は安定して順方向に再生している間（`render_active_` かつ逆再生でない）だけ。シーク・コマ送り・一時停止・逆再生の間は
   直前の値のまま（`frozen`、見出しに「停止中 ·」）。段が出たり消えたりしてちらつくため。ファイルを閉じたら消す。
 - デコードの時間は「待ち」（NVDEC は先読みで並行）なので限界は分からない。NVDEC の使用率と基数から上限 fps の目安を出す。
-  マルチ GPU デコードの行（圧縮 / 転送 / 展開、デコード待ちの内訳、上限の計算）は `docs/MULTI_GPU_DECODE.md` の 8。
+  マルチ GPU デコードの行（圧縮 / 転送 / 展開、デコード待ちの内訳、上限の計算）は `docs/MULTI_GPU_DECODE.md` の 9。
   内訳は普段は畳む（行クリックで ▸ / ▾）。
 - 列幅は TextMetrics でその環境の文字幅から決め、HUD の幅も広がる（最小 320。環境によって文字がはみ出たため）。
 - NVDEC 使用率（`GPUInfo::Decoder_Usage`）は NVML と PDH（GPU Engine の VideoDecode）の大きい方（RTX 2070 で NVML が低く出たため）。
@@ -196,6 +196,7 @@ WindowChrome              … OS のタイトルバーを消して QML のヘッ
   使う GPU が 1 枚なら設定画面の圧縮は「なし」表示で触れない。
 - タイル数の目安 = GPU の数 × NVDEC の基数（1 タイル = NVDEC 1 基）。RTX 5000 Ada ×4 で 8 タイル・約 205〜215fps。
 - デコードの先行（順方向の通常再生だけ 1 コマ先へ）。`CUDA_VIEWER_DECODE_AHEAD=0` で無効。
+- 変換は NVDEC のタイルなら 8bit / 10bit とも行ごとのカーネル 1 本（`cuda_kernels/tile_rows.cuh`。圧縮転送のタイルは差分のまま受けて変換で戻す）。
 
 ## 6. エンコード設定（EncodePanel / EncodeController）
 - 開いている間は後ろの画面を 1 枚のテクスチャに焼いて固定（`ShaderEffectSource live:false, hideSource`）。

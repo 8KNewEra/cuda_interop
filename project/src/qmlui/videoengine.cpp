@@ -1029,12 +1029,51 @@ void VideoEngine::initHistTarget(const QSize& size)
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+// NVDEC のタイルを行ごとのカーネル（tile_rows.cuh）に渡す形にする。行ごとに使えるか（先頭・pitch が 16 の倍数）と、
+//   圧縮転送の詰めたタイルがあるかも返す（NVDEC の出力・cudaMallocPitch は常に 16 の倍数）
+static P010Tiles tilesForRows(const VideoFrame& Frame, int cols, bool& aligned, bool& packed)
+{
+    P010Tiles t = {};
+    t.count = Frame.tile_count;
+    t.cols  = std::max(1, cols);   // 横のタイル数（2×1 / 2×2 / 4×2）
+    t.srcW  = Frame.tile_w;
+    t.srcH  = Frame.tile_h;
+    t.delta = Frame.packed_delta;
+    aligned = true;
+    packed  = false;
+    auto a16 = [](const void* p, size_t pitch) { return (reinterpret_cast<uintptr_t>(p) & 15) == 0 && pitch % 16 == 0; };
+    for (int i = 0; i < t.count && i < VideoFrame::MAX_TILES; i++) {
+        t.y  [i] = Frame.d_y[i];
+        t.uv [i] = Frame.d_uv[i];
+        t.yp [i] = Frame.y_pitch[i];
+        t.uvp[i] = Frame.uv_pitch[i];
+        t.packed[i] = Frame.tile_packed[i];
+        packed  = packed  || Frame.tile_packed[i];
+        aligned = aligned && a16(t.y[i], t.yp[i]) && a16(t.uv[i], t.uvp[i]);
+    }
+    return t;
+}
+
+// 8bit 経路: NVDEC の NV12 タイル → RGBA8
+//   本線は行ごとのカーネル（圧縮転送の詰めたタイルもこれで差分を戻す）。先頭・pitch が 16 の倍数でないときだけ
+//   タイル数ごとの旧版（詰めたタイルは読めない）
 bool VideoEngine::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t surf)
 {
     const int outW = width_;
     const int outH = height_;
     const int srcW = Frame.tile_w;
     const int srcH = Frame.tile_h;
+
+    if (Frame.tile_count == 1 || Frame.tile_count == 2 || Frame.tile_count == 4 || Frame.tile_count == 8) {
+        bool aligned = false, packed = false;
+        const P010Tiles t = tilesForRows(Frame, VideoInfo.width_scale, aligned, packed);
+        if (aligned && VideoInfo.bitdepth <= 8)
+            return CUDA_IMG_Proc->nv12_tiles_rows_to_rgba8_surf(surf, t, outW, outH, interop_stream);
+        if (packed) {
+            qWarning() << "[VideoEngine] 詰めたタイルの先頭・pitch が 16 の倍数ではありません";
+            return false;
+        }
+    }
 
     uint8_t* y [VideoFrame::MAX_TILES];
     uint8_t* uv[VideoFrame::MAX_TILES];
@@ -1104,16 +1143,15 @@ bool VideoEngine::p010ToSurface(const VideoFrame& Frame, cudaSurfaceObject_t sur
         qWarning() << "[VideoEngine] unsupported tile count:" << n;
         return false;
     }
-    P010Tiles t = {};
-    t.count = n;
-    t.cols  = std::max(1, VideoInfo.width_scale);   // 横のタイル数（2×1 / 2×2 / 4×2）
-    t.srcW  = Frame.tile_w;
-    t.srcH  = Frame.tile_h;
-    for (int i = 0; i < n; i++) {
-        t.y  [i] = Frame.d_y[i];
-        t.uv [i] = Frame.d_uv[i];
-        t.yp [i] = Frame.y_pitch[i];
-        t.uvp[i] = Frame.uv_pitch[i];
+    bool aligned = false, packed = false;
+    const P010Tiles t = tilesForRows(Frame, VideoInfo.width_scale, aligned, packed);
+    // 本線は行ごとのカーネル（圧縮転送の詰めたタイルもこれで差分を戻す）。先頭・pitch が 16 の倍数でないときだけ旧版
+    //   （NVDEC の出力・cudaMallocPitch は常に満たすので、通常は通らない。詰めたタイルは旧版では読めない）
+    if (aligned)
+        return CUDA_IMG_Proc->p010_tiles_rows_to_rgba16_surf(surf, t, width_, height_, interop_stream);
+    if (packed) {
+        qWarning() << "[VideoEngine] 詰めたタイルの先頭・pitch が 16 の倍数ではありません";
+        return false;
     }
     return CUDA_IMG_Proc->p010_tiles_to_rgba16_surf(surf, t, width_, height_, interop_stream);
 }

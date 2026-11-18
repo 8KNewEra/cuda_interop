@@ -18,6 +18,7 @@
 #include <surface_indirect_functions.h>
 #include <stdint.h>
 #include "tiles_10bit.h"   // P010Tiles
+#include "tile_rows.cuh"
 
 // 0..1 → RGBA16 の 1 チャンネル（四捨五入）
 __device__ __forceinline__ unsigned short to_u16(float v)
@@ -71,6 +72,31 @@ __global__ void p010_tiles_to_rgba16_surf_kernel(
     float R, G, B;
     yuv10_to_rgb(y_row[sx] >> 6, uv_row[uv_x] >> 6, uv_row[uv_x + 1] >> 6, R, G, B);
     write_rgba16(out, ox, oy, R, G, B);
+}
+
+// ##############################################################
+// NVDEC の P010 タイル → RGBA16（10bit の NVDEC 経路の本線。タイル分割 x1 / x2 / x4 / x8 共通）
+//   行ごとの共通部（tile_rows.cuh）で読み、圧縮転送の詰めたタイルは差分を戻しながら変換する
+// ##############################################################
+namespace {
+struct WriteRgba16 {
+    cudaSurfaceObject_t out;
+    __device__ void operator()(int Y, int U, int V, int x, int y) const
+    {
+        float R, G, B;
+        yuv10_to_rgb(Y, U, V, R, G, B);
+        write_rgba16(out, x, y, R, G, B);
+    }
+};
+}
+
+extern "C"
+__global__ void p010_tiles_rows_to_rgba16_surf_kernel(
+    cudaSurfaceObject_t out,
+    P010Tiles t,
+    int outW, int outH)
+{
+    tile_rows::convert<unsigned short, 10, 6>(t, outW, outH, WriteRgba16{ out });
 }
 
 // ##############################################################

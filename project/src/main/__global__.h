@@ -28,6 +28,8 @@ struct AppSettings
     // マルチ GPU デコードの転送の圧縮: "none" / "ans" / "cascaded" / "bitcomp"、差分（docs/MULTI_GPU_DECODE.md）
     QString decode_xfer_codec = "ans";
     bool    decode_xfer_delta = true;
+    // 実行時だけ（保存しない）: GUI が詰めたタイル（VideoFrame::tile_packed）を変換できるか。QML 版の VideoEngine だけ対応
+    bool    gui_reads_packed_tiles = false;
     bool histgram_flag  = false;
 
     // Playback
@@ -401,6 +403,10 @@ struct VideoFrame {
     size_t   y_pitch [MAX_TILES] = {};
     uint8_t* d_uv    [MAX_TILES] = {};
     size_t   uv_pitch[MAX_TILES] = {};
+    // 圧縮転送で届いた 10bit のタイル（docs/MULTI_GPU_DECODE.md）。tile_packed[i] = 1 なら d_y / d_uv は
+    //   詰めた並び（pitch = 1 行のバイト数）で値は 10bit。packed_delta = 1 なら差分のまま（変換で戻す）
+    uint8_t  tile_packed[MAX_TILES] = {};
+    int      packed_delta = 0;
 
     // --- SRC_YUV_PLANE のとき使用 ---
     //   CPUデコード結果をGPUへ上げただけのプレーンを直接指す（RGBA化しない）

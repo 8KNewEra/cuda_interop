@@ -89,7 +89,8 @@ QVariantList DecodeSettings::gpus() const
 QVariantList DecodeSettings::xferCodecOptions() const
 {
     auto opt = [](const char* t, const char* v) { return QVariantMap{ {"text", QString::fromUtf8(t)}, {"value", QString::fromUtf8(v)} }; };
-    return { opt("なし", "none"), opt("ANS（推奨）", "ans"), opt("Cascaded", "cascaded"), opt("Bitcomp", "bitcomp") };
+    // ANS = 圧縮率重視（PCIe が細い構成向け）、Bitcomp = 速さ重視（PCIe が太い構成向け）
+    return { opt("なし", "none"), opt("ANS（圧縮率重視）", "ans"), opt("Bitcomp（速さ重視）", "bitcomp"), opt("Cascaded", "cascaded") };
 }
 
 void DecodeSettings::setXferCodec(const QString& v)

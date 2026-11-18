@@ -13,6 +13,7 @@
 // ==============================================================
 #include <cuda_runtime.h>
 #include <surface_indirect_functions.h>
+#include "tile_rows.cuh"
 
 // ##############################################################
 // NVDEC の NV12
@@ -21,19 +22,8 @@
 // --------------------------------------------------------------
 // 共通: NV12 の 1 画素を RGBA へ（BT.709 limited range）
 // --------------------------------------------------------------
-__device__ __forceinline__ uchar4 nv12_pixel_to_rgba_8bit(
-    const uint8_t* Yp, size_t pitchY,
-    const uint8_t* UVp, size_t pitchUV,
-    int sx, int sy)
+__device__ __forceinline__ uchar4 yuv8_to_rgba_8bit(int Y, int U, int V)
 {
-    int Y = (int)Yp[sy * pitchY + sx];
-
-    int uv_x = sx & ~1;
-    int uv_y = sy >> 1;
-
-    int U = (int)UVp[uv_y * pitchUV + uv_x + 0];
-    int V = (int)UVp[uv_y * pitchUV + uv_x + 1];
-
     float fY = (float)Y - 16.0f;
     float fU = (float)U - 128.0f;
     float fV = (float)V - 128.0f;
@@ -48,6 +38,45 @@ __device__ __forceinline__ uchar4 nv12_pixel_to_rgba_8bit(
     p.z = (uint8_t)fminf(fmaxf(B, 0.0f), 255.0f);
     p.w = 255;
     return p;
+}
+
+__device__ __forceinline__ uchar4 nv12_pixel_to_rgba_8bit(
+    const uint8_t* Yp, size_t pitchY,
+    const uint8_t* UVp, size_t pitchUV,
+    int sx, int sy)
+{
+    int Y = (int)Yp[sy * pitchY + sx];
+
+    int uv_x = sx & ~1;
+    int uv_y = sy >> 1;
+
+    int U = (int)UVp[uv_y * pitchUV + uv_x + 0];
+    int V = (int)UVp[uv_y * pitchUV + uv_x + 1];
+    return yuv8_to_rgba_8bit(Y, U, V);
+}
+
+// ==============================================================
+// NVDEC の NV12 タイル → RGBA8（8bit の NVDEC 経路の本線。タイル分割 x1 / x2 / x4 / x8 共通）
+//   行ごとの共通部（tile_rows.cuh）で読み、圧縮転送の詰めたタイルは差分を戻しながら変換する。
+//   下のタイル数ごとのカーネルは、先頭・pitch が 16 の倍数でないときの保険
+// ==============================================================
+namespace {
+struct WriteRgba8 {
+    cudaSurfaceObject_t out;
+    __device__ void operator()(int Y, int U, int V, int x, int y) const
+    {
+        surf2Dwrite(yuv8_to_rgba_8bit(Y, U, V), out, x * (int)sizeof(uchar4), y);
+    }
+};
+}
+
+extern "C"
+__global__ void nv12_tiles_rows_to_rgba8_surf_kernel(
+    cudaSurfaceObject_t out,
+    P010Tiles t,
+    int outW, int outH)
+{
+    tile_rows::convert<uint8_t, 8, 0>(t, outW, outH, WriteRgba8{ out });
 }
 
 // ==============================================================

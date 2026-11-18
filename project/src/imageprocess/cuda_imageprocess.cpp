@@ -114,6 +114,8 @@ extern "C"{
 
     // ---- decode_10bit.cu: デコード結果 → GL テクスチャ（RGBA16） ----
     __global__ void p010_tiles_to_rgba16_surf_kernel(cudaSurfaceObject_t out, P010Tiles t, int outW, int outH);
+    __global__ void p010_tiles_rows_to_rgba16_surf_kernel(cudaSurfaceObject_t out, P010Tiles t, int outW, int outH);
+    __global__ void nv12_tiles_rows_to_rgba8_surf_kernel(cudaSurfaceObject_t out, P010Tiles t, int outW, int outH);
     __global__ void yuv420p10_to_rgba16_surf_kernel(
         cudaSurfaceObject_t out,
         const uint8_t* y_plane, size_t y_pitch,
@@ -594,6 +596,32 @@ bool CUDA_ImageProcess::p010_tiles_to_rgba16_surf(cudaSurfaceObject_t out, const
     cudaError_t err = cudaLaunchKernel((const void*)p010_tiles_to_rgba16_surf_kernel,
                                        grid, block, args, 0, stream);
     return launch_check(err, "p010_tiles_to_rgba16_surf_kernel");
+}
+
+// NVDEC の NV12 タイル → RGBA8（8bit の NVDEC 経路の本線。詰めたタイルは差分を戻しながら。decode_8bit.cu / tile_rows.cuh）
+bool CUDA_ImageProcess::nv12_tiles_rows_to_rgba8_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
+                                                      int outW, int outH, cudaStream_t stream)
+{
+    P010Tiles t = tiles;
+    void* args[] = { &out, &t, &outW, &outH };
+    dim3 block(256);
+    dim3 grid((t.srcH + 1) / 2, t.count);   // 1 ブロック = 1 タイルの Y 2 行 + UV 1 行
+    cudaError_t err = cudaLaunchKernel((const void*)nv12_tiles_rows_to_rgba8_surf_kernel,
+                                       grid, block, args, 0, stream);
+    return launch_check(err, "nv12_tiles_rows_to_rgba8_surf_kernel");
+}
+
+// NVDEC の P010 タイル → RGBA16（10bit の NVDEC 経路の本線。詰めたタイルは差分を戻しながら。decode_10bit.cu / tile_rows.cuh）
+bool CUDA_ImageProcess::p010_tiles_rows_to_rgba16_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
+                                                       int outW, int outH, cudaStream_t stream)
+{
+    P010Tiles t = tiles;
+    void* args[] = { &out, &t, &outW, &outH };
+    dim3 block(256);
+    dim3 grid((t.srcH + 1) / 2, t.count);   // 1 ブロック = 1 タイルの Y 2 行 + UV 1 行
+    cudaError_t err = cudaLaunchKernel((const void*)p010_tiles_rows_to_rgba16_surf_kernel,
+                                       grid, block, args, 0, stream);
+    return launch_check(err, "p010_tiles_rows_to_rgba16_surf_kernel");
 }
 
 // CPU デコードの YUV420P 10bit → RGBA16

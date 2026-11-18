@@ -113,8 +113,15 @@ public:
     // 10bit 経路（RGBA16 テクスチャ。10bit 以上の素材のとき VideoEngine が使う）
     // ==========================================================
     // NVDEC の P010 → GL テクスチャ（RGBA16）。タイル分割 x1 / x2 / x4 / x8 共通
+    //   rows: 10bit の NVDEC 経路の本線（行ごと。圧縮転送の詰めたタイルも扱う。先頭と pitch が 16 の倍数）
+    //   to  : 画素ごとの旧版。先頭・pitch が 16 の倍数でないときの保険（詰めたタイルは扱えない）
     bool p010_tiles_to_rgba16_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
                                    int outW, int outH, cudaStream_t stream);
+    // 8bit の NVDEC 経路の本線（行ごと。P010Tiles に NV12 のタイルを入れて渡す。条件は rows と同じ）
+    bool nv12_tiles_rows_to_rgba8_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
+                                       int outW, int outH, cudaStream_t stream);
+    bool p010_tiles_rows_to_rgba16_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
+                                        int outW, int outH, cudaStream_t stream);
     // CPU デコードの 10bit プレーン → GL テクスチャ（RGBA16）
     bool yuv420p10_to_rgba16_surf(cudaSurfaceObject_t out,
                                   uint8_t* d_y, size_t pitch_y,

@@ -62,10 +62,10 @@ QString XferCodec::name(Algo a)
 }
 
 bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
-                     const std::vector<int>& tileW, const std::vector<int>& tileH, int nStage)
+                     const std::vector<int>& tileW, const std::vector<int>& tileH, int nStage, int ringSize)
 {
     release();
-    src_ = srcGpu; dst_ = dstGpu; algo_ = algo; delta_ = delta; bps_ = bps; nStage_ = nStage;
+    src_ = srcGpu; dst_ = dstGpu; algo_ = algo; delta_ = delta; bps_ = bps; nStage_ = nStage; ringSize_ = ringSize;
     if (algo == None || tileW.empty() || tileW.size() != tileH.size()) return false;
 
     // 詰めた並び: タイルごとに Y（w × h、差は 1 つ左）、UV（w × h/2、U と V が交互なので差は 2 つ左）
@@ -169,16 +169,24 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
     lastComp_ = 0;
     chk(cudaMalloc(&dCompPtrs_, sizeof(void*) * n_));
     chk(cudaMalloc(&dCompBytes_, sizeof(size_t) * n_));
-    chk(cudaMalloc(&dTight_, total_));
-    chk(cudaMalloc(&dOutPtrs_, sizeof(void*) * n_));
+    // 展開先: 普段は 1 面（差分を戻して転送先へ書く）。詰めたまま渡すときはリングの段数ぶん（GUI が読む間は残す）
+    const int nOut = ringSize_ > 0 ? ringSize_ : 1;
+    dTight_.assign(nOut, nullptr);
+    dOutPtrs_.assign(nOut, nullptr);
+    for (int j = 0; j < nOut; j++) {
+        chk(cudaMalloc(&dTight_[j], total_));
+        chk(cudaMalloc(&dOutPtrs_[j], sizeof(void*) * n_));
+    }
     chk(cudaMalloc(&dOutBufBytes_, sizeof(size_t) * n_));
     chk(cudaMalloc(&dOutBytes_, sizeof(size_t) * n_));
     chk(cudaMalloc(&dStatus_, sizeof(nvcompStatus_t) * n_));
     if (dtemp) { chk(cudaMalloc(&dTemp_, dtemp)); dTempBytes_ = dtemp; }
     if (ok) {
         std::vector<void*> out(n_);
-        for (int i = 0; i < n_; i++) out[i] = dTight_ + size_t(i) * chunk_;
-        chk(cudaMemcpy(dOutPtrs_, out.data(), sizeof(void*) * n_, cudaMemcpyHostToDevice));
+        for (int j = 0; j < nOut && ok; j++) {
+            for (int i = 0; i < n_; i++) out[i] = dTight_[j] + size_t(i) * chunk_;
+            chk(cudaMemcpy(dOutPtrs_[j], out.data(), sizeof(void*) * n_, cudaMemcpyHostToDevice));
+        }
         chk(cudaMemcpy(dOutBufBytes_, chunkBytes.data(), sizeof(size_t) * n_, cudaMemcpyHostToDevice));
     }
     decBeg_.assign(nStage_, nullptr); decEnd_.assign(nStage_, nullptr);
@@ -256,9 +264,12 @@ bool XferCodec::encode(int s, const std::vector<const AVFrame*>& frames, cudaEve
     return ok;
 }
 
-bool XferCodec::decode(int s, cudaStream_t st, const std::vector<Dst>& dst)
+bool XferCodec::decode(int s, int ring, cudaStream_t st, const std::vector<Dst>& dst)
 {
-    if (!ready_ || dst.size() * 2 != planes_.size()) return false;
+    if (!ready_) return false;
+    const int o = ringSize_ > 0 ? ring : 0;   // 展開先
+    if (o < 0 || o >= int(dTight_.size())) return false;
+    if (ringSize_ == 0 && dst.size() * 2 != planes_.size()) return false;
     cudaSetDevice(dst_);
     bool ok = true;
     cudaEventRecord(decBeg_[s], st);
@@ -272,27 +283,28 @@ bool XferCodec::decode(int s, cudaStream_t st, const std::vector<Dst>& dst)
     switch (algo_) {
     case Cascaded:
         r = nvcompBatchedCascadedDecompressAsync(dCompPtrs_, dCompBytes_, dOutBufBytes_, dOutBytes_, n_, dTemp_, dTempBytes_,
-                                                 dOutPtrs_, cascadedDOpts(bps_), (nvcompStatus_t*)dStatus_, st);
+                                                 dOutPtrs_[o], cascadedDOpts(bps_), (nvcompStatus_t*)dStatus_, st);
         break;
     case Bitcomp: {
         const bitcompHandle_t h = static_cast<bitcompHandle_t>(dPlan_);
-        r = (bitcompSetStream(h, st) == BITCOMP_SUCCESS && bitcompUncompress(h, dData_, dTight_) == BITCOMP_SUCCESS)
+        r = (bitcompSetStream(h, st) == BITCOMP_SUCCESS && bitcompUncompress(h, dData_, dTight_[o]) == BITCOMP_SUCCESS)
           ? nvcompSuccess : nvcompErrorInternal;
         break;
     }
     case ANS:
         r = nvcompBatchedANSDecompressAsync(dCompPtrs_, dCompBytes_, dOutBufBytes_, dOutBytes_, n_, dTemp_, dTempBytes_,
-                                            dOutPtrs_, nvcompBatchedANSDecompressDefaultOpts, (nvcompStatus_t*)dStatus_, st);
+                                            dOutPtrs_[o], nvcompBatchedANSDecompressDefaultOpts, (nvcompStatus_t*)dStatus_, st);
         break;
     default: r = nvcompErrorInvalidValue; break;
     }
     ok = ok && r == nvcompSuccess;
     cudaEventRecord(decompEnd_[s], st);
-    for (size_t t = 0; ok && t < dst.size(); t++) {
+    // 差分戻し（詰めたまま渡すときは GUI の変換カーネルが戻すので、ここでは何もしない）
+    for (size_t t = 0; ok && ringSize_ == 0 && t < dst.size(); t++) {
         const Plane& py = planes_[2 * t];
         const Plane& pu = planes_[2 * t + 1];
-        ok = xfer_inv(dTight_ + py.off, dst[t].y,  dst[t].yPitch,  py.elems, py.rows, bps_, py.lag, delta_, st) == cudaSuccess
-          && xfer_inv(dTight_ + pu.off, dst[t].uv, dst[t].uvPitch, pu.elems, pu.rows, bps_, pu.lag, delta_, st) == cudaSuccess;
+        ok = xfer_inv(dTight_[0] + py.off, dst[t].y,  dst[t].yPitch,  py.elems, py.rows, bps_, py.lag, delta_, st) == cudaSuccess
+          && xfer_inv(dTight_[0] + pu.off, dst[t].uv, dst[t].uvPitch, pu.elems, pu.rows, bps_, pu.lag, delta_, st) == cudaSuccess;
     }
     cudaEventRecord(decEnd_[s], st);
     if (!ok) qWarning() << "[xfer] 展開に失敗:" << int(r) << cudaGetErrorString(cudaGetLastError());
@@ -352,7 +364,10 @@ void XferCodec::release()
     if (dst_ >= 0) {
         cudaSetDevice(dst_);
         cudaDeviceSynchronize();
-        freeDev(dData_); freeDev(dCompPtrs_); freeDev(dCompBytes_); freeDev(dTight_); freeDev(dOutPtrs_);
+        freeDev(dData_); freeDev(dCompPtrs_); freeDev(dCompBytes_);
+        for (uint8_t*& p : dTight_)   freeDev(p);
+        for (void**&   p : dOutPtrs_) freeDev(p);
+        dTight_.clear(); dOutPtrs_.clear();
         freeDev(dOutBufBytes_); freeDev(dOutBytes_); freeDev(dStatus_); freeDev(dTemp_); freeDev(dHdr_);
         if (dPlan_) { bitcompDestroyPlan(static_cast<bitcompHandle_t>(dPlan_)); dPlan_ = nullptr; }
         for (cudaEvent_t& e : fetchEnd_)  if (e) { cudaEventDestroy(e); e = nullptr; }

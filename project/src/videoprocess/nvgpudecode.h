@@ -138,7 +138,8 @@ protected:
 
     AVBufferRef* remote_hw_ctx(int gpu);                    // 無ければ作る。失敗は nullptr
     bool init_remote();                                     // 初回の転送で作る
-    bool alloc_remote_tile(int i, AVFrame* f);              // 転送先リングと中継
+    bool packed_eligible(const AVFrame* f) const;           // 圧縮転送のタイルを詰めたまま GUI に渡せるか
+    bool alloc_remote_tile(int i, AVFrame* f);              // 転送先リングと中継（要るものだけ）
     bool transfer_remote(const std::vector<int>& tiles);    // 送って decode_ready を記録
     bool transfer_compressed(const std::vector<int>& tiles, int s);
     void record_decode_ready();                             // xfer_stream_ の最後で decode_ready を記録

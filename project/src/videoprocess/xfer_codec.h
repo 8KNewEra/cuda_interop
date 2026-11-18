@@ -28,8 +28,9 @@ public:
     ~XferCodec() { release(); }
 
     // tileW / tileH: このコーデックが受け持つタイルの大きさ（タイル順）、bps: 1 = NV12、2 = P010
+    //   ringSize > 0: 詰めたまま渡す（差分は GUI の変換カーネルが戻す）。展開先をリングの段数ぶん持つ
     bool init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
-              const std::vector<int>& tileW, const std::vector<int>& tileH, int nStage);
+              const std::vector<int>& tileW, const std::vector<int>& tileH, int nStage, int ringSize = 0);
     bool ready() const { return ready_; }
 
     // 別 GPU で圧縮してメインメモリの枠 s へ（戻るときは dstGpu が current）
@@ -37,8 +38,12 @@ public:
     bool encode(int s, const std::vector<const AVFrame*>& frames, cudaEvent_t stageFree);
     cudaEvent_t encodedEvent(int s) const { return encEnd_[s]; }
 
-    // 表示用 GPU のストリーム st で枠 s を展開して転送先へ（st は encodedEvent(s) を待たせてから呼ぶ）
-    bool decode(int s, cudaStream_t st, const std::vector<Dst>& dst);
+    // 表示用 GPU のストリーム st で枠 s を展開して転送先 dst へ（st は encodedEvent(s) を待たせてから呼ぶ）
+    //   詰めたまま渡すときは展開先リングの ring 段へ展開するだけ（dst は使わない。packedPlane で読む）
+    bool decode(int s, int ring, cudaStream_t st, const std::vector<Dst>& dst);
+    bool    packed() const { return ringSize_ > 0; }
+    uint8_t* packedPlane(int ring, int plane) const { return dTight_[ring] + planes_[plane].off; }   // plane: タイル t の Y = 2t、UV = 2t+1
+    size_t  planeRowBytes(int plane) const { return size_t(planes_[plane].elems) * size_t(bps_); }
 
     // 枠 s の前回の計測（終わっていれば true。待たない）。圧縮 / 送出 / 展開と内訳の ms、元と圧縮後のバイト数
     bool takeStats(int s, double& cmpMs, double& sendMs, double& decMs, double& rawBytes, double& compBytes,
@@ -49,7 +54,7 @@ public:
 private:
     struct Plane { size_t off; int elems; int rows; int lag; };   // 詰めた並びの 1 面（lag: 差分の相手。Y = 1、UV = 2）
     bool ready_ = false;
-    int  src_ = -1, dst_ = -1, nStage_ = 0, bps_ = 1;
+    int  src_ = -1, dst_ = -1, nStage_ = 0, bps_ = 1, ringSize_ = 0;
     Algo algo_ = None;
     bool delta_ = true;
     std::vector<Plane> planes_;   // タイルごとに Y, UV の順
@@ -86,8 +91,9 @@ private:
     // 表示用 GPU
     uint8_t*  dData_ = nullptr;      // 取り込んだ圧縮データ
     void**    dCompPtrs_ = nullptr;  size_t* dCompBytes_ = nullptr;
-    uint8_t*  dTight_ = nullptr;     // 展開した詰めた並び
-    void**    dOutPtrs_ = nullptr;   size_t* dOutBufBytes_ = nullptr; size_t* dOutBytes_ = nullptr;
+    std::vector<uint8_t*> dTight_;   // 展開した詰めた並び（普段は 1 面、詰めたまま渡すときはリングの段数）
+    std::vector<void**>   dOutPtrs_; // その展開先のチャンク表
+    size_t* dOutBufBytes_ = nullptr; size_t* dOutBytes_ = nullptr;
     int*      dStatus_ = nullptr;
     void*     dTemp_ = nullptr;      size_t  dTempBytes_ = 0;
     std::vector<cudaEvent_t> decBeg_, decEnd_;
