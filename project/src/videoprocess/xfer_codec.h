@@ -70,6 +70,7 @@ private:
         uint8_t*  slotBuf = nullptr;       void**  slotPtrs = nullptr;
         size_t*   compBytes = nullptr;   int*    statuses = nullptr;
         void*     temp = nullptr;
+        void*     bcPlan = nullptr;      // Bitcomp（ネイティブ API）のプラン。このストリームに結び付ける
         uint64_t* hdr = nullptr;
     };
     SrcSet    sets_[kSets];
@@ -92,6 +93,7 @@ private:
     std::vector<cudaEvent_t> decBeg_, decEnd_;
     std::vector<cudaEvent_t> fetchEnd_, decompEnd_;
     uint64_t* dHdr_ = nullptr;
+    void*     dPlan_ = nullptr;          // Bitcomp の展開用プラン
     size_t    lastComp_ = 0;         // 直近の圧縮後の合計（取り込みの DMA の見込み）
 };
 

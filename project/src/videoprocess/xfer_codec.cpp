@@ -4,7 +4,7 @@
 #include <algorithm>
 
 #include "nvcomp/cascaded.h"   // 3rdparty/nvcomp
-#include "nvcomp/bitcomp.h"
+#include "nvcomp/native/bitcomp.h"
 #include "nvcomp/ans.h"
 
 // cuda_kernels/xfer_compress.cu
@@ -14,6 +14,7 @@ extern "C" cudaError_t xfer_inv(const uint8_t* src, uint8_t* dst, size_t dstPitc
                                 int bps, int lag, int delta, cudaStream_t st);
 extern "C" cudaError_t xfer_pack(const void* const* slots, const size_t* compBytes, int n,
                                  uint64_t* devHdr, uint64_t* hostHdr, uint8_t* hostData, cudaStream_t st);
+extern "C" cudaError_t xfer_split(size_t* bytes, int n, size_t chunk, cudaStream_t st);
 extern "C" cudaError_t xfer_fetch(const uint64_t* hostHdr, uint64_t* devHdr, int n, const uint8_t* hostData,
                                   uint8_t* devData, size_t copyBytes, const void** compPtrs, size_t* compBytes,
                                   cudaStream_t st);
@@ -32,12 +33,6 @@ nvcompBatchedCascadedDecompressOpts_t cascadedDOpts(int bps)
 {
     nvcompBatchedCascadedDecompressOpts_t o = nvcompBatchedCascadedDecompressDefaultOpts;
     o.common_opts = cascadedOpts(bps).common_opts;
-    return o;
-}
-nvcompBatchedBitcompCompressOpts_t bitcompOpts(int bps)
-{
-    nvcompBatchedBitcompCompressOpts_t o = nvcompBatchedBitcompCompressDefaultOpts;
-    o.data_type = (bps == 2) ? NVCOMP_TYPE_USHORT : NVCOMP_TYPE_UCHAR;
     return o;
 }
 nvcompBatchedANSCompressOpts_t ansOpts()
@@ -96,9 +91,10 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
         if (st == nvcompSuccess) st = nvcompBatchedCascadedDecompressGetTempSize(n_, chunk_, cascadedDOpts(bps_), &dtemp, total_, 0);
         break;
     case Bitcomp:
-        st = nvcompBatchedBitcompCompressGetMaxOutputChunkSize(chunk_, bitcompOpts(bps_), &maxc);
-        if (st == nvcompSuccess) st = nvcompBatchedBitcompCompressGetTempSize(n_, chunk_, bitcompOpts(bps_), &ctemp, total_, 0);
-        if (st == nvcompSuccess) st = nvcompBatchedBitcompDecompressGetTempSize(n_, chunk_, nvcompBatchedBitcompDecompressDefaultOpts, &dtemp, total_, 0);
+        // ネイティブ API（バッチ API は呼び出しで CPU が止まったため）。全体を 1 本で圧縮し、
+        //   メインメモリの受け渡しは圧縮後を 64KB の仮想チャンクに切って pack / fetch をそのまま使う
+        maxc = chunk_;
+        n_ = int((bitcompMaxBuflen(total_) + chunk_ - 1) / chunk_);
         break;
     case ANS:
         st = nvcompBatchedANSCompressGetMaxOutputChunkSize(chunk_, ansOpts(), &maxc);
@@ -112,10 +108,18 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
 
     // チャンクの位置と大きさ（両方の GPU で同じ並び）
     std::vector<size_t> chunkBytes(n_);
-    for (int i = 0; i < n_; i++) chunkBytes[i] = std::min(chunk_, total_ - size_t(i) * chunk_);
+    for (int i = 0; i < n_; i++)
+        chunkBytes[i] = size_t(i) * chunk_ < total_ ? std::min(chunk_, total_ - size_t(i) * chunk_) : 0;
 
     bool ok = true;
     auto chk = [&](cudaError_t e) { if (e != cudaSuccess) ok = false; };
+    const bitcompDataType_t bcType = (bps_ == 2) ? BITCOMP_UNSIGNED_16BIT : BITCOMP_UNSIGNED_8BIT;
+    auto makePlan = [&](void** plan, cudaStream_t stream) {
+        bitcompHandle_t h = nullptr;
+        if (bitcompCreatePlan(&h, total_, bcType, BITCOMP_LOSSLESS, BITCOMP_DEFAULT_ALGO) != BITCOMP_SUCCESS) { ok = false; return; }
+        *plan = h;
+        if (stream && bitcompSetStream(h, stream) != BITCOMP_SUCCESS) ok = false;
+    };
 
     // ---- 別 GPU ----
     cudaSetDevice(src_);
@@ -126,6 +130,7 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
     for (SrcSet& k : sets_) {
         k.used = false;
         chk(cudaStreamCreateWithFlags(&k.stream, cudaStreamNonBlocking));
+        if (algo_ == Bitcomp) makePlan(&k.bcPlan, k.stream);
         chk(cudaEventCreateWithFlags(&k.ready, cudaEventDisableTiming));
         chk(cudaEventCreateWithFlags(&k.done, cudaEventDisableTiming));
         chk(cudaMalloc(&k.tight, total_));
@@ -160,6 +165,7 @@ bool XferCodec::init(int srcGpu, int dstGpu, Algo algo, bool delta, int bps,
     cudaSetDevice(dst_);
     chk(cudaMalloc(&dData_, maxComp_ * n_));
     chk(cudaMalloc(&dHdr_, sizeof(uint64_t) * (2 + 2 * size_t(n_))));
+    if (algo_ == Bitcomp) makePlan(&dPlan_, nullptr);   // ストリームは decode で結び付ける
     lastComp_ = 0;
     chk(cudaMalloc(&dCompPtrs_, sizeof(void*) * n_));
     chk(cudaMalloc(&dCompBytes_, sizeof(size_t) * n_));
@@ -221,10 +227,14 @@ bool XferCodec::encode(int s, const std::vector<const AVFrame*>& frames, cudaEve
         st = nvcompBatchedCascadedCompressAsync(k.inPtrs, sInBytes_, chunk_, n_, k.temp, sTempBytes_,
                                                k.slotPtrs, k.compBytes, cascadedOpts(bps_), (nvcompStatus_t*)k.statuses, cs);
         break;
-    case Bitcomp:
-        st = nvcompBatchedBitcompCompressAsync(k.inPtrs, sInBytes_, chunk_, n_, k.temp, sTempBytes_,
-                                              k.slotPtrs, k.compBytes, bitcompOpts(bps_), (nvcompStatus_t*)k.statuses, cs);
+    case Bitcomp: {
+        // 圧縮後の大きさを compBytes[0] に受けて、仮想チャンクの大きさに切り分ける
+        const bool b = bitcompCompressLossless(static_cast<bitcompHandle_t>(k.bcPlan), k.tight, k.slotBuf) == BITCOMP_SUCCESS
+                    && bitcompGetCompressedSizeAsync(k.slotBuf, k.compBytes, cs) == BITCOMP_SUCCESS
+                    && xfer_split(k.compBytes, n_, chunk_, cs) == cudaSuccess;
+        st = b ? nvcompSuccess : nvcompErrorInternal;
         break;
+    }
     case ANS:
         st = nvcompBatchedANSCompressAsync(k.inPtrs, sInBytes_, chunk_, n_, k.temp, sTempBytes_,
                                           k.slotPtrs, k.compBytes, ansOpts(), (nvcompStatus_t*)k.statuses, cs);
@@ -264,10 +274,12 @@ bool XferCodec::decode(int s, cudaStream_t st, const std::vector<Dst>& dst)
         r = nvcompBatchedCascadedDecompressAsync(dCompPtrs_, dCompBytes_, dOutBufBytes_, dOutBytes_, n_, dTemp_, dTempBytes_,
                                                  dOutPtrs_, cascadedDOpts(bps_), (nvcompStatus_t*)dStatus_, st);
         break;
-    case Bitcomp:
-        r = nvcompBatchedBitcompDecompressAsync(dCompPtrs_, dCompBytes_, dOutBufBytes_, dOutBytes_, n_, dTemp_, dTempBytes_,
-                                                dOutPtrs_, nvcompBatchedBitcompDecompressDefaultOpts, (nvcompStatus_t*)dStatus_, st);
+    case Bitcomp: {
+        const bitcompHandle_t h = static_cast<bitcompHandle_t>(dPlan_);
+        r = (bitcompSetStream(h, st) == BITCOMP_SUCCESS && bitcompUncompress(h, dData_, dTight_) == BITCOMP_SUCCESS)
+          ? nvcompSuccess : nvcompErrorInternal;
         break;
+    }
     case ANS:
         r = nvcompBatchedANSDecompressAsync(dCompPtrs_, dCompBytes_, dOutBufBytes_, dOutBytes_, n_, dTemp_, dTempBytes_,
                                             dOutPtrs_, nvcompBatchedANSDecompressDefaultOpts, (nvcompStatus_t*)dStatus_, st);
@@ -326,6 +338,7 @@ void XferCodec::release()
         for (SrcSet& k : sets_) {
             freeDev(k.tight); freeDev(k.inPtrs); freeDev(k.slotBuf); freeDev(k.slotPtrs);
             freeDev(k.compBytes); freeDev(k.statuses); freeDev(k.hdr); freeDev(k.temp);
+            if (k.bcPlan) { bitcompDestroyPlan(static_cast<bitcompHandle_t>(k.bcPlan)); k.bcPlan = nullptr; }
             if (k.ready)  { cudaEventDestroy(k.ready); k.ready = nullptr; }
             if (k.done)   { cudaEventDestroy(k.done); k.done = nullptr; }
             if (k.stream) { cudaStreamDestroy(k.stream); k.stream = nullptr; }
@@ -341,6 +354,7 @@ void XferCodec::release()
         cudaDeviceSynchronize();
         freeDev(dData_); freeDev(dCompPtrs_); freeDev(dCompBytes_); freeDev(dTight_); freeDev(dOutPtrs_);
         freeDev(dOutBufBytes_); freeDev(dOutBytes_); freeDev(dStatus_); freeDev(dTemp_); freeDev(dHdr_);
+        if (dPlan_) { bitcompDestroyPlan(static_cast<bitcompHandle_t>(dPlan_)); dPlan_ = nullptr; }
         for (cudaEvent_t& e : fetchEnd_)  if (e) { cudaEventDestroy(e); e = nullptr; }
         for (cudaEvent_t& e : decompEnd_) if (e) { cudaEventDestroy(e); e = nullptr; }
         for (cudaEvent_t& e : decBeg_) if (e) { cudaEventDestroy(e); e = nullptr; }

@@ -123,6 +123,17 @@ __global__ void xfer_scan_kernel(const size_t* compBytes, int n, uint64_t* hdr)
     hdr[1] = off;
 }
 
+// Bitcomp（1 本で圧縮）の圧縮後の大きさ bytes[0] を、chunk ごとの仮想チャンクの大きさに切り分ける（1 スレッド）
+__global__ void xfer_split_kernel(size_t* bytes, int n, size_t chunk)
+{
+    if (blockIdx.x != 0 || threadIdx.x != 0) return;
+    const size_t total = bytes[0];
+    for (int i = 0; i < n; i++) {
+        const size_t off = size_t(i) * chunk;
+        bytes[i] = off < total ? (total - off < chunk ? total - off : chunk) : 0;
+    }
+}
+
 // 圧縮チャンクをメインメモリのデータ域へ詰める（16 バイト単位）。書き出しは PCIe で決まるので
 //   ブロック数を絞って SM を空け、次のフレームの圧縮（別ストリーム）と並べる
 __global__ void xfer_pack_kernel(const void* const* slots, const uint64_t* hdr, int n, uint8_t* data)
@@ -197,6 +208,12 @@ extern "C" cudaError_t xfer_pack(const void* const* slots, const size_t* compByt
     constexpr int kPackBlocks = 32;
     xfer_pack_kernel<<<n < kPackBlocks ? n : kPackBlocks, 256, 0, st>>>(slots, devHdr, n, hostData);
     cudaMemcpyAsync(hostHdr, devHdr, sizeof(uint64_t) * (2 + 2 * size_t(n)), cudaMemcpyDeviceToHost, st);
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t xfer_split(size_t* bytes, int n, size_t chunk, cudaStream_t st)
+{
+    xfer_split_kernel<<<1, 1, 0, st>>>(bytes, n, chunk);
     return cudaGetLastError();
 }
 

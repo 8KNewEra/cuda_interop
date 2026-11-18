@@ -85,6 +85,9 @@ decode_thread::processFrame
 - **2 組（kSets）**: 別 GPU の作業領域とストリームを 2 組持ち、前のフレームの送出と次の圧縮を重ねる。
   既定ストリームに積まないので cuvid の出力コピーも待たせない。
 - 初期化に失敗したらそのファイルの間は圧縮なし（5.1）に戻る。
+- Bitcomp だけはネイティブ API で全体を 1 本で圧縮する。圧縮後の大きさを `bitcompGetCompressedSizeAsync` で GPU 上に受け、
+  `xfer_split` で 64KB の仮想チャンクに切り分けてから同じ `xfer_pack` / `xfer_fetch` を使う（仮想チャンクは隙間なく並ぶので、
+  表示用 GPU では取り込んだ先頭からそのまま展開できる）。
 
 ### 5.3 方式
 
@@ -92,7 +95,7 @@ decode_thread::processFrame
 |---|---|
 | ANS ＋ 差分 | 推奨。圧縮率 約 9、展開 約 2.6ms |
 | ANS・差分なし | 圧縮率が落ちて取り込みが重い（展開 約 6.4ms） |
-| Bitcomp | 圧縮の呼び出しが CPU を約 4ms 止める（「転送の発行」に出る）。不向き |
+| Bitcomp | バッチ API では圧縮の呼び出しが CPU を約 4ms 止めた（「転送の発行」に出る）。ネイティブ API（`nvcomp/native/bitcomp.h`。プランを組ごとに作ってストリームに結び付け、全体を 1 本で圧縮）に切り替えた。効果は要計測 |
 | Cascaded | 平坦な絵では縮むが、一般には ANS より低い |
 
 LZ4 / Snappy は画像の差分と相性が悪く、GDeflate / Zstd は GPU での圧縮が遅いので入れていない。
