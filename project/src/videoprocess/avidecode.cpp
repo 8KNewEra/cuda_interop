@@ -224,73 +224,8 @@ bool avidecode::initialized_ffmpeg()
         }
     }
 
-    if (audio_stream_index == -1) {
-        VideoInfo.audio = false;
-    } else {
-        audio_frame = av_frame_alloc();
-
-        audio_decoder =
-            avcodec_find_decoder(fmt_ctx->streams[audio_stream_index]->codecpar->codec_id);
-        if (!audio_decoder) {
-            Error_String = "Audio decoder not found";
-            return false;
-        }
-
-        audio_ctx = avcodec_alloc_context3(audio_decoder);
-        avcodec_parameters_to_context(
-            audio_ctx,
-            fmt_ctx->streams[audio_stream_index]->codecpar
-            );
-
-        ret = avcodec_open2(audio_ctx, audio_decoder, nullptr);
-        if (ret < 0) {
-            Error_String = QString("avcodec_open2(audio) failed: %1")
-            .arg(ffmpegErrStr(ret));
-            return false;
-        }
-
-        VideoInfo.in_sample_rate = audio_ctx->sample_rate;
-        VideoInfo.in_format      = audio_ctx->sample_fmt;
-        av_channel_layout_copy(&in_ch_layout, &audio_ctx->ch_layout);
-
-        VideoInfo.out_sample_rate = audio_ctx->sample_rate;
-        // ★ float のまま配る。S16 へ先に落とすと 0dBFS 超えがここで潰れ、
-        //   音量を下げても歪みが残る（audio_decode::apply_volume 参照）。
-        VideoInfo.out_format      = AV_SAMPLE_FMT_FLT;
-        av_channel_layout_default(&out_ch_layout, 2);
-
-        // ★ チャンネル数はここで入れること。
-        //   以前は get_decode_audio() の中（= 最初の音声パケットを変換した
-        //   時点）でしか代入しておらず、しかもそれはエンコード中しか走らない。
-        //   save_encode の init_audio_encoder() はエンコーダ構築時に
-        //   VideoInfo.audio_channels を読むので、初期値の 1 を拾って
-        //   モノラルで開いていた。レイアウトが決まるこの場所が正しい。
-        VideoInfo.audio_channels  = out_ch_layout.nb_channels;
-
-        if (swr) {
-            swr_free(&swr);
-        }
-
-        ret = swr_alloc_set_opts2(
-            &swr,
-            &out_ch_layout,
-            VideoInfo.out_format,
-            VideoInfo.out_sample_rate,
-            &in_ch_layout,
-            VideoInfo.in_format,
-            VideoInfo.in_sample_rate,
-            0,
-            nullptr
-            );
-
-        if (ret < 0 || swr_init(swr) < 0) {
-            Error_String = "swr_init failed";
-            return false;
-        }
-
-
-        VideoInfo.audio = true;
-    }
+    // 音声（エンコード入力用）。開けなければ音声なしで続ける（decode_thread::open_audio_decoder）
+    open_audio_decoder();
 
     //スライダー設定
     emit send_slider_info();
@@ -322,7 +257,7 @@ void avidecode::get_decode_image(){
         if (audio_ctx)
             avcodec_flush_buffers(audio_ctx);
 
-        av_seek_frame(fmt_ctx, vd[0].stream_index,
+        seek_file(vd[0].stream_index,
                       frame_to_pts(slider_No),
                       AVSEEK_FLAG_BACKWARD);
 
@@ -338,11 +273,15 @@ void avidecode::get_decode_image(){
     }
 
     // ----------- パケット読み込みループ -----------
-    while (true) {
-        int ret = av_read_frame(fmt_ctx, packet);
+    // ★ 終端（読めない失敗も）を何回見たか。終端 → 読み直し → 終端 を永久に繰り返さない
+    //   （ここは processFrame のミューテックスの中なので、回り続けると GUI まで固まる）
+    int eof_rounds = 0;
+    while (!thread_stop_flag) {
+        int ret = read_packet();
 
-        // ---------- EOF ----------
+        // ---------- EOF（読めない失敗も。そのときは read_packet が fail_decode 済みなので抜ける）----------
         if (ret < 0) {
+            if (decode_failed_) { av_packet_unref(packet); return; }
 
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
@@ -351,13 +290,13 @@ void avidecode::get_decode_image(){
                 break;
             }
 
-            // 終端→先頭に戻ってループ
-            if (Frame.FrameNo < VideoInfo.end_range_framesNo - 1) {
+            // 終端→先頭に戻ってループ（2 回目の終端は範囲の終わりと同じ扱い）
+            if (Frame.FrameNo < VideoInfo.end_range_framesNo - 1 && ++eof_rounds < 2) {
                 avcodec_flush_buffers(vd[0].codec_ctx);
                 if (audio_ctx)
                     avcodec_flush_buffers(audio_ctx);
 
-                av_seek_frame(fmt_ctx, vd[0].stream_index,
+                seek_file(vd[0].stream_index,
                               frame_to_pts(Frame.FrameNo + 1),
                               AVSEEK_FLAG_ANY);
             } else {
@@ -382,7 +321,9 @@ void avidecode::get_decode_image(){
 
         // ----------- VIDEO PACKET -----------
         if (packet->stream_index == vd[0].stream_index) {
-            if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
+            const int sr = avcodec_send_packet(vd[0].codec_ctx, packet);
+            if (sr < 0 && sr != AVERROR(EAGAIN) && sr != AVERROR_EOF) warn_ffmpeg("avcodec_send_packet", sr);   // 壊れたパケット等。捨てて続ける
+            if (sr == 0) {
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
                     av_packet_unref(packet);
                     break;
@@ -391,6 +332,7 @@ void avidecode::get_decode_image(){
         }
         av_packet_unref(packet);
     }
+    if (thread_stop_flag) { av_packet_unref(packet); return; }   // 閉じる途中
 
     gpu_upload();
     av_packet_unref(packet);
@@ -400,9 +342,19 @@ void avidecode::get_decode_image(){
 void avidecode::gpu_upload(){
     AVFrame* f = vd[0].hw_frames[ringNo];
 
+    // 取れていないコマ（終端でデコーダが空だった等）は送らない。前のコマを送り直してハンドシェイクだけ回す
+    if (!f || !f->data[0]) {
+        if (Frame.d_plane[0] != nullptr) {
+            ++inflight_frames;
+            emit send_decode_image(Frame, true, video_reverse_flag);
+        }
+        return;
+    }
+
     // ★ 書き込む前にリングのslotを確定させる。
     //   emit 済みの前フレームは別の面を指しているので上書きされない。
     planeRing.select(Frame);
+    cudaGetLastError();   // 前の呼び出しの残りを消す（下の転送の失敗の判定を、この転送の結果だけにする）
 
     // GPUアップロード
     //   cudaMemcpy2D(同期版) はホストに対して同期なので、
@@ -492,6 +444,12 @@ void avidecode::gpu_upload(){
         return;
     }
 
+    // 転送の失敗（GPU のエラー）。同期版 cudaMemcpy2D の失敗は直後の cudaGetLastError に出る。続けられないので止める
+    if (const cudaError_t ce = cudaGetLastError(); ce != cudaSuccess) {
+        fail_decode(QStringLiteral("GPU への転送に失敗しました（%1）").arg(QString::fromUtf8(cudaGetErrorString(ce))));
+        return;
+    }
+
     Frame.src_mode = SRC_YUV_PLANE;
 
     // フレーム番号と時刻（基底で共通化。0 除算と NOPTS もそこでふさいでいる）
@@ -553,7 +511,7 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
     if (audio_ctx)
         avcodec_flush_buffers(audio_ctx);
 
-    av_seek_frame(fmt_ctx, vd[0].stream_index,
+    seek_file(vd[0].stream_index,
                   frame_to_pts(targetFrameNo),
                   AVSEEK_FLAG_BACKWARD);
 
@@ -572,9 +530,9 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
     while(!thread_stop_flag){
         // ★ 内側にも停止要求を見せる（長いスキャン中にクローズされても抜ける）
         while (!thread_stop_flag) {
-            int ret = av_read_frame(fmt_ctx, packet);
+            int ret = read_packet();
 
-            // ---------- EOF ----------
+            // ---------- EOF（読めない失敗も。read_packet が fail_decode 済み）----------
             if (ret < 0) {
                 avcodec_send_packet(vd[0].codec_ctx, nullptr);
                 if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
@@ -587,6 +545,7 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
                 if (++eof_rounds >= 2) {
                     av_packet_unref(packet);
                     gpu_upload();
+                    if (heavy_UI_flag) emit heavy_process_signal(true);   // 下の通常の終わりと同じく UI を戻す
                     return;
                 }
 
@@ -600,7 +559,7 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
                 if (audio_ctx)
                     avcodec_flush_buffers(audio_ctx);
 
-                av_seek_frame(fmt_ctx, vd[0].stream_index,
+                seek_file(vd[0].stream_index,
                               frame_to_pts((int64_t)seek_frame),
                               AVSEEK_FLAG_ANY);
 
@@ -610,7 +569,9 @@ void avidecode::high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)
 
             // ----------- VIDEO PACKET -----------
             if (packet->stream_index == vd[0].stream_index) {
-                if (avcodec_send_packet(vd[0].codec_ctx, packet) == 0) {
+                const int sr = avcodec_send_packet(vd[0].codec_ctx, packet);
+                if (sr < 0 && sr != AVERROR(EAGAIN) && sr != AVERROR_EOF) warn_ffmpeg("avcodec_send_packet", sr);   // 壊れたパケット等。捨てて続ける
+                if (sr == 0) {
                     if (avcodec_receive_frame(vd[0].codec_ctx, vd[0].hw_frames[ringNo]) == 0) {
                         av_packet_unref(packet);
                         break;

@@ -1309,7 +1309,8 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     bool finished = false;
     cudaEvent_t convertDone = nullptr;
 
-    if (save_encoder != nullptr && encode_FrameCount <= (MaxFrame - MinFrame)) {
+    // 途中で失敗（ディスクの空き不足・エンコーダのエラー等）していたら、そこで終える（QML 版 VideoEngine と同じ）
+    if (save_encoder != nullptr && !save_encoder->failed() && encode_FrameCount <= (MaxFrame - MinFrame)) {
         save_encoder->encode(Frame, tex, encode_gl_event, &convertDone);
         encode_FrameCount++;
     } else {
@@ -1343,11 +1344,15 @@ void GLWidget::downloadToGLTexture_and_Encode(VideoFrame Frame) {
     }
 
     // ---- 後始末は unmap の外で（encode_finished の先で何が起きても安全に） ----
-    if (finished) {
+    //   終わりの通知はエンコーダを閉じたときの 1 回だけ。失敗していたら encode_error（MainWindow がダイアログを出す）
+    if (finished && save_encoder) {
+        const bool ok = save_encoder->close();
+        const QString failMsg = ok ? QString() : save_encoder->failMessage();
         delete save_encoder;
         save_encoder = nullptr;
         encode_FrameCount = 0;
-        emit encode_finished();
+        if (ok) emit encode_finished();
+        else    emit encode_error(QStringLiteral("中断: %1（ファイルは不完全）").arg(failMsg));
     }
 }
 
@@ -1375,7 +1380,7 @@ void GLWidget::encode_mode(int flag){
 
                 const QString msg = QString::fromUtf8(e.what());
                 qWarning() << "[GLWidget] save_encode init failed:" << msg;
-                emit encode_error(msg);
+                emit encode_error(QStringLiteral("開始できません: %1").arg(msg));
                 return;
             }
             catch (...) {
@@ -1383,7 +1388,7 @@ void GLWidget::encode_mode(int flag){
                 encode_state = STATE_NOT_ENCODE;
 
                 qWarning() << "[GLWidget] save_encode init failed (unknown exception)";
-                emit encode_error(QStringLiteral("不明なエラー"));
+                emit encode_error(QStringLiteral("開始できません: 不明なエラー"));
                 return;
             }
         }

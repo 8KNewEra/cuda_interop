@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// デコード設定（マルチ GPU デコード）。値は DecodeSettings（"decodeSettings"）。docs/MULTI_GPU_DECODE.md
+// デコード設定（マルチ GPU デコード）。値は DecodeSettings（"decodeSettings"）。docs/DECODE_CORE.md 8
 Item {
     id: root
 

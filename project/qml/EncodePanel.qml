@@ -451,6 +451,7 @@ Item {
                                 anchors.margins: 12
                                 anchors.leftMargin: 14
                                 spacing: 6
+                                InfoLine { visible: encoder.sizeNote.length > 0; text: encoder.sizeNote; dot: Theme.marker }
                                 InfoLine { visible: encoder.rateInfoTarget.length > 0; text: encoder.rateInfoTarget }
                                 InfoLine { visible: encoder.rateInfoMax.length > 0; text: encoder.rateInfoMax; dot: Theme.histB }
                                 InfoLine { text: encoder.vramInfo; dot: Theme.marker }
@@ -579,6 +580,24 @@ Item {
                                     Text { Layout.preferredWidth: 130; horizontalAlignment: Text.AlignRight; text: modelData.status; color: modelData.used ? Theme.text : Theme.muted; font.family: Theme.mono; font.pixelSize: 12 }
                                 }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.borderSoft }
+                            }
+                        }
+
+                        // 別 GPU へ送るタイルの圧縮（表示用 GPU だけで書き出すときは転送しないので使わない）
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 8
+                            spacing: 12
+                            enabled: encoder.xferUsed
+                            KeyLabel { text: "転送の圧縮"; tip: "表示用以外の GPU へ送るタイルを圧縮して、転送量を減らします（画質は変わりません）。ANS は圧縮率重視、Bitcomp は速さ重視です。圧縮は表示用の GPU で行います。" }
+                            Select { Layout.preferredWidth: 220; options: encoder.xferCodecOptions; value: encoder.xferCodec; onPicked: (v) => encoder.setValue("xferCodec", v) }
+                            KeyLabel { text: "差分"; Layout.preferredWidth: 40; tip: "圧縮の前に、各画素をすぐ左の画素との差に置き換えて縮みやすくします（送り先で元に戻すので画質は変わりません）。通常は「あり」のままで構いません。" }
+                            Select { Layout.preferredWidth: 120; enabled: encoder.xferCodec !== "none"; options: encoder.xferDeltaOptions; value: encoder.xferDelta; onPicked: (v) => encoder.setValue("xferDelta", v) }
+                            Text {
+                                Layout.fillWidth: true
+                                text: encoder.xferUsed ? "" : "すべて表示用の GPU で書き出すため使いません"
+                                color: Theme.muted; font.family: Theme.font; font.pixelSize: 12
+                                elide: Text.ElideRight
                             }
                         }
                     }

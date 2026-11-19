@@ -271,6 +271,7 @@ signals:
     void decode_please();
 
 private:
+    QMetaObject::Connection encodeFinishedConn_;   // start_encode の完了の接続（エラーで終わったら外す）
     void start_decode_thread(const QString& filePath);
     void stop_decode_thread();
     bool canUseGpuDecode(const QString& filename);

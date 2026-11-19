@@ -93,7 +93,8 @@ QVariantList DecodeSettings::gpus() const
     return list;
 }
 
-QVariantList DecodeSettings::xferCodecOptions() const
+// 転送の圧縮の選択肢（エンコード設定も同じものを使う。EncodeController::xferCodecOptions）
+QVariantList DecodeSettings::xferCodecOptionList()
 {
     auto opt = [](const char* t, const char* v) { return QVariantMap{ {"text", QString::fromUtf8(t)}, {"value", QString::fromUtf8(v)} }; };
     // ANS = 圧縮率重視（PCIe が細い構成向け）、Bitcomp = 速さ重視（PCIe が太い構成向け）

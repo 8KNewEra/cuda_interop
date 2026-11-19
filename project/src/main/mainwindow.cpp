@@ -1850,7 +1850,9 @@ void MainWindow::start_encode(){
         emit decode_please();
 
         //修了処理
-        connect(glWidget, &GLWidget::encode_finished, this, [=]() {
+        // 前回エラーで終わったときに残った完了の接続は外す（エラーで終わると encode_finished は来ない）
+        disconnect(encodeFinishedConn_);
+        encodeFinishedConn_ = connect(glWidget, &GLWidget::encode_finished, this, [=]() {
             wasCanceled=true;
             emit send_manual_pause();
 
@@ -1914,14 +1916,15 @@ void MainWindow::encode_error_handler(const QString &error)
         glWidget->encode_FrameCount = 0;
     }
 
+    disconnect(encodeFinishedConn_);   // この回の完了は来ない
+
     qWarning() << "[MainWindow] encode error:" << error;
 
+    // 開始時（初期化の失敗）と途中（「中断: …」）の両方から来る。文言は save_encode / GLWidget が作る
     QMessageBox::warning(
         this,
-        tr("エンコード開始エラー"),
-        tr("エンコーダの初期化に失敗しました。\n\n%1\n\n"
-           "解像度・分割数・B-frame 数を下げると改善する場合があります。")
-            .arg(error),
+        tr("エンコードのエラー"),
+        error,
         QMessageBox::Ok);
 }
 

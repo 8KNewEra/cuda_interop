@@ -6,7 +6,7 @@
 #include <QVariantList>
 #include <map>
 
-// デコード設定（ファイル → デコード設定…。docs/MULTI_GPU_DECODE.md）
+// デコード設定（ファイル → デコード設定…。docs/DECODE_CORE.md 8）
 //   GPU ごとの重み（0..10）と転送の圧縮を編集し、apply() で g_GPUInfo / g_AppSettings へ反映する。
 //   反映は次に開いたとき（apply(true) は今のファイルを開き直す）
 class DecodeSettings : public QObject
@@ -37,7 +37,8 @@ public:
     QString weightsNote() const;
     QString xferCodec() const { return xferCodec_; }
     bool    xferDelta() const { return xferDelta_; }
-    QVariantList xferCodecOptions() const;
+    QVariantList xferCodecOptions() const { return xferCodecOptionList(); }
+    static QVariantList xferCodecOptionList();   // [{text, value}]。エンコード設定と共用
 
     // 開くたびに現在の設定から作り直す。tiles / codec は今のファイル（GPU デコードでなければ 0 / ""）
     void open(int tiles, const QString& codec);

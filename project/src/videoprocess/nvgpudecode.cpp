@@ -75,6 +75,7 @@ bool nvgpudecode::initialized_ffmpeg()
     cudaSetDevice(g_openglDeviceID);
 
     packet = av_packet_alloc();
+    if (!packet) { Error_String = "メモリ不足（av_packet_alloc）"; return false; }
     int ret;
 
     // ------------------------
@@ -266,6 +267,7 @@ bool nvgpudecode::initialized_ffmpeg()
         }
         VideoInfo.tile_gpu.push_back(dec.gpu);
         dec.codec_ctx->hw_device_ctx = av_buffer_ref(devctx);
+        if (!dec.codec_ctx->hw_device_ctx) { Error_String = "メモリ不足（av_buffer_ref）"; return false; }
         dec.codec_ctx->pkt_timebase = st->time_base;
 
         ret = avcodec_parameters_to_context(dec.codec_ctx, st->codecpar);
@@ -462,71 +464,8 @@ bool nvgpudecode::initialized_ffmpeg()
         }
     }
 
-    if (audio_stream_index == -1) {
-        Error_String = "Audio stream not found";
-        VideoInfo.audio = false;
-    } else {
-        audio_frame = av_frame_alloc();
-
-        audio_decoder =
-            avcodec_find_decoder(fmt_ctx->streams[audio_stream_index]->codecpar->codec_id);
-        audio_ctx = avcodec_alloc_context3(audio_decoder);
-
-        avcodec_parameters_to_context(
-            audio_ctx,
-            fmt_ctx->streams[audio_stream_index]->codecpar
-            );
-
-        ret = avcodec_open2(audio_ctx, audio_decoder, nullptr);
-        if (ret < 0) {
-            Error_String = QString("avcodec_open2(audio) failed: %1")
-            .arg(ffmpegErrStr(ret));
-            audio_stream_index = -1;
-            return false;
-        }
-
-        VideoInfo.in_sample_rate = audio_ctx->sample_rate;
-        VideoInfo.in_format      = audio_ctx->sample_fmt;
-        av_channel_layout_copy(&in_ch_layout, &audio_ctx->ch_layout);
-
-        VideoInfo.out_sample_rate = audio_ctx->sample_rate;
-        // ★ float のまま配る。S16 へ先に落とすと 0dBFS 超えがここで潰れ、
-        //   音量を下げても歪みが残る（audio_decode::apply_volume 参照）。
-        VideoInfo.out_format      = AV_SAMPLE_FMT_FLT;
-        av_channel_layout_default(&out_ch_layout, 2);
-
-        // ★ チャンネル数はここで入れること。
-        //   以前は get_decode_audio() の中（= 最初の音声パケットを変換した
-        //   時点）でしか代入しておらず、しかもそれはエンコード中しか走らない。
-        //   save_encode の init_audio_encoder() はエンコーダ構築時に
-        //   VideoInfo.audio_channels を読むので、初期値の 1 を拾って
-        //   モノラルで開いていた。レイアウトが決まるこの場所が正しい。
-        VideoInfo.audio_channels  = out_ch_layout.nb_channels;
-
-        if (swr) {
-            swr_free(&swr);
-        }
-
-        ret = swr_alloc_set_opts2(
-            &swr,
-            &out_ch_layout,
-            VideoInfo.out_format,
-            VideoInfo.out_sample_rate,
-            &in_ch_layout,
-            VideoInfo.in_format,
-            VideoInfo.in_sample_rate,
-            0,
-            nullptr
-            );
-
-        if (ret < 0 || swr_init(swr) < 0) {
-            Error_String = "swr_init failed";
-            return false;
-        }
-
-
-        VideoInfo.audio = true;
-    }
+    // 音声（エンコード入力用）。開けなければ音声なしで続ける（decode_thread::open_audio_decoder）
+    open_audio_decoder();
 
     // ------------------------
     // 再生初期化
@@ -582,7 +521,7 @@ nvgpudecode::~nvgpudecode()
 }
 
 // ==============================================================
-// マルチ GPU デコード: 別 GPU のタイルの転送（docs/MULTI_GPU_DECODE.md）
+// マルチ GPU デコード: 別 GPU のタイルの転送（docs/DECODE_CORE.md 8.5）
 // ==============================================================
 AVBufferRef* nvgpudecode::remote_hw_ctx(int gpu)
 {
@@ -608,26 +547,30 @@ bool nvgpudecode::init_remote()
     if (remote_init_) return true;
     cudaSetDevice(g_openglDeviceID);
     if (cudaStreamCreateWithFlags(&xfer_stream_, cudaStreamNonBlocking) != cudaSuccess) return false;
+    bool ok = true;
+    auto ck = [&](cudaError_t e) { if (e != cudaSuccess) ok = false; };
     for (int s = 0; s < kStage; s++) {
-        cudaEventCreateWithFlags(&local_ev_[s], cudaEventDisableTiming);
-        cudaEventCreateWithFlags(&h2d_ev_[s],   cudaEventDisableTiming);
+        ck(cudaEventCreateWithFlags(&local_ev_[s], cudaEventDisableTiming));
+        ck(cudaEventCreateWithFlags(&h2d_ev_[s],   cudaEventDisableTiming));
     }
     for (auto& [g, ctx] : remote_ctx_) {
         Q_UNUSED(ctx);
-        cudaSetDevice(g);
+        ck(cudaSetDevice(g));
         RemoteGpu& r = remote_[g];
         for (int s = 0; s < kStage; s++) {   // 時間を測るので DisableTiming なし
-            cudaEventCreate(&r.beg[s]);
-            cudaEventCreate(&r.end[s]);
+            ck(cudaEventCreate(&r.beg[s]));
+            ck(cudaEventCreate(&r.end[s]));
         }
     }
     cudaSetDevice(g_openglDeviceID);
-    remote_init_ = (cudaGetLastError() == cudaSuccess);
+    if (!ok) qWarning() << "[nvgpudecode] 転送の準備（ストリーム・イベント）に失敗:" << cudaGetErrorString(cudaGetLastError());
+    cudaGetLastError();
+    remote_init_ = ok;
     return remote_init_;
 }
 
 // 圧縮転送のタイルを詰めたまま GUI に渡せるか（QML 版、1 行が 16 バイトの倍数・高さ偶数）。
-//   渡せるなら差分は GUI の変換カーネル（tile_rows.cuh）が戻すので、転送先リング r_y / r_uv は要らない
+//   渡せるなら差分は GUI の変換カーネル（decode_rows.cuh）が戻すので、転送先リング r_y / r_uv は要らない
 bool nvgpudecode::packed_eligible(const AVFrame* f) const
 {
     const int bps = VideoInfo.bitdepth > 8 ? 2 : 1;
@@ -711,15 +654,15 @@ bool nvgpudecode::transfer_remote(const std::vector<int>& tiles)
     bool ok = true;
     for (int g : gpus) {
         RemoteGpu& r = remote_[g];
-        cudaSetDevice(g);
+        if (cudaSetDevice(g) != cudaSuccess) ok = false;   // 前の GPU で失敗していても切り替えは必ず行う
         // 前回この枠の D2H の時間（終わっていれば。待たない）
         if (r.used[s] && cudaEventQuery(r.end[s]) == cudaSuccess) {
             float ms = 0;
             if (cudaEventElapsedTime(&ms, r.beg[s], r.end[s]) == cudaSuccess) { doneMs += ms; doneBytes += r.bytes[s]; }
         }
-        cudaGetLastError();
-        if (h2d_used_[s]) cudaStreamWaitEvent(0, h2d_ev_[s], 0);
-        cudaEventRecord(r.beg[s], 0);
+        cudaGetLastError();   // 上の問い合わせの「まだ」（cudaErrorNotReady）を持ち越さない
+        if (h2d_used_[s]) ok = ok && cudaStreamWaitEvent(0, h2d_ev_[s], 0) == cudaSuccess;
+        ok = ok && cudaEventRecord(r.beg[s], 0) == cudaSuccess;
         double bytes = 0;
         for (int i : tiles) {
             if (vd[i].gpu != g) continue;
@@ -732,7 +675,8 @@ bool nvgpudecode::transfer_remote(const std::vector<int>& tiles)
                                    d.h_rowBytes, d.h_rows / 2, cudaMemcpyDeviceToHost, 0) == cudaSuccess;
             bytes += double(d.h_rowBytes) * d.h_rows * 1.5;
         }
-        cudaEventRecord(r.end[s], 0);
+        // 終わりの印は失敗しても記録する（待つ側が止まらないように）
+        if (cudaEventRecord(r.end[s], 0) != cudaSuccess) ok = false;
         r.used[s]  = true;
         r.bytes[s] = bytes;
     }
@@ -740,9 +684,9 @@ bool nvgpudecode::transfer_remote(const std::vector<int>& tiles)
     if (doneMs > 0) emit transfer_time_ms(doneMs, doneBytes / (doneMs * 1e6));
 
     // 2 段目: 表示用 GPU のタイルと D2H の完了を待って → 表示用 GPU
-    cudaEventRecord(local_ev_[s], dec_stream);
-    cudaStreamWaitEvent(xfer_stream_, local_ev_[s], 0);
-    for (int g : gpus) cudaStreamWaitEvent(xfer_stream_, remote_[g].end[s], 0);
+    ok = ok && cudaEventRecord(local_ev_[s], dec_stream) == cudaSuccess
+            && cudaStreamWaitEvent(xfer_stream_, local_ev_[s], 0) == cudaSuccess;
+    for (int g : gpus) ok = ok && cudaStreamWaitEvent(xfer_stream_, remote_[g].end[s], 0) == cudaSuccess;
     for (int i : tiles) {
         const VideoDecorder& d = vd[i];
         ok = ok
@@ -751,7 +695,7 @@ bool nvgpudecode::transfer_remote(const std::vector<int>& tiles)
           && cudaMemcpy2DAsync(d.r_uv[ringNo], d.r_uvpitch, d.h_uv[s], d.h_rowBytes,
                                d.h_rowBytes, d.h_rows / 2, cudaMemcpyHostToDevice, xfer_stream_) == cudaSuccess;
     }
-    cudaEventRecord(h2d_ev_[s], xfer_stream_);
+    if (cudaEventRecord(h2d_ev_[s], xfer_stream_) != cudaSuccess) ok = false;
     h2d_used_[s] = true;
     if (!ok) {
         qWarning() << "[nvgpudecode] タイルの転送に失敗:" << cudaGetErrorString(cudaGetLastError());
@@ -797,9 +741,11 @@ bool nvgpudecode::transfer_compressed(const std::vector<int>& tiles, int s)
             invMs    += (std::max)(0.0, st.invMs);
             raw += st.rawBytes; comp += st.compBytes; haveStats = true;
         }
+        // GPU 上の失敗（nvCOMP のチャンク・ヘッダの破損）は数フレーム遅れて分かる。表示なのでログだけ（xfer_codec.h）
+        c->deviceError(true);
         std::vector<const AVFrame*> frames;
         for (int i : idx) frames.push_back(vd[i].hw_frames[ringNo]);
-        ok = ok && c->encode(s, frames, h2d_used_[s] ? h2d_ev_[s] : nullptr);
+        ok = ok && c->compress(s, frames, h2d_used_[s] ? h2d_ev_[s] : nullptr);
     }
     cudaSetDevice(g_openglDeviceID);
     if (haveStats && cmpMs + sendMs > 0) {
@@ -810,15 +756,15 @@ bool nvgpudecode::transfer_compressed(const std::vector<int>& tiles, int s)
     }
 
     // 表示用 GPU: 表示用 GPU のタイルと各 GPU の圧縮の完了を待って展開
-    cudaEventRecord(local_ev_[s], dec_stream);
-    cudaStreamWaitEvent(xfer_stream_, local_ev_[s], 0);
-    for (auto& [g, idx] : byGpu) cudaStreamWaitEvent(xfer_stream_, codecs_[g]->encodedEvent(s), 0);
+    ok = ok && cudaEventRecord(local_ev_[s], dec_stream) == cudaSuccess
+            && cudaStreamWaitEvent(xfer_stream_, local_ev_[s], 0) == cudaSuccess;
+    for (auto& [g, idx] : byGpu) ok = ok && cudaStreamWaitEvent(xfer_stream_, codecs_[g]->compressedEvent(s), 0) == cudaSuccess;
     for (auto& [g, idx] : byGpu) {
         XferCodec& c = *codecs_[g];
         std::vector<XferCodec::Dst> dst;   // 詰めたまま渡すときは転送先リング r_y が無い（使わない）
         if (!c.packed())
             for (int i : idx) dst.push_back({ vd[i].r_y[ringNo], vd[i].r_ypitch, vd[i].r_uv[ringNo], vd[i].r_uvpitch });
-        ok = ok && c.decode(s, ringNo, xfer_stream_, dst);
+        ok = ok && c.decompress(s, ringNo, xfer_stream_, dst);
         if (c.packed()) {
             // 詰めたまま渡す: Frame のタイルを展開先（リングの ringNo 段）に向ける
             for (size_t k = 0; k < idx.size(); k++) {
@@ -833,9 +779,12 @@ bool nvgpudecode::transfer_compressed(const std::vector<int>& tiles, int s)
         }
     }
     cudaSetDevice(g_openglDeviceID);
-    cudaEventRecord(h2d_ev_[s], xfer_stream_);
+    if (cudaEventRecord(h2d_ev_[s], xfer_stream_) != cudaSuccess) ok = false;
     h2d_used_[s] = true;
-    if (!ok) return false;
+    if (!ok) {
+        qWarning() << "[nvgpudecode] 圧縮転送に失敗:" << cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
     record_decode_ready();
     return true;
 }
@@ -889,8 +838,11 @@ bool nvgpudecode::receive_into_slot(int i, int64_t* out_pts)
     AVFrame* tmp = vd[i].tmp_frame;
     if (!tmp)                              return false;
 
-    if (avcodec_receive_frame(vd[i].codec_ctx, tmp) != 0)
-        return false;                       // ring は触っていない
+    const int r = avcodec_receive_frame(vd[i].codec_ctx, tmp);
+    if (r != 0) {                           // ring は触っていない
+        if (r != AVERROR(EAGAIN) && r != AVERROR_EOF) warn_ffmpeg("avcodec_receive_frame", r);
+        return false;
+    }
 
     AVFrame* dst = vd[i].hw_frames[ringNo];
     av_frame_unref(dst);                    // move_ref は dst が空であることを要求する
@@ -936,10 +888,10 @@ bool nvgpudecode::read_into_pending()
 {
     if (pending_.size() != vd.size()) pending_.resize(vd.size());
 
-    int ret = av_read_frame(fmt_ctx, packet);
+    int ret = read_packet();
     if (ret < 0) {
         av_packet_unref(packet);
-        return false;                       // EOF
+        return false;                       // EOF（読めない失敗は read_packet が fail_decode 済み）
     }
 
     if (packet->stream_index == audio_stream_index) {
@@ -965,6 +917,7 @@ bool nvgpudecode::read_into_pending()
 
         AVPacket* clone = av_packet_clone(packet);
         if (clone) pending_[i].push_back(clone);
+        else       warn_ffmpeg("av_packet_clone", AVERROR(ENOMEM));   // そのタイルだけ 1 パケット欠ける
         break;
     }
 
@@ -1013,7 +966,10 @@ bool nvgpudecode::pump_stream(int i, std::vector<bool>& got,
     pending_[i].pop_front();
     av_packet_free(&p);
 
-    if (r < 0) return false;
+    if (r < 0) {   // 壊れたパケット等。捨てて続ける（次のキーフレームで戻る）。EOF は終端の後の送り込みなので黙る
+        if (r != AVERROR_EOF) warn_ffmpeg("avcodec_send_packet", r);
+        return false;
+    }
 
     tm.restart();
     const bool ok = receive_into_slot(i, &pts[i]);
@@ -1200,7 +1156,7 @@ void nvgpudecode::get_singledecode_image() {
         if (audio_ctx)
             avcodec_flush_buffers(audio_ctx);
 
-        av_seek_frame(fmt_ctx, vd[0].stream_index,
+        seek_file(vd[0].stream_index,
                       frame_to_pts(slider_No),
                       AVSEEK_FLAG_BACKWARD);
 
@@ -1216,11 +1172,15 @@ void nvgpudecode::get_singledecode_image() {
     }
 
     // ----------- パケット読み込みループ -----------
-    while (true) {
-        int ret = av_read_frame(fmt_ctx, packet);
+    // ★ 終端（読めない失敗も）を何回見たか。終端 → 読み直し → 終端 を永久に繰り返さない
+    //   （ここは processFrame のミューテックスの中なので、回り続けると GUI まで固まる）
+    int eof_rounds = 0;
+    while (!thread_stop_flag) {
+        int ret = read_packet();
 
-        // ---------- EOF ----------
+        // ---------- EOF（読めない失敗も。そのときは read_packet が fail_decode 済みなので抜ける）----------
         if (ret < 0) {
+            if (decode_failed_) { av_packet_unref(packet); return; }
 
             avcodec_send_packet(vd[0].codec_ctx, nullptr);
 
@@ -1229,13 +1189,13 @@ void nvgpudecode::get_singledecode_image() {
                 break;
             }
 
-            // 終端→先頭に戻ってループ
-            if (Frame.FrameNo < VideoInfo.end_range_framesNo - 1) {
+            // 終端→先頭に戻ってループ（2 回目の終端は範囲の終わりと同じ扱い）
+            if (Frame.FrameNo < VideoInfo.end_range_framesNo - 1 && ++eof_rounds < 2) {
                 avcodec_flush_buffers(vd[0].codec_ctx);
                 if (audio_ctx)
                     avcodec_flush_buffers(audio_ctx);
 
-                av_seek_frame(fmt_ctx, vd[0].stream_index,
+                seek_file(vd[0].stream_index,
                               frame_to_pts(Frame.FrameNo + 1),
                               AVSEEK_FLAG_ANY);
             } else {
@@ -1271,6 +1231,7 @@ void nvgpudecode::get_singledecode_image() {
                 }
                 r = avcodec_send_packet(vd[0].codec_ctx, packet);   // ★ 再送
             }
+            if (r < 0 && r != AVERROR(EAGAIN) && r != AVERROR_EOF) warn_ffmpeg("avcodec_send_packet", r);   // 壊れたパケット等。捨てて続ける
             if (r == 0) {
                 if (receive_into_slot(0)) {
                     av_packet_unref(packet);
@@ -1280,6 +1241,7 @@ void nvgpudecode::get_singledecode_image() {
         }
         av_packet_unref(packet);
     }
+    if (thread_stop_flag) { av_packet_unref(packet); return; }   // 閉じる途中
 
     publish_decode_frame();
     av_packet_unref(packet);
@@ -1315,7 +1277,7 @@ void nvgpudecode::get_multidecode_image() {
         }
         clear_pending();          // ★ flush したら保留パケットも捨てる
 
-        av_seek_frame(fmt_ctx, vd[0].stream_index,
+        seek_file(vd[0].stream_index,
                       frame_to_pts(slider_No),
                       AVSEEK_FLAG_BACKWARD);
 
@@ -1500,6 +1462,11 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
         mismatch_skips_ = 0;
     }
 
+    // ★ 下で Frame を書き換える（タイルのポインタ・番号）。転送に失敗して「前のコマを再送」するときは
+    //   この写しへ戻してから送る。戻さないと、表示用 GPU のタイルは新しいコマ、別 GPU のタイルはまだ届いて
+    //   いない面（圧縮転送なら展開前の面）を指したまま、前のコマの decode_ready で送ってしまう
+    const VideoFrame prevFrame = Frame;
+
     Frame.src_mode   = SRC_NV12_TILE;
     // ★ d_y/d_uv は MAX_TILES 本しかないので、本数もそこで頭打ちにする。
     //   ポインタを詰めるループだけ clamp されていて、本数が抜けていた。
@@ -1515,7 +1482,8 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
         if (vd[i].gpu >= 0 && vd[i].gpu != g_openglDeviceID) {
             // 別の GPU でデコードしたタイル: 表示用 GPU のリングへ送ってから、そちらを渡す
             if (!alloc_remote_tile(i, f)) {
-                resend_last_frame();
+                // 確保は毎コマやり直しても同じ結果なので止める（VRAM・ページ固定メモリの不足）
+                fail_decode(QStringLiteral("GPU %1 のタイルの転送先を確保できません（VRAM かメインメモリの不足）").arg(vd[i].gpu));
                 return;
             }
             // 詰めたまま渡すときは r_y が無い（transfer_compressed が展開先に向け直す）
@@ -1531,9 +1499,6 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
         Frame.d_uv[i]     = f->data[1];
         Frame.uv_pitch[i] = (size_t)f->linesize[1];
     }
-
-    // フレーム番号と時刻（基底で共通化。0 除算と NOPTS もそこでふさいでいる）
-    advance_frame_no(vd[0].hw_frames[ringNo]->best_effort_timestamp);
 
     // ==============================================================
     // ★ NVDEC の出力コピー完了を記録する
@@ -1551,9 +1516,16 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
         const bool sent = transfer_remote(remoteTiles);
         prof_.xfer += tx.nsecsElapsed() / 1e6;
         if (!sent) {
+            // 1 コマの失敗は前のコマで埋める。続くなら止める（毎コマ同じ絵のまま固まらないように）
+            if (++xfer_fail_ >= kMaxXferFails) {
+                fail_decode(QStringLiteral("別の GPU からの転送が続けて失敗しました（%1 回）").arg(xfer_fail_));
+                return;
+            }
+            Frame = prevFrame;   // 前のコマのまま（写しを取った時点の音声 = このコマで読んだ分はそのまま残る）
             resend_last_frame();
             return;
         }
+        xfer_fail_ = 0;
     } else if (dec_sync_by_event && ringNo < (int)decode_ready_ev.size() && decode_ready_ev[ringNo]) {
         if (cudaEventRecord(decode_ready_ev[ringNo], dec_stream) == cudaSuccess) {
             Frame.decode_ready = decode_ready_ev[ringNo];
@@ -1568,6 +1540,11 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
         cudaDeviceSynchronize();
         Frame.decode_ready = nullptr;
     }
+
+    // フレーム番号と時刻（基底で共通化。0 除算と NOPTS もそこでふさいでいる）
+    //   ★ 転送が済んでから進める。失敗して前のコマを再送するときに番号（slider_No も）が進んでいると、
+    //     次のデコードが「シークされた」と見て flush からやり直してしまう
+    advance_frame_no(vd[0].hw_frames[ringNo]->best_effort_timestamp);
 
     //リングを回す（次のデコードは別の面へ）
     ringNo++;
@@ -1634,7 +1611,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
     if (audio_ctx)
         avcodec_flush_buffers(audio_ctx);
 
-    av_seek_frame(fmt_ctx, vd[0].stream_index,
+    seek_file(vd[0].stream_index,
                   frame_to_pts(targetFrameNo),
                   AVSEEK_FLAG_BACKWARD);
 
@@ -1652,9 +1629,9 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
         // ★ 内側にも停止要求を見せる。外側だけだと、1 回のスキャンが
         //   長いファイルでクローズ時に待たされる。
         while (!thread_stop_flag) {
-            int ret = av_read_frame(fmt_ctx, packet);
+            int ret = read_packet();
 
-            // ---------- EOF ----------
+            // ---------- EOF（読めない失敗も。read_packet が fail_decode 済み）----------
             if (ret < 0) {
                 avcodec_send_packet(vd[0].codec_ctx, nullptr);
                 if (receive_into_slot(0)) {
@@ -1680,7 +1657,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
                 if (audio_ctx)
                     avcodec_flush_buffers(audio_ctx);
 
-                av_seek_frame(fmt_ctx, vd[0].stream_index,
+                seek_file(vd[0].stream_index,
                               frame_to_pts(seek_frame),
                               AVSEEK_FLAG_ANY);
 
@@ -1699,6 +1676,7 @@ void nvgpudecode::high_res_seek_frame_single(int targetFrameNo){
                     }
                     r = avcodec_send_packet(vd[0].codec_ctx, packet);   // ★ 再送
                 }
+                if (r < 0 && r != AVERROR(EAGAIN) && r != AVERROR_EOF) warn_ffmpeg("avcodec_send_packet", r);   // 壊れたパケット等。捨てて続ける
                 if (r == 0) {
                     if (receive_into_slot(0)) {
                         av_packet_unref(packet);
@@ -1740,7 +1718,7 @@ void nvgpudecode::high_res_seek_frame_multi(int targetFrameNo){
     }
     clear_pending();              // ★ flush したら保留パケットも捨てる
 
-    av_seek_frame(fmt_ctx, vd[0].stream_index,
+    seek_file(vd[0].stream_index,
                   frame_to_pts(targetFrameNo),
                   AVSEEK_FLAG_BACKWARD);
 

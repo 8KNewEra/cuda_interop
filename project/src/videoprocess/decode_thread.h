@@ -34,7 +34,7 @@ struct VideoDecorder {
     //   ここへ受けて成功時だけ move_ref する（receive_into_slot）。
     AVFrame* tmp_frame = nullptr;
 
-    // マルチ GPU デコード（NVDEC 経路のみ。docs/MULTI_GPU_DECODE.md）
+    // マルチ GPU デコード（NVDEC 経路のみ。docs/DECODE_CORE.md 8）
     //   gpu: デコードする GPU（-1 = 表示用 GPU）。別 GPU のタイルは表示用 GPU 上の r_y / r_uv（hw_frames と同じ段数）へ
     //   送ってから GUI に渡す（圧縮転送で詰めたまま渡すときは XferCodec の展開先を使うので空）。
     //   h_y / h_uv は圧縮しない転送の中継（ページ固定、nvgpudecode::kStage 枠）
@@ -67,7 +67,7 @@ signals:
     void heavy_process_signal(bool flag);
     // 性能 HUD: 通常の再生で 1 フレームのデコードにかかった時間（get_decode_image の実時間。ms）
     void decode_time_ms(double ms);
-    // 性能 HUD（マルチ GPU デコード。値の意味は docs/MULTI_GPU_DECODE.md）
+    // 性能 HUD（マルチ GPU デコード。値の意味は docs/DECODE_CORE.md 8.9）
     void transfer_time_ms(double ms, double gbps);
     void transfer_codec_stats(double ratio, double compressMs, double expandMs);
     void transfer_expand_parts(double fetchMs, double decompMs, double invMs);
@@ -158,6 +158,19 @@ protected:
     //エラー処理
     QString Error_String="";
     QString ffmpegErrStr(int errnum);
+    // 失敗の扱い（docs/DECODE_CORE.md 3.5）
+    //   fail_decode : 再生を続けられない失敗（ファイルを読めない・転送が続けて失敗 等）。decode_error を 1 回だけ出し、
+    //                 以降の processFrame は何もしない（GUI がファイルを閉じてダイアログを出す）
+    //   warn_ffmpeg : 続けられる失敗のログ（壊れたパケット・シークの失敗 等）。最初の 10 回と、以降 100 回ごと
+    //   read_packet : av_read_frame の代わり。EOF 以外の失敗はやり直し、I/O の失敗が続けば fail_decode して EOF を返す
+    void fail_decode(const QString& msg);
+    void warn_ffmpeg(const char* what, int ret);
+    int  read_packet();
+    int  seek_file(int stream_index, int64_t ts, int flags);   // av_seek_frame。失敗は warn_ffmpeg（位置はそのまま）
+    bool decode_failed_ = false;
+    int  ffmpeg_warns_ = 0;
+    // 音声（エンコード入力用）のデコーダを開く。開けなければ音声なしで続ける（映像は再生できるので開く失敗にはしない）
+    void open_audio_decoder();
 
     //制御
     // ★ GUIスレッドが書き、デコードスレッドが読む値は atomic にする。

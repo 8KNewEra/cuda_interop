@@ -112,6 +112,8 @@ void logfile_control::load_inifile()
     // 書き出しのビット深度の希望（8 / 10。実際に 10bit になる条件は encode_out_10bit）
     encodeSettings.output_depth = (settings.value("Encodesetting/output_depth", encodeSettings.output_depth).toInt() >= 10) ? 10 : 8;
     encodeSettings.dither = settings.value("Encodesetting/dither", encodeSettings.dither).toBool();
+    encodeSettings.xfer_codec = settings.value("Encodesetting/xfer_codec", encodeSettings.xfer_codec).toString();
+    encodeSettings.xfer_delta = settings.value("Encodesetting/xfer_delta", encodeSettings.xfer_delta).toBool();
     encodeSettings.preset = settings.value("Encodesetting/preset", encodeSettings.preset).toString();
     encodeSettings.tune = settings.value("Encodesetting/tune", encodeSettings.tune).toString();
     encodeSettings.b_frames = settings.value("Encodesetting/b_frames", encodeSettings.b_frames).toInt();
@@ -249,6 +251,8 @@ void logfile_control::save_inifile(){
     settings.setValue("Encodesetting/codec", encodeSettings.codec);
     settings.setValue("Encodesetting/output_depth", encodeSettings.output_depth);
     settings.setValue("Encodesetting/dither", encodeSettings.dither);
+    settings.setValue("Encodesetting/xfer_codec", encodeSettings.xfer_codec);
+    settings.setValue("Encodesetting/xfer_delta", encodeSettings.xfer_delta);
     settings.setValue("Encodesetting/preset", encodeSettings.preset);
     settings.setValue("Encodesetting/tune", encodeSettings.tune);
     settings.setValue("Encodesetting/b_frames", encodeSettings.b_frames);

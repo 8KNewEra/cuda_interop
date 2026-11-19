@@ -1,8 +1,9 @@
 // ==============================================================
 // 10bit 経路: RGBA16（OpenGL FBO、GL_RGBA16）からの出力変換
 //
-//   rgba16_to_nv12_split_tex_kernel : エンコード入力の NV12（8bit 出力）へ。タイル分割 x1 / x2 / x4 / x8 共通
-//   rgba16_to_p010_split_tex_kernel : エンコード入力の P010（10bit 出力。HEVC Main10 / AV1 10bit）へ
+//   encode_rows_rgba16_to_nv12_kernel / encode_rows_rgba16_to_p010_kernel
+//                                   : エンコード入力の NV12（8bit 出力）/ P010（10bit 出力。HEVC Main10 / AV1 10bit）へ。
+//                                     行ごと（encode_rows.cuh）、タイル分割共通。圧縮転送のタイルは詰めた並びへ直接書く
 //   rgba16_to_rgba8_tex_kernel      : 画像保存用の RGBA8 へ（JPEG / BMP、8bit を選んだ PNG / TIFF）
 //
 //   8bit に落とす 2 本（NV12 / RGBA8）は dither != 0 のとき、四捨五入の前に ±0.5 段階のノイズを足す
@@ -19,6 +20,7 @@
 #include <texture_indirect_functions.h>
 #include <stdint.h>
 #include "tiles_10bit.h"   // NV12Tiles
+#include "encode_rows.cuh"
 
 // テクスチャから 1 画素読み、0..255 の float にする（unnormalized / point sampling）
 __device__ __forceinline__ float3 fetch_rgb255(cudaTextureObject_t In, int x, int y)
@@ -42,98 +44,72 @@ __device__ __forceinline__ float dither_noise(int x, int y, int c)
     return (float)(h & 0xFFFFu) * (1.0f / 65536.0f) - 0.5f;
 }
 
-// RGBA16 → NV12（全体を走査し、該当するタイルへ書く）
-extern "C"
-__global__ void rgba16_to_nv12_split_tex_kernel(
-    cudaTextureObject_t In,
-    NV12Tiles t,
-    int srcW, int srcH,
-    int flip,
-    int dither)
+// ---- 色の計算 ----
+// NV12（8bit 出力）: c は 0..255（fetch_rgb255）。dn = 1 ならディザ（(x, y) は画像の座標、色差は 2×2 の左上）
+__device__ __forceinline__ int nv12_luma_255(float3 c, float dn, int x, int y)
 {
-    int sx = blockIdx.x * blockDim.x + threadIdx.x;
-    int sy = blockIdx.y * blockDim.y + threadIdx.y;
-    if (sx >= srcW || sy >= srcH) return;
-
-    const int tx = sx / t.outW;
-    const int ty = sy / t.outH;
-    const int q  = ty * t.cols + tx;
-    if (tx >= t.cols || q >= t.count) return;
-
-    const float dn = dither ? 1.0f : 0.0f;
-    const int fy = flip ? (srcH - 1 - sy) : sy;
-    const float3 c = fetch_rgb255(In, sx, fy);
-
-    const float yf =  0.1826f * c.x + 0.6142f * c.y + 0.0620f * c.z + 16.0f;
-    const int dx = sx - tx * t.outW;
-    const int dy = sy - ty * t.outH;
-    t.y[q][dy * t.yp[q] + dx] = round_u8(yf + dn * dither_noise(sx, sy, 0));
-
-    if ((dx & 1) == 0 && (dy & 1) == 0) {
-        // 色差は 2×2 の平均（画像の端では端の画素を使う。タイルの境界はまたがない）
-        const int x1 = min(sx + 1, srcW - 1), y1 = min(sy + 1, srcH - 1);
-        const int f1 = flip ? (srcH - 1 - y1) : y1;
-        const float3 c01 = fetch_rgb255(In, x1, fy), c10 = fetch_rgb255(In, sx, f1), c11 = fetch_rgb255(In, x1, f1);
-        const float3 a = make_float3((c.x + c01.x + c10.x + c11.x) * 0.25f,
-                                     (c.y + c01.y + c10.y + c11.y) * 0.25f,
-                                     (c.z + c01.z + c10.z + c11.z) * 0.25f);
-        const float uf = -0.1006f * a.x - 0.3386f * a.y + 0.4392f * a.z + 128.0f;
-        const float vf =  0.4392f * a.x - 0.3989f * a.y - 0.0403f * a.z + 128.0f;
-        uint8_t* uv = t.uv[q] + (dy >> 1) * t.uvp[q] + dx;
-        uv[0] = round_u8(uf + dn * dither_noise(sx, sy, 1));
-        uv[1] = round_u8(vf + dn * dither_noise(sx, sy, 2));
-    }
+    const float yf = 0.1826f * c.x + 0.6142f * c.y + 0.0620f * c.z + 16.0f;
+    return round_u8(yf + dn * dither_noise(x, y, 0));
+}
+__device__ __forceinline__ void nv12_chroma_255(float3 a, float dn, int x, int y, int& u, int& v)
+{
+    const float uf = -0.1006f * a.x - 0.3386f * a.y + 0.4392f * a.z + 128.0f;
+    const float vf =  0.4392f * a.x - 0.3989f * a.y - 0.0403f * a.z + 128.0f;
+    u = round_u8(uf + dn * dither_noise(x, y, 1));
+    v = round_u8(vf + dn * dither_noise(x, y, 2));
 }
 
-// RGBA16 → P010（10bit 出力。値は 16bit の上位 10bit に詰める）
-//   NV12Tiles のポインタ・ピッチはバイト単位のまま（1 サンプル 2 バイト）
-extern "C"
-__global__ void rgba16_to_p010_split_tex_kernel(
-    cudaTextureObject_t In,
-    NV12Tiles t,
-    int srcW, int srcH,
-    int flip)
+// P010（10bit 出力）: c は 0..1（fetch_rgb01）。戻り値は 0..1023（P010 の並びへ書くときに <<6）
+__device__ __forceinline__ float3 fetch_rgb01(cudaTextureObject_t In, int x, int fy)
 {
-    int sx = blockIdx.x * blockDim.x + threadIdx.x;
-    int sy = blockIdx.y * blockDim.y + threadIdx.y;
-    if (sx >= srcW || sy >= srcH) return;
+    ushort4 p = tex2D<ushort4>(In, (float)x + 0.5f, (float)fy + 0.5f);
+    return make_float3(p.x / 65535.0f, p.y / 65535.0f, p.z / 65535.0f);
+}
+__device__ __forceinline__ float luma709(float3 c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; }
+__device__ __forceinline__ int round10(float v) { return (int)(fminf(fmaxf(v, 0.0f), 1023.0f) + 0.5f); }   // 0..1023 に収めて四捨五入
+__device__ __forceinline__ int p010_luma(float3 c) { return round10(64.0f + 876.0f * luma709(c)); }
+__device__ __forceinline__ void p010_chroma(float3 a, int& u, int& v)
+{
+    const float ya = luma709(a);
+    u = round10(512.0f + 896.0f * (a.z - ya) / 1.8556f);   // Cb
+    v = round10(512.0f + 896.0f * (a.x - ya) / 1.5748f);   // Cr
+}
 
-    const int tx = sx / t.outW;
-    const int ty = sy / t.outH;
-    const int q  = ty * t.cols + tx;
-    if (tx >= t.cols || q >= t.count) return;
+// ==============================================================
+// RGBA16 → NV12 / P010（行ごと。タイル分割共通。encode_rows.cuh）
+// ==============================================================
+namespace {
+struct ConvRgba16ToNv12 {
+    using T = uint8_t;
+    static constexpr int BITS = 8, SHIFT = 0;
+    cudaTextureObject_t in;
+    float dn;   // ディザ（1 / 0）
+    __device__ float3 fetch(int x, int fy) const { return fetch_rgb255(in, x, fy); }
+    __device__ int luma(float3 c, int x, int y) const { return nv12_luma_255(c, dn, x, y); }
+    __device__ void chroma(float3 a, int x, int y, int& u, int& v) const { nv12_chroma_255(a, dn, x, y, u, v); }
+};
+struct ConvRgba16ToP010 {
+    using T = uint16_t;
+    static constexpr int BITS = 10, SHIFT = 6;
+    cudaTextureObject_t in;
+    __device__ float3 fetch(int x, int fy) const { return fetch_rgb01(in, x, fy); }
+    __device__ int luma(float3 c, int, int) const { return p010_luma(c); }
+    __device__ void chroma(float3 a, int, int, int& u, int& v) const { p010_chroma(a, u, v); }
+};
+}
 
-    const int dx = sx - tx * t.outW;
-    const int dy = sy - ty * t.outH;
+extern "C"
+__global__ void encode_rows_rgba16_to_nv12_kernel(
+    cudaTextureObject_t In, NV12Tiles t, int srcW, int srcH, int flip, int dither)
+{
+    encode_rows::convert(t, srcW, srcH, flip, ConvRgba16ToNv12{ In, dither ? 1.0f : 0.0f });
+}
 
-    // RGB（0..1）→ Y'（BT.709）
-    auto fetch01 = [&](int x, int y) {
-        const int fy = flip ? (srcH - 1 - y) : y;
-        ushort4 p = tex2D<ushort4>(In, (float)x + 0.5f, (float)fy + 0.5f);
-        return make_float3(p.x / 65535.0f, p.y / 65535.0f, p.z / 65535.0f);
-    };
-    auto luma = [](float3 c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; };
-    auto pack10 = [](float v) {   // 0..1023 に収めて四捨五入し、上位 10bit へ
-        int i = (int)(fminf(fmaxf(v, 0.0f), 1023.0f) + 0.5f);
-        return (uint16_t)(i << 6);
-    };
-
-    const float3 c = fetch01(sx, sy);
-    uint16_t* yrow = reinterpret_cast<uint16_t*>(t.y[q] + dy * t.yp[q]);
-    yrow[dx] = pack10(64.0f + 876.0f * luma(c));
-
-    if ((dx & 1) == 0 && (dy & 1) == 0) {
-        // 色差は 2×2 の平均（タイルの端ではみ出す分は端の画素を使う）
-        const int x1 = min(sx + 1, srcW - 1), y1 = min(sy + 1, srcH - 1);
-        const float3 c01 = fetch01(x1, sy), c10 = fetch01(sx, y1), c11 = fetch01(x1, y1);
-        const float3 a = make_float3((c.x + c01.x + c10.x + c11.x) * 0.25f,
-                                     (c.y + c01.y + c10.y + c11.y) * 0.25f,
-                                     (c.z + c01.z + c10.z + c11.z) * 0.25f);
-        const float ya = luma(a);
-        uint16_t* uv = reinterpret_cast<uint16_t*>(t.uv[q] + (dy >> 1) * t.uvp[q]) + dx;
-        uv[0] = pack10(512.0f + 896.0f * (a.z - ya) / 1.8556f);   // Cb
-        uv[1] = pack10(512.0f + 896.0f * (a.x - ya) / 1.5748f);   // Cr
-    }
+extern "C"
+__global__ void encode_rows_rgba16_to_p010_kernel(
+    cudaTextureObject_t In, NV12Tiles t, int srcW, int srcH, int flip)
+{
+    encode_rows::convert(t, srcW, srcH, flip, ConvRgba16ToP010{ In });
 }
 
 // RGBA16 → RGBA8（画像保存用。上下はそのまま。保存側で反転する）

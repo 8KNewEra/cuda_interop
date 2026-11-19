@@ -1332,7 +1332,9 @@ void PlayerController::start_encode()
     // 起動キックは再生状態にしてから 1 回だけ
     emit decode_please();
 
-    connect(engine_, &VideoEngine::encode_finished, this, [this, timer]() {
+    // 前回のエラーで残った完了の接続は外す（エラーで終わると encode_finished は来ない）
+    disconnect(encodeFinishedConn_);
+    encodeFinishedConn_ = connect(engine_, &VideoEngine::encode_finished, this, [this, timer]() {
         wasCanceled = true;
         emit send_manual_pause();
 
@@ -1372,10 +1374,12 @@ void PlayerController::encode_error_handler(const QString& error)
     }
     emit stateChanged();
 
+    disconnect(encodeFinishedConn_);   // この回の完了は来ない
+
     qWarning() << "[PlayerController] encode error:" << error;
-    // 設定画面の中に出す（解像度・分割数・B フレームを下げると改善することがある）
+    // 設定画面の中に出す（文言は save_encode / VideoEngine が作る。VRAM 不足・空き不足などは理由を含む）
     if (encoder_)
-        encoder_->encodeFailed(error + "（タイル分割数や B フレーム数を減らすと改善する場合があります）");
+        encoder_->encodeFailed(error);
 }
 
 void PlayerController::finished_encode()

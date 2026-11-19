@@ -96,9 +96,64 @@ bool frame_is_unreferenced(const AVFrame* f)
 } // namespace
 
 
+// ==============================================================
+// エラーの文言（画面に出す）
+//   VRAM 不足とディスクの空き不足は、見て分かる文言にする
+// ==============================================================
+namespace {
+
+QString av_err_text(int e)
+{
+    char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(e, buf, sizeof(buf));
+    return QString::fromLocal8Bit(buf);
+}
+
+// ファイルへの書き込みの失敗
+QString write_error_text(int e)
+{
+    if (e == AVERROR(ENOSPC))
+        return QStringLiteral("ディスクの空き不足");
+    return QStringLiteral("書き込みエラー（%1）").arg(av_err_text(e));
+}
+
+[[noreturn]] void throw_text(const QString& s) { throw std::runtime_error(s.toUtf8().toStdString()); }
+
+// CUDA の確保・作成の失敗は例外にする（コンストラクタの catch が解放する）
+void cuda_check(cudaError_t e, const QString& what)
+{
+    if (e == cudaSuccess) return;
+    cudaGetLastError();
+    if (e == cudaErrorMemoryAllocation)
+        throw_text(QStringLiteral("%1: VRAM 不足").arg(what));
+    throw_text(QStringLiteral("%1: %2").arg(what, QString::fromUtf8(cudaGetErrorString(e))));
+}
+
+} // namespace
+
+
+// ==============================================================
+// 生成と破棄
+//   コンストラクタの途中で失敗（VRAM 不足、エンコーダを開けない、出力ファイルを開けない等）したら、
+//   それまでに確保したものを release_all で全部返してから例外を投げ直す（呼び出し側は catch してエラー表示。
+//   返さないと、失敗するたびに VRAM・CUDA のストリーム・イベント・FFmpeg のコンテキストが残り続ける）
+//   init の途中のどこで止まっても release_all が後始末できるよう、メンバは全て nullptr / 空から始め、確保したらすぐメンバへ置く
+// ==============================================================
 save_encode::save_encode(int h,int w,bool srcRgba16_) {
+    try {
+        init(h, w, srcRgba16_);
+    } catch (...) {
+        qWarning() << "[save_encode] 初期化に失敗したので確保したものを解放する";
+        stop_encoder_threads();   // 起動前なら何もしない
+        stop_audio_thread();
+        release_all(false);
+        throw;
+    }
+}
+
+void save_encode::init(int h,int w,bool srcRgba16_) {
     //最初にGPU設定
-    cudaSetDevice(g_openglDeviceID);
+    cuda_check(cudaSetDevice(g_openglDeviceID), "GPU の選択");
 
     // 入力の形式と出力のビット深度（10bit は P010。設定画面と同じ判定 encode_out_10bit）
     srcRgba16 = srcRgba16_;
@@ -108,14 +163,20 @@ save_encode::save_encode(int h,int w,bool srcRgba16_) {
 
     // ★ 画像処理インスタンスの生成
     //   これが無いと encode_video() 内の
-    //   CUDA_IMG_Proc->rgba_to_nv12xN_split_tex() が nullptr 参照になる。
+    //   CUDA_IMG_Proc->encode_rows_*() が nullptr 参照になる。
     //   メンバを触らない実装だと「たまたま動く」ため気づきにくい。
     if (!CUDA_IMG_Proc) {
         CUDA_IMG_Proc = new CUDA_ImageProcess();
     }
 
-    width_=w;
-    height_=h;
+    // 書き出す大きさは偶数に切り下げる（4:2:0。奇数だと NVENC が偶数に切り上げ、余った列・行に未初期化の値が入る）。
+    //   右端 1 列・下端 1 行を捨てる。テクスチャは元の大きさのまま読む（上下反転は元の高さで。texW_ / texH_）
+    texW_ = w;
+    texH_ = h;
+    width_  = w & ~1;
+    height_ = h & ~1;
+    if (width_ != w || height_ != h)
+        qDebug() << "[save_encode] 幅・高さが奇数なので" << w << "x" << h << "→" << width_ << "x" << height_ << "で書き出す";
     frame_index = 0;
     int ret = 0;
 
@@ -225,7 +286,7 @@ save_encode::save_encode(int h,int w,bool srcRgba16_) {
         AVFormatContext* f = nullptr;
         const int r = avformat_alloc_output_context2(
             &f, nullptr, nullptr, path.toUtf8().constData());
-        if (r < 0 || !f) throw std::runtime_error("Failed to allocate format context");
+        if (r < 0 || !f) throw_text(QStringLiteral("出力形式を作れません（拡張子を確認）"));
         files_.push_back(f);
         return f;
     };
@@ -241,7 +302,15 @@ save_encode::save_encode(int h,int w,bool srcRgba16_) {
         fmt_ctx = open_fmt(encodeSettings.encode_path);
 
     // ② Encoder / Stream を複数作る
-    qDebug()<<encodeSettings.encode_tile;
+    //   タイルは 8 まで（NV12Tiles の配列）。GPU の割り当て（tile_gpu_map）はタイル数ぶん要る（開始時に作る）
+    if (encodeSettings.encode_tile < 1 || encodeSettings.encode_tile > 8 ||
+        (int)encodeSettings.tile_gpu_map.size() < encodeSettings.encode_tile)
+        throw_text(QStringLiteral("タイル数か GPU の割り当てが不正"));
+    if (encodeSettings.encode_tile > 1 &&
+        (width_ % (2 * encodeSettings.width_tile) != 0 || height_ % (2 * encodeSettings.height_tile) != 0))
+        qWarning() << "[save_encode] 1 タイルの幅・高さが偶数になりません（" << width_ << "x" << height_
+                   << "を" << encodeSettings.width_tile << "x" << encodeSettings.height_tile
+                   << "分割）。書き出したファイルの大きさが変わり、色がにじみます";
     for (int i = 0; i < encodeSettings.encode_tile; i++) {
         ve.emplace_back(std::make_unique<VideoEncoder>());
 
@@ -254,62 +323,73 @@ save_encode::save_encode(int h,int w,bool srcRgba16_) {
         ve[i]->fmt = separate_ ? ve[i]->own_fmt : fmt_ctx;
 
         //CUDAデバイスコンテキスト
-        QString gpuId = QString::number(encodeSettings.tile_gpu_map[i]);
-        qDebug()<<gpuId;
-        ret = av_hwdevice_ctx_create(&ve[i]->hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
-        if (ret < 0) throw std::runtime_error("Failed to create CUDA device");
+        //  別 GPU のタイルは primary_ctx=1 で開く（Runtime API と同じコンテキストにして、
+        //  こちらのストリームから AVFrame へ書けるようにする。transfer_remote の条件）
+        const int dev = encodeSettings.tile_gpu_map[i];
+        const QString gpuId = QString::number(dev);
+        ve[i]->dev = dev;
+        bool primaryCtx = false;
+        if (dev != g_openglDeviceID) {
+            AVDictionary* o = nullptr;
+            av_dict_set(&o, "primary_ctx", "1", 0);
+            ret = av_hwdevice_ctx_create(&ve[i]->hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, gpuId.toUtf8().data(), o, 0);
+            av_dict_free(&o);
+            primaryCtx = (ret >= 0);
+            if (!primaryCtx) {
+                qWarning() << "[save_encode] GPU" << dev << "primary_ctx で開けないのでデバイス間コピーで送る:" << ret;
+                if (ve[i]->hw_device_ctx) av_buffer_unref(&ve[i]->hw_device_ctx);
+            }
+        }
+        if (!primaryCtx)
+            ret = av_hwdevice_ctx_create(&ve[i]->hw_device_ctx,AV_HWDEVICE_TYPE_CUDA,gpuId.toUtf8().data(),nullptr,0);
+        if (ret < 0) throw_text(QStringLiteral("GPU %1 を開けません（%2）").arg(dev).arg(av_err_text(ret)));
 
         initialized_ffmpeg_hardware_context(i);   // ここで hw_frames.resize() される
         initialized_ffmpeg_codec_context(i,encodeSettings.encode_tile);
 
         // ★ stream 作成だけ
         ve[i]->stream = avformat_new_stream(ve[i]->fmt, nullptr);
-        if (!ve[i]->stream) throw std::runtime_error("Failed to create stream");
+        if (!ve[i]->stream) throw_text(QStringLiteral("メモリ不足（映像ストリーム）"));
 
         ve[i]->stream->time_base = ve[i]->codec_ctx->time_base;
         ve[i]->stream->avg_frame_rate = ve[i]->codec_ctx->framerate;
         ve[i]->stream->r_frame_rate   = ve[i]->codec_ctx->framerate;
         ret = avcodec_parameters_from_context(ve[i]->stream->codecpar, ve[i]->codec_ctx);
-        if (ret < 0) throw std::runtime_error("Failed to copy codec parameters");
+        if (ret < 0) throw_text(QStringLiteral("エンコーダの設定を書けません（%1）").arg(av_err_text(ret)));
 
-        //GPU転送用のメモリを確保
-        for(int j=0;j<encodeRingSize;j++){
-            if(encodeSettings.tile_gpu_map[i] != g_openglDeviceID){
-                // 幅はバイト数（P010 は 1 サンプル 2 バイト）
-                const int bps = out10 ? 2 : 1;
-                cudaMallocPitch(
-                    &ve[i]->hw_frames[j].d_y,
-                    &ve[i]->hw_frames[j].y_pitch,
-                    (width_/encodeSettings.width_tile) * bps,
-                    height_/encodeSettings.height_tile
-                    );
-                cudaMallocPitch(
-                    &ve[i]->hw_frames[j].d_uv,
-                    &ve[i]->hw_frames[j].uv_pitch,
-                    (width_/encodeSettings.width_tile) * bps,
-                    (height_/encodeSettings.height_tile)/2
-                    );
+        //Stream作成
+        cuda_check(cudaStreamCreateWithFlags(&ve[i]->st, cudaStreamNonBlocking), "CUDA ストリームの作成");
+
+        // 別 GPU のタイル: メインメモリ経由の転送の準備（圧縮するなら XferCodec も）。失敗したらデバイス間コピー
+        const bool remote = (dev != g_openglDeviceID);
+        if (remote && primaryCtx)
+            ve[i]->remoteXfer = init_remote_xfer(*ve[i]);
+
+        // 別 GPU のタイルの中継（変換の書き込み先）。圧縮転送するタイルは変換が詰めた並びへ直接書くので要らない
+        if (remote && !ve[i]->codec) {
+            const TileSize ts = tileSize();
+            for (FrameSlot& fs : ve[i]->hw_frames) {
+                cuda_check(cudaMallocPitch(&fs.d_y,  &fs.y_pitch,  ts.yBytes,  ts.h),     "転送の中継の確保");
+                cuda_check(cudaMallocPitch(&fs.d_uv, &fs.uv_pitch, ts.uvBytes, ts.h / 2), "転送の中継の確保");
             }
         }
 
-        //Stream作成
-        cudaStreamCreateWithFlags(
-            &ve[i]->st,
-            cudaStreamNonBlocking
-            );
-
-        //event作成
+        //event作成（ready は記録するストリームの GPU に作る。transfer_remote なら別 GPU の rst）
         //  cudaEventBlockingSync は効果が無かったので付けない（スピン待ちのまま）
-        for(int j=0;j<encodeRingSize;j++){
-            cudaEventCreateWithFlags(
+        if (ve[i]->remoteXfer) cudaSetDevice(dev);
+        cudaError_t evErr = cudaSuccess;
+        for(int j=0;j<encodeRingSize && evErr==cudaSuccess;j++){
+            evErr = cudaEventCreateWithFlags(
                 &ve[i]->hw_frames[j].ready,
                 cudaEventDisableTiming
                 );
         }
+        cudaSetDevice(g_openglDeviceID);
+        cuda_check(evErr, "CUDA イベントの作成");
 
         // ★ パイプライン用の初期化
         ve[i]->pkt = av_packet_alloc();
-        if (!ve[i]->pkt) throw std::runtime_error("Failed to allocate packet");
+        if (!ve[i]->pkt) throw_text(QStringLiteral("メモリ不足（パケット）"));
         ve[i]->ring_capacity = encodeRingSize;
         ve[i]->submitted = 0;
         ve[i]->completed = 0;
@@ -318,14 +398,10 @@ save_encode::save_encode(int h,int w,bool srcRgba16_) {
     //音声エンコーダー作成
     //   ★ 「音声を含める」を外しているときは音声ストリーム自体を作らない。
     audio_on_ = (VideoInfo.audio && encodeSettings.audio_enable);
+    //   ★ スレッドはヘッダを書き終えてから起こす（下の avio_open などで例外になると、
+    //     動いている std::thread が破棄されて std::terminate で落ちるため）
     if(audio_on_){
         init_audio_encoder();
-        audioRunning = true;
-        audioThread =
-            std::thread(
-                &save_encode::audio_loop,
-                this
-                );
     }
 
     // ③④ 全ファイルを開いてヘッダを書く
@@ -335,57 +411,120 @@ save_encode::save_encode(int h,int w,bool srcRgba16_) {
         const QString p = separate_ ? tile_path(fi) : encodeSettings.encode_path;
 
         ret = avio_open(&f->pb, p.toUtf8().constData(), AVIO_FLAG_WRITE);
-        if (ret < 0) throw std::runtime_error("Failed to open output file");
+        if (ret < 0) throw_text(QStringLiteral("出力ファイルを開けません（%1）").arg(av_err_text(ret)));
+        openedPaths_.push_back(p);   // 失敗したときに消す
 
         ret = avformat_write_header(f, nullptr);
-        if (ret < 0) throw std::runtime_error("Failed to write header");
+        if (ret < 0) throw_text(QStringLiteral("ヘッダを書けません（%1）").arg(write_error_text(ret)));
+        headersWritten_ = fi + 1;
     }
 
     //Stream作成
-    cudaStreamCreateWithFlags(
-        &st,
-        cudaStreamNonBlocking
-        );
+    cuda_check(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking), "CUDA ストリームの作成");
 
     //event作成
-    cudaEventCreateWithFlags(
-        &ev,
-        cudaEventDisableTiming
-        );
+    cuda_check(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming), "CUDA イベントの作成");
 
-    // ⑤ ★ ヘッダを書き終えてからワーカー起動（mux 可能になってから）
+    // ⑤ ★ ヘッダを書き終えてからワーカー起動（mux 可能になってから）。スレッドの生成に失敗したら、コンストラクタの catch が止めてから解放する
+    if(audio_on_){
+        audioRunning = true;
+        audioThread =
+            std::thread(
+                &save_encode::audio_loop,
+                this
+                );
+    }
     start_encoder_threads();
 }
 
 save_encode::~save_encode() {
-    // ==========================
-    // ① 映像ワーカーを止める
-    //    キュー末尾に eos を積むので、投入済みフレームは全部エンコードされ、
-    //    NULL frame → EOF まで drain された上で join される
-    // ==========================
-    stop_encoder_threads();
+    close();
+    qDebug() << "save_encode: Destructor called";
+}
 
-    // ==========================
-    // ② audioスレッド終了とflush処理
-    // ==========================
-    stop_audio_thread();
+// 終了処理。呼び出し側は delete の前に呼び、結果（false なら failMessage）を画面に出す。2 回目以降は何もしない
+bool save_encode::close()
+{
+    if (!closed_) {
+        closed_ = true;
+        // ==========================
+        // ① 映像ワーカーを止める
+        //    キュー末尾に eos を積むので、投入済みフレームは全部エンコードされ、
+        //    NULL frame → EOF まで drain された上で join される
+        // ==========================
+        stop_encoder_threads();
 
+        // ==========================
+        // ② audioスレッド終了とflush処理
+        // ==========================
+        stop_audio_thread();
+
+        release_all(true);
+    }
+    return !failed_;
+}
+
+// 途中の失敗を記録する（どのスレッドからでも。最初の 1 回の文言を残す）
+void save_encode::fail(const QString& msg)
+{
+    std::lock_guard<std::mutex> lk(failMutex_);
+    if (failed_) return;
+    failMsg_ = msg;
+    failed_ = true;
+    qWarning() << "[save_encode] 失敗:" << msg;
+}
+
+// CUDA API の戻り値を見る（エンコード中。失敗したら fail して false）
+bool save_encode::ck(cudaError_t e, const char* what)
+{
+    if (e == cudaSuccess) return true;
+    cudaGetLastError();
+    fail(QStringLiteral("%1に失敗（%2）").arg(QString::fromUtf8(what), QString::fromUtf8(cudaGetErrorString(e))));
+    return false;
+}
+
+QString save_encode::failMessage() const
+{
+    std::lock_guard<std::mutex> lk(failMutex_);
+    return failMsg_;
+}
+
+// ==============================================================
+// 全部の解放（デストラクタと、コンストラクタの失敗の両方から。スレッドは止めてから呼ぶ）
+//   finalize = true : ファイルを書き終える（trailer）
+//   finalize = false: 初期化の失敗。trailer は書かず、開いたファイルは消す（中身はヘッダまで）
+//   途中まで確保した状態でも動くこと（nullptr / 空はとばす）
+// ==============================================================
+void save_encode::release_all(bool finalize)
+{
     // ==========================
     // ③ ファイルの終了処理（mux 参加者が全員止まってから）
     // ==========================
     //   ★ 所有は files_ 1 箇所。fmt_ctx と ve[]->own_fmt は同じものを
     //     指すことがあるので、ここで畳んでから両方 null にする。
-    for (AVFormatContext* f : files_) {
+    for (int fi = 0; fi < (int)files_.size(); fi++) {
+        AVFormatContext* f = files_[fi];
         if (!f) continue;
         if (f->pb) avio_flush(f->pb);
 
-        const int tret = av_write_trailer(f);
-        qDebug() << "trailer ret =" << tret;
+        // trailer はヘッダを書けたファイルだけ（書いていないファイルに書くと FFmpeg の中で落ちうる）
+        if (finalize && fi < headersWritten_) {
+            const int tret = av_write_trailer(f);
+            qDebug() << "trailer ret =" << tret;
+            if (tret < 0) fail(write_error_text(tret));
+        }
 
-        if (f->pb) avio_closep(&f->pb);
+        if (f->pb) {
+            const int cret = avio_closep(&f->pb);   // 残りを書き出して閉じる（空き不足はここでも出る）
+            if (finalize && cret < 0) fail(write_error_text(cret));
+        }
         avformat_free_context(f);
     }
     files_.clear();
+    if (!finalize)
+        for (const QString& p : openedPaths_) QFile::remove(p);
+    openedPaths_.clear();
+    headersWritten_ = 0;
     fmt_ctx = nullptr;
     for (auto& e : ve) { if (e) { e->fmt = nullptr; e->own_fmt = nullptr; } }
 
@@ -399,17 +538,23 @@ save_encode::~save_encode() {
         if (ve[i]->st) {
             cudaStreamSynchronize(ve[i]->st);
         }
+        if (ve[i]->rst) {
+            cudaStreamSynchronize(ve[i]->rst);
+        }
 
         for (int j = 0; j < (int)ve[i]->hw_frames.size(); j++) {
 
-            //event削除
+            //event削除（transfer_remote のタイルは別 GPU に作ってある）
             if (ve[i]->hw_frames[j].ready) {
+                if (ve[i]->remoteXfer) cudaSetDevice(ve[i]->dev);
                 cudaEventDestroy(ve[i]->hw_frames[j].ready);
                 ve[i]->hw_frames[j].ready = nullptr;
+                cudaSetDevice(g_openglDeviceID);
             }
 
             //中間バッファ解放（primary GPU の場合は AVFrame の中身を指しているので触らない）
-            if (encodeSettings.tile_gpu_map[i] != g_openglDeviceID) {
+            //  dev は GPU を決めた時点で入る（それより前に失敗したタイルは d_y も無い）
+            if (ve[i]->dev != g_openglDeviceID) {
                 if (ve[i]->hw_frames[j].d_y) {
                     cudaFree(ve[i]->hw_frames[j].d_y);
                     ve[i]->hw_frames[j].d_y = nullptr;
@@ -432,6 +577,7 @@ save_encode::~save_encode() {
 
         // ★ ここまで触り終えてから clear
         ve[i]->hw_frames.clear();
+        release_remote_xfer(*ve[i]);
 
         //Stream削除
         if (ve[i]->st) {
@@ -489,17 +635,18 @@ save_encode::~save_encode() {
     delete CUDA_IMG_Proc;
     CUDA_IMG_Proc=nullptr;
 
-    qDebug() << "save_encode: Destructor called";
+    cudaGetLastError();   // 失敗の後始末で出たエラーを次の CUDA 呼び出しへ持ち越さない
+    cudaSetDevice(g_openglDeviceID);
 }
 
 //コーデックコンテキスト初期化
 void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     //エンコーダの取得とコンテキスト作成
     const AVCodec* codec = avcodec_find_encoder_by_name(encodeSettings.codec.toUtf8().constData());
-    if (!codec) throw std::runtime_error("hevc_nvenc codec not found");
+    if (!codec) throw_text(QStringLiteral("エンコーダ %1 がありません").arg(encodeSettings.codec));
 
     ve[i]->codec_ctx = avcodec_alloc_context3(codec);
-    if (!ve[i]->codec_ctx) throw std::runtime_error("Failed to allocate AVCodecContext");
+    if (!ve[i]->codec_ctx) throw_text(QStringLiteral("メモリ不足（エンコーダ）"));
 
     //これは codec_ctx->pix_fmt に設定するものです
     enum AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
@@ -538,6 +685,8 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
     //初期化された hw_* を参照
     ve[i]->codec_ctx->hw_device_ctx = av_buffer_ref(ve[i]->hw_device_ctx);
     ve[i]->codec_ctx->hw_frames_ctx = av_buffer_ref(ve[i]->hw_frames_ctx);
+    if (!ve[i]->codec_ctx->hw_device_ctx || !ve[i]->codec_ctx->hw_frames_ctx)
+        throw_text(QStringLiteral("メモリ不足（エンコーダ）"));
 
     // ★ 自分が書き込むファイルの flags を見ること（別ファイル構成では
     //   fmt_ctx はタイル 0 のものなので、そちらを見ると i>0 で食い違う）
@@ -632,8 +781,12 @@ void save_encode::initialized_ffmpeg_codec_context(int i,int max_split){
         av_dict_set(&opts, "profile", "main10", 0);
 
     int ret = avcodec_open2(ve[i]->codec_ctx, codec, &opts);
-    if (ret < 0) throw std::runtime_error("Failed to open codec");
     av_dict_free(&opts);
+    if (ret < 0)
+        // NVENC は VRAM 不足も同時使用数の上限（GeForce）も ENOMEM で返す
+        throw_text(ret == AVERROR(ENOMEM)
+                       ? QStringLiteral("GPU %1: エンコーダを開けません（VRAM 不足か同時使用数の上限）").arg(ve[i]->dev)
+                       : QStringLiteral("GPU %1: エンコーダを開けません（%2）").arg(ve[i]->dev).arg(av_err_text(ret)));
 }
 
 //CUDAデバイスコンテキスト初期化
@@ -644,7 +797,7 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
     // ---- hw_frames_ctx ----
     ve[i]->hw_frames_ctx = av_hwframe_ctx_alloc(ve[i]->hw_device_ctx);
     if (!ve[i]->hw_frames_ctx) {
-        throw std::runtime_error("Failed to allocate hw_frames_ctx");
+        throw_text(QStringLiteral("メモリ不足（フレーム）"));
     }
 
     AVHWFramesContext* frames_ctx =
@@ -656,9 +809,9 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
     frames_ctx->height    = height_ / encodeSettings.height_tile;
     frames_ctx->initial_pool_size = encodeRingSize + 4;
     ret = av_hwframe_ctx_init(ve[i]->hw_frames_ctx);
-    if (ret < 0) {
-        throw std::runtime_error("Failed to init frames_ctx");
-    }
+    if (ret < 0)
+        throw_text(QStringLiteral("GPU %1: VRAM 不足（エンコード用フレーム。%2）")
+                       .arg(ve[i]->dev).arg(av_err_text(ret)));
 
     // hw_frameリング確保
     ve[i]->hw_frames.resize(encodeRingSize);
@@ -666,7 +819,7 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
     // リングバッファ構築 AVFrame/cudamalloc
     for (int j = 0; j < encodeRingSize; j++) {
         AVFrame* f = av_frame_alloc();
-        if (!f) throw std::runtime_error("av_frame_alloc failed");
+        if (!f) throw_text(QStringLiteral("メモリ不足（フレーム）"));
 
         f->format = AV_PIX_FMT_CUDA;
         f->width  = frames_ctx->width;
@@ -675,7 +828,8 @@ void save_encode::initialized_ffmpeg_hardware_context(int i)
         ret = av_hwframe_get_buffer(ve[i]->hw_frames_ctx, f, 0);
         if (ret < 0) {
             av_frame_free(&f);
-            throw std::runtime_error("Failed to alloc hw_frame ring buffer");
+            throw_text(QStringLiteral("GPU %1: VRAM 不足（エンコード用フレーム。%2）")
+                           .arg(ve[i]->dev).arg(av_err_text(ret)));
         }
         ve[i]->hw_frames[j].frame = f;
     }
@@ -693,13 +847,13 @@ void save_encode::init_audio_encoder()
         qWarning() << "[save_encode] 音声コーデック" << want << "が見つかりません。aac にします";
         codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
     }
-    if (!codec) throw std::runtime_error("audio encoder not found");
+    if (!codec) throw_text(QStringLiteral("音声エンコーダがありません"));
 
     const QString muxer = fmt_ctx->oformat->name;
     if (codec->id == AV_CODEC_ID_FLAC && muxer.contains("mov")) {
         qWarning() << "[save_encode] MOV は FLAC を格納できません。aac にします";
         codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
-        if (!codec) throw std::runtime_error("audio encoder not found");
+        if (!codec) throw_text(QStringLiteral("音声エンコーダがありません"));
     }
 
     // ★ 可逆はビットレートを指定できない。PCM はサンプル幅で、FLAC は
@@ -709,6 +863,7 @@ void save_encode::init_audio_encoder()
                           (codec->id == AV_CODEC_ID_FLAC);
 
     audio_enc_ctx = avcodec_alloc_context3(codec);
+    if (!audio_enc_ctx) throw_text(QStringLiteral("メモリ不足（音声エンコーダ）"));
     audio_enc_ctx->sample_rate = VideoInfo.in_sample_rate;
     audio_enc_ctx->time_base = AVRational{1, audio_enc_ctx->sample_rate};
     if (!lossless) audio_enc_ctx->bit_rate = encodeSettings.audio_bitrate;
@@ -732,7 +887,7 @@ void save_encode::init_audio_encoder()
         audio_enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
     if (avcodec_open2(audio_enc_ctx, codec, nullptr) < 0)
-        throw std::runtime_error("avcodec_open2(audio) failed");
+        throw_text(QStringLiteral("音声エンコーダを開けません"));
 
     // ★ PCM は frame_size を持たない。0 のまま FIFO の条件に使うと無限ループ。
     audio_frame_size_ = (audio_enc_ctx->frame_size > 0)
@@ -748,12 +903,12 @@ void save_encode::init_audio_encoder()
 
     audio_stream = avformat_new_stream(fmt_ctx, nullptr);
     if (!audio_stream)
-        throw std::runtime_error("avformat_new_stream(audio) failed");
+        throw_text(QStringLiteral("メモリ不足（音声ストリーム）"));
 
     audio_stream->time_base = audio_enc_ctx->time_base;
 
     if (avcodec_parameters_from_context(audio_stream->codecpar, audio_enc_ctx) < 0)
-        throw std::runtime_error("copy audio params failed");
+        throw_text(QStringLiteral("音声の設定を書けません"));
 
     audio_fifo = av_audio_fifo_alloc(
         audio_enc_ctx->sample_fmt,
@@ -761,7 +916,7 @@ void save_encode::init_audio_encoder()
         8192
         );
     if (!audio_fifo)
-        throw std::runtime_error("av_audio_fifo_alloc failed");
+        throw_text(QStringLiteral("メモリ不足（音声）"));
 
     AVSampleFormat in_fmt = VideoInfo.out_format;
     if (in_fmt == AV_SAMPLE_FMT_NONE)
@@ -780,10 +935,10 @@ void save_encode::init_audio_encoder()
         );
 
     if (ret < 0 || !swr_enc)
-        throw std::runtime_error("swr_alloc_set_opts2 failed");
+        throw_text(QStringLiteral("音声の変換を準備できません"));
 
     if (swr_init(swr_enc) < 0)
-        throw std::runtime_error("swr_init failed");
+        throw_text(QStringLiteral("音声の変換を準備できません"));
 
     audio_pts = 0;
 }
@@ -823,6 +978,8 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex,
         qWarning() << "[save_encode] encode_video: srcTex is null";
         return;
     }
+    // 途中で失敗していたら何もしない（呼び出し側が failed() を見て終える）
+    if (failed_) return;
 
     const int slot = encodeRingNo;
 
@@ -859,89 +1016,25 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex,
     //    変換カーネルが読み始めてティアリングする。
     // ==========================================================
     if (glWaitEvent) {
-        cudaStreamWaitEvent(st, glWaitEvent, 0);
+        ck(cudaStreamWaitEvent(st, glWaitEvent, 0), "描画の完了待ち");
     }
 
     // ==========================================================
     // 2) CUDA NV12変換
-    //    10bit 経路（RGBA16 の FBO）はタイル数によらず 1 本のカーネル
+    //    行ごとのカーネル 1 本（encode_rows.cuh。8bit / 10bit、タイル数によらない）。
+    //    圧縮転送のタイルは XferCodec の詰めた並びへ直接書く（前処理 xfer_fwd を兼ねる。encodeRowsTiles）
+    //    テクスチャは元の大きさ（texW_ / texH_）で渡す。書くのはタイル（width_ / height_ の範囲）だけ
     // ==========================================================
-    if (srcRgba16) {
-        // NV12（8bit 出力）でも P010（10bit 出力）でも同じタイル情報（ポインタ・ピッチはバイト単位）
-        NV12Tiles t = {};
-        t.count = (int)ve.size();
-        t.cols  = (t.count == 1) ? 1 : encodeSettings.width_tile;
-        t.outW  = (t.count == 1) ? width_  : width_  / encodeSettings.width_tile;
-        t.outH  = (t.count == 1) ? height_ : height_ / encodeSettings.height_tile;
-        for (int i = 0; i < t.count && i < 8; i++) {
-            t.y  [i] = ve[i]->hw_frames[slot].d_y;
-            t.yp [i] = ve[i]->hw_frames[slot].y_pitch;
-            t.uv [i] = ve[i]->hw_frames[slot].d_uv;
-            t.uvp[i] = ve[i]->hw_frames[slot].uv_pitch;
-        }
-        if (t.count != 1 && t.count != 2 && t.count != 4 && t.count != 8)
-            qWarning() << "[save_encode] unsupported tile count:" << t.count;
+    {
+        const NV12Tiles t = encodeRowsTiles(slot);
+        bool ok;
+        if (!srcRgba16)
+            ok = CUDA_IMG_Proc->encode_rows_rgba8_to_nv12(srcTex, t, texW_, texH_, srcFlip, st);
         else if (out10)
-            CUDA_IMG_Proc->rgba16_to_p010_split_tex(srcTex, t, width_, height_, srcFlip, st);
+            ok = CUDA_IMG_Proc->encode_rows_rgba16_to_p010(srcTex, t, texW_, texH_, srcFlip, st);
         else
-            CUDA_IMG_Proc->rgba16_to_nv12_split_tex(srcTex, t, width_, height_, srcFlip, encodeSettings.dither, st);   // 8bit 化のディザは設定
-    }
-    else if (ve.size() == 1) {
-        CUDA_IMG_Proc->rgba_to_nv12x1_split_tex(
-            srcTex,
-            ve[0]->hw_frames[slot].d_y, ve[0]->hw_frames[slot].y_pitch,
-            ve[0]->hw_frames[slot].d_uv, ve[0]->hw_frames[slot].uv_pitch,
-            width_, height_,
-            srcFlip,
-            st
-            );
-    }
-    else if (ve.size() == 2) {
-        CUDA_IMG_Proc->rgba_to_nv12x2_split_tex(
-            srcTex,
-            ve[0]->hw_frames[slot].d_y, ve[0]->hw_frames[slot].y_pitch, ve[0]->hw_frames[slot].d_uv, ve[0]->hw_frames[slot].uv_pitch,
-            ve[1]->hw_frames[slot].d_y, ve[1]->hw_frames[slot].y_pitch, ve[1]->hw_frames[slot].d_uv, ve[1]->hw_frames[slot].uv_pitch,
-            width_, height_,
-            width_ / encodeSettings.width_tile,
-            height_ / encodeSettings.height_tile,
-            srcFlip,
-            st
-            );
-    }
-    else if (ve.size() == 4) {
-        CUDA_IMG_Proc->rgba_to_nv12x4_split_tex(
-            srcTex,
-            ve[0]->hw_frames[slot].d_y, ve[0]->hw_frames[slot].y_pitch, ve[0]->hw_frames[slot].d_uv, ve[0]->hw_frames[slot].uv_pitch,
-            ve[1]->hw_frames[slot].d_y, ve[1]->hw_frames[slot].y_pitch, ve[1]->hw_frames[slot].d_uv, ve[1]->hw_frames[slot].uv_pitch,
-            ve[2]->hw_frames[slot].d_y, ve[2]->hw_frames[slot].y_pitch, ve[2]->hw_frames[slot].d_uv, ve[2]->hw_frames[slot].uv_pitch,
-            ve[3]->hw_frames[slot].d_y, ve[3]->hw_frames[slot].y_pitch, ve[3]->hw_frames[slot].d_uv, ve[3]->hw_frames[slot].uv_pitch,
-            width_, height_,
-            width_ / encodeSettings.width_tile,
-            height_ / encodeSettings.height_tile,
-            srcFlip,
-            st
-            );
-    }
-    else if (ve.size() == 8) {
-        CUDA_IMG_Proc->rgba_to_nv12x8_split_tex(
-            srcTex,
-            ve[0]->hw_frames[slot].d_y, ve[0]->hw_frames[slot].y_pitch, ve[0]->hw_frames[slot].d_uv, ve[0]->hw_frames[slot].uv_pitch,
-            ve[1]->hw_frames[slot].d_y, ve[1]->hw_frames[slot].y_pitch, ve[1]->hw_frames[slot].d_uv, ve[1]->hw_frames[slot].uv_pitch,
-            ve[2]->hw_frames[slot].d_y, ve[2]->hw_frames[slot].y_pitch, ve[2]->hw_frames[slot].d_uv, ve[2]->hw_frames[slot].uv_pitch,
-            ve[3]->hw_frames[slot].d_y, ve[3]->hw_frames[slot].y_pitch, ve[3]->hw_frames[slot].d_uv, ve[3]->hw_frames[slot].uv_pitch,
-            ve[4]->hw_frames[slot].d_y, ve[4]->hw_frames[slot].y_pitch, ve[4]->hw_frames[slot].d_uv, ve[4]->hw_frames[slot].uv_pitch,
-            ve[5]->hw_frames[slot].d_y, ve[5]->hw_frames[slot].y_pitch, ve[5]->hw_frames[slot].d_uv, ve[5]->hw_frames[slot].uv_pitch,
-            ve[6]->hw_frames[slot].d_y, ve[6]->hw_frames[slot].y_pitch, ve[6]->hw_frames[slot].d_uv, ve[6]->hw_frames[slot].uv_pitch,
-            ve[7]->hw_frames[slot].d_y, ve[7]->hw_frames[slot].y_pitch, ve[7]->hw_frames[slot].d_uv, ve[7]->hw_frames[slot].uv_pitch,
-            width_, height_,
-            width_ / encodeSettings.width_tile,
-            height_ / encodeSettings.height_tile,
-            srcFlip,
-            st
-            );
-    }
-    else {
-        qWarning() << "[save_encode] unsupported tile count:" << (int)ve.size();
+            ok = CUDA_IMG_Proc->encode_rows_rgba16_to_nv12(srcTex, t, texW_, texH_, srcFlip, encodeSettings.dither, st);   // 8bit 化のディザは設定
+        if (!ok) fail(QStringLiteral("変換カーネルのエラー（%1）").arg(QString::fromUtf8(cudaGetErrorString(cudaGetLastError()))));
     }
 
     // ==========================================================
@@ -955,7 +1048,7 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex,
     //
     //    これで convert(N+1) が copy(N) / encode(N) と本当に重なる。
     // ==========================================================
-    cudaEventRecord(ev, st);
+    ck(cudaEventRecord(ev, st), "変換の完了の記録");
 
     // 呼び出し側は、このイベントを interop_stream に待たせてから
     // FBO を unmap すること（変換中にGLが上書きするのを防ぐ）
@@ -965,45 +1058,28 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex,
     // 4) 各GPUへ転送を「発行するだけ」（待たない）
     //    ★ どの経路も、まず変換完了(ev)を GPU 側で待つ。
     //      cudaStreamWaitEvent はデバイス跨ぎで有効。
+    //    表示用 GPU のタイル: 変換結果が NVENC の入力フレームに入っているので ready を記録するだけ
+    //    別 GPU のタイル    : transfer_remote（メインメモリ経由。圧縮あり / なし）。準備に失敗していれば transfer_peer
     // ==========================================================
     for (int i = 0; i < (int)ve.size(); i++)
     {
         FrameSlot& fs = ve[i]->hw_frames[slot];
 
         // 変換が終わるまでこのストリームを進ませない
-        cudaStreamWaitEvent(ve[i]->st, ev, 0);
+        ck(cudaStreamWaitEvent(ve[i]->st, ev, 0), "変換の完了待ち");
 
         if (encodeSettings.tile_gpu_map[i] == g_openglDeviceID)
         {
             // 変換結果が直接 hw_frame に入っているのでコピー不要。
             // 直前の wait があるので、この ready は変換完了後に発火する。
-            cudaEventRecord(fs.ready, ve[i]->st);
+            ck(cudaEventRecord(fs.ready, ve[i]->st), "フレームの完了の記録");
             continue;
         }
 
-        AVFrame* out = fs.frame;
-
-        // 幅はバイト数（P010 は 1 サンプル 2 バイト）
-        const size_t rowBytes = size_t(width_ / encodeSettings.width_tile) * (out10 ? 2 : 1);
-        cudaMemcpy2DAsync(
-            out->data[0], out->linesize[0],
-            fs.d_y, fs.y_pitch,
-            rowBytes,
-            height_ / encodeSettings.height_tile,
-            cudaMemcpyDeviceToDevice,
-            ve[i]->st
-            );
-
-        cudaMemcpy2DAsync(
-            out->data[1], out->linesize[1],
-            fs.d_uv, fs.uv_pitch,
-            rowBytes,
-            (height_ / encodeSettings.height_tile) / 2,
-            cudaMemcpyDeviceToDevice,
-            ve[i]->st
-            );
-
-        cudaEventRecord(fs.ready, ve[i]->st);
+        if (ve[i]->remoteXfer)
+            transfer_remote(*ve[i], fs, xferStage_);
+        else
+            transfer_peer(*ve[i], fs);
     }
 
     // ==========================================================
@@ -1019,8 +1095,214 @@ void save_encode::encode_video(VideoFrame Frame, cudaTextureObject_t srcTex,
     encodeRingNo++;
     if (encodeRingNo >= encodeRingSize)
         encodeRingNo = 0;
+    xferStage_ = (xferStage_ + 1) % kXferStage;
+    log_xfer_stats();
 
     frame_index++;
+}
+
+// ==============================================================
+// 1 タイルの大きさ（書き出す大きさ width_ / height_ をタイル数で割ったもの。P010 は 1 要素 2 バイト）
+// ==============================================================
+save_encode::TileSize save_encode::tileSize() const
+{
+    const int w = width_ / encodeSettings.width_tile;
+    const int h = height_ / encodeSettings.height_tile;
+    const size_t bps = out10 ? 2 : 1;
+    return { w, h, size_t(w) * bps, size_t((w + 1) & ~1) * bps };
+}
+
+// ==============================================================
+// 行ごとの変換カーネル（encode_rows.cuh）に渡すタイル情報
+//   普段: hw_frames[slot] の d_y / d_uv（表示用 GPU のタイルは NVENC の入力フレーム、別 GPU のタイルは転送の中継）
+//   圧縮転送のタイル: XferCodec の次の組の詰めた並び（packed）。その組を前回使い終えるまで変換を待たせる
+// ==============================================================
+NV12Tiles save_encode::encodeRowsTiles(int slot)
+{
+    NV12Tiles t = {};
+    t.count = (int)ve.size();
+    t.cols  = (t.count == 1) ? 1 : encodeSettings.width_tile;
+    t.outW  = (t.count == 1) ? width_  : width_  / encodeSettings.width_tile;
+    t.outH  = (t.count == 1) ? height_ : height_ / encodeSettings.height_tile;
+    for (int i = 0; i < t.count && i < 8; i++) {
+        VideoEncoder& e = *ve[i];
+        if (e.codec) {
+            cudaEvent_t reuse = nullptr;
+            uint8_t* tight = e.codec->nextTight(&reuse);
+            if (reuse) ck(cudaStreamWaitEvent(st, reuse, 0), "圧縮転送の作業領域の空き待ち");
+            t.y  [i] = tight + e.codec->planeOffset(0);
+            t.yp [i] = e.codec->planeRowBytes(0);
+            t.uv [i] = tight + e.codec->planeOffset(1);
+            t.uvp[i] = e.codec->planeRowBytes(1);
+            t.packed[i] = 1;
+            t.delta = e.codec->delta() ? 1 : 0;   // 全タイル同じ設定（xfer_delta）
+        } else {
+            const FrameSlot& fs = e.hw_frames[slot];
+            t.y  [i] = fs.d_y;
+            t.yp [i] = fs.y_pitch;
+            t.uv [i] = fs.d_uv;
+            t.uvp[i] = fs.uv_pitch;
+        }
+    }
+    return t;
+}
+
+// ==============================================================
+// 別 GPU への転送（メインメモリ経由。VideoEncoder::remoteXfer。docs/ENCODE_CORE.md 6）
+//   圧縮なし（2 段コピー）
+//     表示用 GPU e.st : (変換完了 ev 待ち。呼び出し側) → (h2d_ev[s] 待ち) → D2H → h_y/h_uv[s] → d2h_ev[s]
+//     別 GPU   e.rst  : (d2h_ev[s] 待ち) → H2D → AVFrame → h2d_ev[s]、fs.ready
+//   圧縮あり（XferCodec。デコードの圧縮転送と同じもので、向きが逆）
+//     表示用 GPU（codec の組のストリーム）: (ev 待ち) → 圧縮 → (h2d_ev[s] 待ち) → メインメモリの枠 s
+//       前処理（差分・詰めた並び）は変換カーネルが済ませている（encodeRowsTiles → compressPacked）
+//     別 GPU   e.rst : (compressedEvent(s) 待ち) → 取り込み・展開・差分戻し → AVFrame → h2d_ev[s]、fs.ready
+//   PCIe は上り下りが独立なので、表示用 GPU の書き出しと別 GPU の読み込みは重なる。
+//   枠 s の再利用は前回の読み込み完了（h2d_ev[s]）を待つ。AVFrame と中継の再利用は wait_slot_free が守る
+// ==============================================================
+bool save_encode::init_remote_xfer(VideoEncoder& e)
+{
+    const TileSize ts = tileSize();
+    bool ok = true;
+
+    e.d2h_ev.assign(kXferStage, nullptr);
+    e.h2d_ev.assign(kXferStage, nullptr);
+    for (int s = 0; s < kXferStage && ok; s++)
+        ok = cudaEventCreateWithFlags(&e.d2h_ev[s], cudaEventDisableTiming) == cudaSuccess;
+    if (ok) {
+        cudaSetDevice(e.dev);
+        ok = cudaStreamCreateWithFlags(&e.rst, cudaStreamNonBlocking) == cudaSuccess;
+        for (int s = 0; s < kXferStage && ok; s++)
+            ok = cudaEventCreateWithFlags(&e.h2d_ev[s], cudaEventDisableTiming) == cudaSuccess;
+        cudaSetDevice(g_openglDeviceID);
+    }
+
+    // 圧縮（設定 xfer_codec）。初期化できなければ圧縮なし
+    const XferCodec::Algo algo = XferCodec::parse(encodeSettings.xfer_codec);
+    if (ok && algo != XferCodec::None) {
+        e.codec = std::make_unique<XferCodec>();
+        if (!e.codec->init(g_openglDeviceID, e.dev, algo, encodeSettings.xfer_delta, out10 ? 2 : 1,
+                           { ts.w }, { ts.h }, kXferStage)) {
+            qWarning() << "[save_encode] GPU" << e.dev << "圧縮転送の準備に失敗したので圧縮なし";
+            e.codec.reset();
+        }
+        cudaSetDevice(g_openglDeviceID);
+    }
+
+    // 圧縮なしの中継（ページ固定・Portable）
+    if (ok && !e.codec) {
+        e.h_y.assign(kXferStage, nullptr);
+        e.h_uv.assign(kXferStage, nullptr);
+        for (int s = 0; s < kXferStage && ok; s++) {
+            ok = cudaHostAlloc((void**)&e.h_y[s],  ts.yBytes  * ts.h,       cudaHostAllocPortable) == cudaSuccess
+              && cudaHostAlloc((void**)&e.h_uv[s], ts.uvBytes * (ts.h / 2), cudaHostAllocPortable) == cudaSuccess;
+        }
+    }
+    if (!ok) {
+        qWarning() << "[save_encode] GPU" << e.dev << "メインメモリ経由の転送の準備に失敗したのでデバイス間コピーで送る";
+        cudaGetLastError();
+        release_remote_xfer(e);
+        return false;
+    }
+    if (!e.codec)
+        qDebug() << "[save_encode] GPU" << e.dev << "メインメモリ経由の 2 段コピー（"
+                 << kXferStage << "枠 ×" << (ts.yBytes * ts.h * 3 / 2) / (1024 * 1024) << "MB）";
+    return true;
+}
+
+void save_encode::release_remote_xfer(VideoEncoder& e)
+{
+    e.codec.reset();   // 中で両方の GPU を同期してから解放する
+    if (e.rst || !e.h2d_ev.empty()) {
+        cudaSetDevice(e.dev);
+        if (e.rst) { cudaStreamSynchronize(e.rst); cudaStreamDestroy(e.rst); e.rst = nullptr; }
+        for (auto& ev : e.h2d_ev) if (ev) { cudaEventDestroy(ev); ev = nullptr; }
+    }
+    cudaSetDevice(g_openglDeviceID);
+    for (auto& ev : e.d2h_ev) if (ev) { cudaEventDestroy(ev); ev = nullptr; }
+    for (auto& p : e.h_y)  if (p) { cudaFreeHost(p); p = nullptr; }
+    for (auto& p : e.h_uv) if (p) { cudaFreeHost(p); p = nullptr; }
+    e.h_y.clear(); e.h_uv.clear(); e.d2h_ev.clear(); e.h2d_ev.clear();
+    e.remoteXfer = false;
+}
+
+void save_encode::transfer_remote(VideoEncoder& e, FrameSlot& fs, int s)
+{
+    const TileSize ts = tileSize();
+    AVFrame* out = fs.frame;
+
+    if (e.codec) {
+        // 枠 s の前回（3 フレーム前）の計測。終わっていなければ飛ばす（log_xfer_stats）
+        XferCodec::Stats r;
+        if (e.codec->takeStats(s, r)) {
+            xferFrame_.compressMs = (std::max)(xferFrame_.compressMs, r.compressMs);
+            xferFrame_.sendMs     = (std::max)(xferFrame_.sendMs, r.sendMs);
+            xferFrame_.expandMs   = (std::max)(xferFrame_.expandMs, r.expandMs);
+            xferFrame_.rawBytes  += r.rawBytes;
+            xferFrame_.compBytes += r.compBytes;
+        }
+        // 表示用 GPU: 圧縮 → メインメモリの枠 s（変換完了 ev の後。枠 s は前回の読み込み完了の後）
+        //   戻り値は起動と CUDA API の失敗。GPU 上の失敗（nvCOMP のチャンク等）は deviceError で数フレーム遅れて分かる
+        const bool enc = e.codec->compressPacked(s, ev, e.h2d_ev[s]);
+        // 別 GPU: 取り込み・展開・差分戻し → AVFrame
+        bool ok = ck(cudaSetDevice(e.dev), "GPU の選択")
+               && ck(cudaStreamWaitEvent(e.rst, e.codec->compressedEvent(s), 0), "圧縮の完了待ち");
+        const bool dec = ok && enc && e.codec->decompress(s, 0, e.rst,
+            { { out->data[0], size_t(out->linesize[0]), out->data[1], size_t(out->linesize[1]) } });
+        if (!dec) fail(QStringLiteral("GPU %1 への圧縮転送に失敗（フレーム %2）").arg(e.dev).arg(frame_index));
+        if (e.codec->deviceError()) fail(QStringLiteral("GPU %1 への圧縮転送で GPU 上のエラー（nvCOMP）").arg(e.dev));
+        // 終わりの印は失敗しても記録する（待つ側が止まらないように）
+        ck(cudaEventRecord(e.h2d_ev[s], e.rst), "転送の完了の記録");
+        ck(cudaEventRecord(fs.ready, e.rst), "フレームの完了の記録");
+        cudaSetDevice(g_openglDeviceID);
+        return;
+    }
+
+    // 表示用 GPU: D2H（e.st は呼び出し側で変換完了を待たせてある）
+    ck(cudaStreamWaitEvent(e.st, e.h2d_ev[s], 0), "転送の枠の空き待ち");
+    ck(cudaMemcpy2DAsync(e.h_y[s],  ts.yBytes,  fs.d_y,  fs.y_pitch,  ts.yBytes,  ts.h,     cudaMemcpyDeviceToHost, e.st), "転送（GPU → メインメモリ）");
+    ck(cudaMemcpy2DAsync(e.h_uv[s], ts.uvBytes, fs.d_uv, fs.uv_pitch, ts.uvBytes, ts.h / 2, cudaMemcpyDeviceToHost, e.st), "転送（GPU → メインメモリ）");
+    ck(cudaEventRecord(e.d2h_ev[s], e.st), "転送の完了の記録");
+
+    // 別 GPU: H2D → AVFrame
+    ck(cudaSetDevice(e.dev), "GPU の選択");
+    ck(cudaStreamWaitEvent(e.rst, e.d2h_ev[s], 0), "転送の完了待ち");
+    ck(cudaMemcpy2DAsync(out->data[0], out->linesize[0], e.h_y[s],  ts.yBytes,  ts.yBytes,  ts.h,     cudaMemcpyHostToDevice, e.rst), "転送（メインメモリ → GPU）");
+    ck(cudaMemcpy2DAsync(out->data[1], out->linesize[1], e.h_uv[s], ts.uvBytes, ts.uvBytes, ts.h / 2, cudaMemcpyHostToDevice, e.rst), "転送（メインメモリ → GPU）");
+    ck(cudaEventRecord(e.h2d_ev[s], e.rst), "転送の完了の記録");
+    ck(cudaEventRecord(fs.ready, e.rst), "フレームの完了の記録");
+    cudaSetDevice(g_openglDeviceID);
+}
+
+// メインメモリ経由の準備に失敗したとき（primary_ctx で開けない等）: デバイスをまたぐコピー
+//   P2P が無い環境ではドライバがメインメモリ経由で処理し、遅い（16K で約 2.4GB/s 程度）
+void save_encode::transfer_peer(VideoEncoder& e, FrameSlot& fs)
+{
+    const TileSize ts = tileSize();
+    AVFrame* out = fs.frame;
+    ck(cudaMemcpy2DAsync(out->data[0], out->linesize[0], fs.d_y,  fs.y_pitch,  ts.yBytes,  ts.h,     cudaMemcpyDeviceToDevice, e.st), "転送（デバイス間）");
+    ck(cudaMemcpy2DAsync(out->data[1], out->linesize[1], fs.d_uv, fs.uv_pitch, ts.uvBytes, ts.h / 2, cudaMemcpyDeviceToDevice, e.st), "転送（デバイス間）");
+    ck(cudaEventRecord(fs.ready, e.st), "フレームの完了の記録");
+}
+
+// 圧縮転送の計測（1 フレーム分 = タイルの最大）を積み、kXferLogFrames フレームごとに平均をログへ
+void save_encode::log_xfer_stats()
+{
+    if (xferFrame_.compBytes <= 0) return;
+    xferSum_.compressMs += xferFrame_.compressMs;
+    xferSum_.sendMs     += xferFrame_.sendMs;
+    xferSum_.expandMs   += xferFrame_.expandMs;
+    xferSum_.rawBytes   += xferFrame_.rawBytes;
+    xferSum_.compBytes  += xferFrame_.compBytes;
+    xferFrame_ = {};
+    if (++xferFrames_ < kXferLogFrames) return;
+    qDebug().noquote() << QString("[save_encode] 圧縮転送（%1 フレーム平均、タイルの最大）: 圧縮 %2 ms / 送出 %3 ms / 展開 %4 ms、圧縮率 %5")
+                              .arg(xferFrames_)
+                              .arg(xferSum_.compressMs / xferFrames_, 0, 'f', 2)
+                              .arg(xferSum_.sendMs / xferFrames_, 0, 'f', 2)
+                              .arg(xferSum_.expandMs / xferFrames_, 0, 'f', 2)
+                              .arg(xferSum_.rawBytes / xferSum_.compBytes, 0, 'f', 2);
+    xferSum_ = {};
+    xferFrames_ = 0;
 }
 
 // ==============================================================
@@ -1084,7 +1366,8 @@ void save_encode::encoder_loop(int idx)
         // ---------------- 終了処理 ----------------
         if (job.eos) {
             int ret = avcodec_send_frame(enc.codec_ctx, nullptr);
-            if (ret < 0) qDebug() << "[enc" << idx << "] send NULL frame error:" << ret;
+            if (ret < 0 && ret != AVERROR_EOF)
+                fail(QStringLiteral("GPU %1: エンコーダのエラー（%2）").arg(enc.dev).arg(av_err_text(ret)));
             drain_video_encoder(enc);          // EOF まで吐き切る
             break;
         }
@@ -1093,7 +1376,9 @@ void save_encode::encoder_loop(int idx)
 
         // ---------------- GPUコピー完了待ち ----------------
         // ★ここが各エンコーダ並列。メインスレッドは既に次フレームの変換に入っている。
-        cudaEventSynchronize(fs.ready);
+        const cudaError_t syncErr = cudaEventSynchronize(fs.ready);
+        if (syncErr != cudaSuccess)
+            fail(QStringLiteral("GPU %1: 処理エラー（%2）").arg(enc.dev).arg(QString::fromUtf8(cudaGetErrorString(syncErr))));
 
         AVFrame* f = fs.frame;
         f->pts = job.pts;
@@ -1118,6 +1403,7 @@ void save_encode::encoder_loop(int idx)
             }
 
             qDebug() << "[enc" << idx << "] send_frame error:" << ret;
+            fail(QStringLiteral("GPU %1: エンコーダのエラー（%2）").arg(enc.dev).arg(av_err_text(ret)));
             break;
         }
 
@@ -1160,9 +1446,8 @@ void save_encode::drain_video_encoder(VideoEncoder& enc)
                 QMutexLocker locker(&muxMutex);
                 int wret = av_interleaved_write_frame(enc.fmt, pkt);
                 if (wret < 0) {
-                    char err[256];
-                    av_strerror(wret, err, sizeof(err));
-                    qDebug() << "write_frame error:" << wret << err;
+                    qDebug() << "write_frame error:" << wret << av_err_text(wret);
+                    fail(write_error_text(wret));   // ディスクの空き不足など。呼び出し側が止める
                 }
             }
 
@@ -1180,6 +1465,7 @@ void save_encode::drain_video_encoder(VideoEncoder& enc)
         }
 
         qDebug() << "receive_packet error:" << ret;
+        fail(QStringLiteral("GPU %1: エンコーダのエラー（%2）").arg(enc.dev).arg(av_err_text(ret)));
         av_packet_unref(pkt);
         break;
     }
@@ -1273,7 +1559,7 @@ void save_encode::release_slot(VideoEncoder& enc)
 //音声エンコード
 void save_encode::encode_audio(AudioJob Frame)
 {
-    if (!audio_enc_ctx || !audio_fifo || !swr_enc) return;
+    if (!audio_enc_ctx || !audio_fifo || !swr_enc || failed_) return;
 
     const int ch     = audio_enc_ctx->ch_layout.nb_channels;
     // 入力形式はデコード側が決める（現在はインターリーブ float）
@@ -1322,71 +1608,81 @@ void save_encode::encode_audio(AudioJob Frame)
             );
 
         uint8_t** converted = nullptr;
-        av_samples_alloc_array_and_samples(
-            &converted,
-            nullptr,
-            ch,
-            max_out_samples,
-            audio_enc_ctx->sample_fmt,
-            0
-            );
-
-        int out_samples = swr_convert(
-            swr_enc,
-            converted,
-            max_out_samples,
-            in_data,
-            in_samples
-            );
-
-        if (out_samples > 0) {
-            av_audio_fifo_write(audio_fifo, (void**)converted, out_samples);
+        if (av_samples_alloc_array_and_samples(&converted, nullptr, ch, max_out_samples,
+                                               audio_enc_ctx->sample_fmt, 0) < 0) {
+            fail(QStringLiteral("メモリ不足（音声）"));
+            return;
         }
+
+        const int out_samples = swr_convert(swr_enc, converted, max_out_samples, in_data, in_samples);
+        if (out_samples < 0)
+            fail(QStringLiteral("音声の変換エラー（%1）").arg(av_err_text(out_samples)));
+        else if (out_samples > 0 && av_audio_fifo_write(audio_fifo, (void**)converted, out_samples) < out_samples)
+            fail(QStringLiteral("メモリ不足（音声）"));
 
         av_freep(&converted[0]);
         av_freep(&converted);
+        if (failed_) return;
     }
 
     // ---- 1 フレーム単位で吐き出し（PCM は自分で決めた長さ）----
     const int fs = audio_frame_size_;
 
-    while (av_audio_fifo_size(audio_fifo) >= fs) {
-        AVFrame* frame = av_frame_alloc();
-        frame->nb_samples = fs;
-        frame->format = audio_enc_ctx->sample_fmt;
-        frame->sample_rate = audio_enc_ctx->sample_rate;
-        av_channel_layout_copy(&frame->ch_layout, &audio_enc_ctx->ch_layout);
-
-        av_frame_get_buffer(frame, 0);
+    while (!failed_ && av_audio_fifo_size(audio_fifo) >= fs) {
+        AVFrame* frame = alloc_audio_frame(fs);
+        if (!frame) return;
 
         // ★ PTS は「取り出したサンプル数」基準
         int read_samples = av_audio_fifo_read(audio_fifo,(void**)frame->data,fs);
+        if (read_samples < 0) { av_frame_free(&frame); fail(QStringLiteral("音声の読み出しエラー")); return; }
         frame->pts = audio_pts;
         audio_pts += (int)(((double)read_samples)*(VideoInfo.fps/encodeSettings.save_fps));   // ★ 必ず read_samples で進める
 
-        avcodec_send_frame(audio_enc_ctx, frame);
+        send_audio(frame);
         av_frame_free(&frame);
-
-        AVPacket* pkt = av_packet_alloc();
-
-        while (avcodec_receive_packet(audio_enc_ctx, pkt) == 0) {
-            av_packet_rescale_ts(
-                pkt,
-                audio_enc_ctx->time_base,
-                audio_stream->time_base
-                );
-            pkt->stream_index = audio_stream->index;
-
-            {
-                QMutexLocker locker(&muxMutex);
-                av_interleaved_write_frame(fmt_ctx, pkt);
-            }
-
-            av_packet_unref(pkt);
-        }
-
-        av_packet_free(&pkt);
     }
+}
+
+// 音声フレーム（n サンプル、バッファ付き）。失敗したら fail して nullptr
+AVFrame* save_encode::alloc_audio_frame(int n)
+{
+    AVFrame* f = av_frame_alloc();
+    if (f) {
+        f->nb_samples  = n;
+        f->format      = audio_enc_ctx->sample_fmt;
+        f->sample_rate = audio_enc_ctx->sample_rate;
+        if (av_channel_layout_copy(&f->ch_layout, &audio_enc_ctx->ch_layout) < 0 ||
+            av_frame_get_buffer(f, 0) < 0)
+            av_frame_free(&f);
+    }
+    if (!f) fail(QStringLiteral("メモリ不足（音声）"));
+    return f;
+}
+
+// 音声 1 フレーム（nullptr = 終わりの合図）をエンコーダへ渡し、出たパケットを書く。失敗は fail
+void save_encode::send_audio(AVFrame* f)
+{
+    int ret = avcodec_send_frame(audio_enc_ctx, f);
+    if (ret < 0 && ret != AVERROR_EOF) {
+        fail(QStringLiteral("音声エンコーダのエラー（%1）").arg(av_err_text(ret)));
+        return;
+    }
+    AVPacket* pkt = av_packet_alloc();
+    if (!pkt) { fail(QStringLiteral("メモリ不足（音声）")); return; }
+    for (;;) {
+        ret = avcodec_receive_packet(audio_enc_ctx, pkt);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+        if (ret < 0) { fail(QStringLiteral("音声エンコーダのエラー（%1）").arg(av_err_text(ret))); break; }
+        av_packet_rescale_ts(pkt, audio_enc_ctx->time_base, audio_stream->time_base);
+        pkt->stream_index = audio_stream->index;
+        {
+            QMutexLocker locker(&muxMutex);
+            const int wret = av_interleaved_write_frame(fmt_ctx, pkt);
+            if (wret < 0) fail(write_error_text(wret));
+        }
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
 }
 
 //音声エンコード終了
@@ -1448,67 +1744,29 @@ void save_encode::audio_loop()
     }
 }
 
-//音声エンコード終了処理
+//音声エンコード終了処理（途中で失敗していたら何もしない。映像側の close が結果を返す）
 void save_encode::audio_flush(){
-    // ==========================
-    // Audio flush（AAC）
-    // ==========================
-    if (audio_enc_ctx && audio_fifo) {
-        const int fs = audio_frame_size_;
-        int remain = av_audio_fifo_size(audio_fifo);
+    if (!audio_enc_ctx || !audio_fifo || failed_) return;
+    const int fs = audio_frame_size_;
+    const int remain = av_audio_fifo_size(audio_fifo);
 
-        if (remain > 0) {
-            AVFrame* f = av_frame_alloc();
-            f->nb_samples = fs;
-            f->format = audio_enc_ctx->sample_fmt;
-            f->sample_rate = audio_enc_ctx->sample_rate;
-            av_channel_layout_copy(&f->ch_layout, &audio_enc_ctx->ch_layout);
-
-            av_frame_get_buffer(f, 0);
-
-            // FIFO → frame
-            av_audio_fifo_read(audio_fifo, (void**)f->data, remain);
-
-            // 不足分を silence で埋める
-            av_samples_set_silence(
-                f->data,
-                remain,
-                fs - remain,
-                audio_enc_ctx->ch_layout.nb_channels,
-                audio_enc_ctx->sample_fmt
-                );
-
-            // PTS
-            f->pts = audio_pts;
-            audio_pts += remain; // ★ 実サンプル数で進める
-
-            avcodec_send_frame(audio_enc_ctx, f);
+    if (remain > 0) {
+        AVFrame* f = alloc_audio_frame(fs);
+        if (!f) return;
+        // FIFO → frame、不足分は無音
+        if (av_audio_fifo_read(audio_fifo, (void**)f->data, remain) < remain) {
             av_frame_free(&f);
+            fail(QStringLiteral("音声の読み出しエラー"));
+            return;
         }
-
-        // NULL frame で drain
-        avcodec_send_frame(audio_enc_ctx, nullptr);
-
-        // ★ packet drain loop
-        AVPacket* pkt = av_packet_alloc();
-
-        while (avcodec_receive_packet(audio_enc_ctx, pkt) == 0) {
-            av_packet_rescale_ts(
-                pkt,
-                audio_enc_ctx->time_base,
-                audio_stream->time_base
-                );
-
-            pkt->stream_index = audio_stream->index;
-
-            {
-                QMutexLocker locker(&muxMutex);
-                av_interleaved_write_frame(fmt_ctx, pkt);
-            }
-
-            av_packet_unref(pkt);
-        }
-
-        av_packet_free(&pkt);
+        av_samples_set_silence(f->data, remain, fs - remain,
+                               audio_enc_ctx->ch_layout.nb_channels, audio_enc_ctx->sample_fmt);
+        f->pts = audio_pts;
+        audio_pts += remain; // ★ 実サンプル数で進める
+        send_audio(f);
+        av_frame_free(&f);
     }
+
+    // NULL frame で drain
+    send_audio(nullptr);
 }

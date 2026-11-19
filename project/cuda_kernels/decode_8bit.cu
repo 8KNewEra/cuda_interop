@@ -2,7 +2,7 @@
 // 8bit 経路: デコード結果 → RGBA8（OpenGL テクスチャへ surface 経由で直接書く）
 //   入力は 8bit / 10bit どちらもあるが、出力は常に RGBA8（10bit 入力も 8bit に落とす）
 //
-//   前半: NVDEC の NV12。QML 版は行ごとのカーネル（nv12_tiles_rows_to_rgba8_surf_kernel、tile_rows.cuh）が本線で、
+//   前半: NVDEC の NV12。QML 版は行ごとのカーネル（decode_rows_nv12_to_rgba8_kernel、decode_rows.cuh）が本線で、
 //         圧縮転送の詰めたタイルもこれで読む。画素ごとの旧版（1 ストリーム、x2 / x4 / x8 の結合）は
 //         Widgets 版と、先頭・pitch が 16 の倍数でないときの予備
 //   後半: CPU デコード（cpudecode / avidecode）の YUV / RGB プレーン
@@ -15,7 +15,7 @@
 // ==============================================================
 #include <cuda_runtime.h>
 #include <surface_indirect_functions.h>
-#include "tile_rows.cuh"
+#include "decode_rows.cuh"
 
 // ##############################################################
 // NVDEC の NV12
@@ -59,7 +59,7 @@ __device__ __forceinline__ uchar4 nv12_pixel_to_rgba_8bit(
 
 // ==============================================================
 // NVDEC の NV12 タイル → RGBA8（8bit の NVDEC 経路の本線。タイル分割 x1 / x2 / x4 / x8 共通）
-//   行ごとの共通部（tile_rows.cuh）で読み、圧縮転送の詰めたタイルは差分を戻しながら変換する。
+//   行ごとの共通部（decode_rows.cuh）で読み、圧縮転送の詰めたタイルは差分を戻しながら変換する。
 //   下のタイル数ごとのカーネルは、先頭・pitch が 16 の倍数でないときの保険
 // ==============================================================
 namespace {
@@ -73,12 +73,12 @@ struct WriteRgba8 {
 }
 
 extern "C"
-__global__ void nv12_tiles_rows_to_rgba8_surf_kernel(
+__global__ void decode_rows_nv12_to_rgba8_kernel(
     cudaSurfaceObject_t out,
     P010Tiles t,
     int outW, int outH)
 {
-    tile_rows::convert<uint8_t, 8, 0>(t, outW, outH, WriteRgba8{ out });
+    decode_rows::convert<uint8_t, 8, 0>(t, outW, outH, WriteRgba8{ out });
 }
 
 // ==============================================================

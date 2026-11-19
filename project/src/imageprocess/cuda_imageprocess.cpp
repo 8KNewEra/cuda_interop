@@ -78,34 +78,6 @@ extern "C"{
         const uint8_t* b_plane, size_t b_pitch,
         int width, int height);
 
-    // ---- encode_8bit.cu: FBO（texture object）→ NV12（エンコード入力。タイル分割） ----
-    __global__ void rgba_to_nv12x1_split_tex_kernel(
-        cudaTextureObject_t In,
-        uint8_t* y_plane, size_t y_step, uint8_t* uv_plane, size_t uv_step,
-        int width, int height, int flip);
-    __global__ void rgba_to_nv12x2_split_tex_kernel(
-        cudaTextureObject_t In,
-        uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
-        uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
-        int srcW, int srcH, int outW, int outH, int flip);
-    __global__ void rgba_to_nv12x4_split_tex_kernel(
-        cudaTextureObject_t In,
-        uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
-        uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
-        uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
-        uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
-        int srcW, int srcH, int outW, int outH, int flip);
-    __global__ void rgba_to_nv12x8_split_tex_kernel(
-        cudaTextureObject_t In,
-        uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
-        uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
-        uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
-        uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
-        uint8_t* y4, size_t pitchY4, uint8_t* uv4, size_t pitchUV4,
-        uint8_t* y5, size_t pitchY5, uint8_t* uv5, size_t pitchUV5,
-        uint8_t* y6, size_t pitchY6, uint8_t* uv6, size_t pitchUV6,
-        uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
-        int srcW, int srcH, int outW, int outH, int flip);
 
     // ---- histogram_8bit.cu: ヒストグラム ----
     __global__ void calc_histogram_shared_kernel(HistData* Histdata,cudaTextureObject_t texObj, int width, int height);
@@ -114,8 +86,8 @@ extern "C"{
 
     // ---- decode_10bit.cu: デコード結果 → GL テクスチャ（RGBA16） ----
     __global__ void p010_tiles_to_rgba16_surf_kernel(cudaSurfaceObject_t out, P010Tiles t, int outW, int outH);
-    __global__ void p010_tiles_rows_to_rgba16_surf_kernel(cudaSurfaceObject_t out, P010Tiles t, int outW, int outH);
-    __global__ void nv12_tiles_rows_to_rgba8_surf_kernel(cudaSurfaceObject_t out, P010Tiles t, int outW, int outH);
+    __global__ void decode_rows_p010_to_rgba16_kernel(cudaSurfaceObject_t out, P010Tiles t, int outW, int outH);
+    __global__ void decode_rows_nv12_to_rgba8_kernel(cudaSurfaceObject_t out, P010Tiles t, int outW, int outH);
     __global__ void yuv420p10_to_rgba16_surf_kernel(
         cudaSurfaceObject_t out,
         const uint8_t* y_plane, size_t y_pitch,
@@ -135,10 +107,12 @@ extern "C"{
         const uint8_t* b_plane, size_t b_pitch,
         int width, int height);
 
-    // ---- encode_10bit.cu: RGBA16 の FBO → NV12（エンコード入力）/ RGBA8（画像保存） ----
-    __global__ void rgba16_to_nv12_split_tex_kernel(cudaTextureObject_t In, NV12Tiles t, int srcW, int srcH, int flip, int dither);
-    __global__ void rgba16_to_p010_split_tex_kernel(cudaTextureObject_t In, NV12Tiles t, int srcW, int srcH, int flip);
+    // ---- encode_10bit.cu: RGBA16 の FBO → NV12 / P010（エンコード入力）/ RGBA8（画像保存） ----
     __global__ void rgba16_to_rgba8_tex_kernel(cudaTextureObject_t In, uint8_t* out, size_t pitch, int width, int height, int dither);
+    __global__ void encode_rows_rgba16_to_nv12_kernel(cudaTextureObject_t In, NV12Tiles t, int srcW, int srcH, int flip, int dither);
+    __global__ void encode_rows_rgba16_to_p010_kernel(cudaTextureObject_t In, NV12Tiles t, int srcW, int srcH, int flip);
+    // ---- encode_8bit.cu: RGBA8 の FBO → NV12（エンコード入力。行ごとの本線）----
+    __global__ void encode_rows_rgba8_to_nv12_kernel(cudaTextureObject_t In, NV12Tiles t, int srcW, int srcH, int flip);
 
     // ---- histogram_10bit.cu: RGBA16 の FBO からヒストグラム（1024 段） ----
     __global__ void calc_histogram_rgba16_kernel(HistData10* Histdata, cudaTextureObject_t texObj, int width, int height);
@@ -412,106 +386,6 @@ bool CUDA_ImageProcess::rgb_to_RGBA_10bit_surf(cudaSurfaceObject_t out,
 }
 
 // ==============================================================
-// FBO（texture object）→ NV12（RGBA8 の FBO から。エンコード入力。encode_8bit.cu）
-// ==============================================================
-
-//RGBA(tex)→NV12 分割なし
-bool CUDA_ImageProcess::rgba_to_nv12x1_split_tex(cudaTextureObject_t in,
-                                                 uint8_t* d_y, size_t pitch_y,
-                                                 uint8_t* d_uv, size_t pitch_uv,
-                                                 int width, int height, int flip, cudaStream_t stream)
-{
-    void* args[] = {&in,
-                    &d_y, &pitch_y,
-                    &d_uv, &pitch_uv,
-                    &width, &height, &flip };
-
-    dim3 block(16,16);
-    dim3 grid((width+block.x-1)/block.x, (height+block.y-1)/block.y);
-
-    cudaError_t err = cudaLaunchKernel((const void*)rgba_to_nv12x1_split_tex_kernel,
-                                       grid, block, args, 0, stream);
-
-    return launch_check(err, "rgba_to_nv12x1_split_tex_kernel");
-}
-
-//RGBA(tex)→NV12 2分割
-bool CUDA_ImageProcess::rgba_to_nv12x2_split_tex(cudaTextureObject_t in,
-                                                 uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
-                                                 uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
-                                                 int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream)
-{
-    void* args[] = {&in,
-                    &y0, &pitchY0, &uv0, &pitchUV0,
-                    &y1, &pitchY1, &uv1, &pitchUV1,
-                    &srcW, &srcH, &outW, &outH, &flip };
-
-    dim3 block(16,16);
-    dim3 grid((srcW+block.x-1)/block.x, (srcH+block.y-1)/block.y);
-
-    cudaError_t err = cudaLaunchKernel((const void*)rgba_to_nv12x2_split_tex_kernel,
-                                       grid, block, args, 0, stream);
-
-    return launch_check(err, "rgba_to_nv12x2_split_tex_kernel");
-}
-
-//RGBA(tex)→NV12 4分割
-bool CUDA_ImageProcess::rgba_to_nv12x4_split_tex(cudaTextureObject_t in,
-                                                 uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
-                                                 uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
-                                                 uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
-                                                 uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
-                                                 int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream)
-{
-    void* args[] = {&in,
-                    &y0, &pitchY0, &uv0, &pitchUV0,
-                    &y1, &pitchY1, &uv1, &pitchUV1,
-                    &y2, &pitchY2, &uv2, &pitchUV2,
-                    &y3, &pitchY3, &uv3, &pitchUV3,
-                    &srcW, &srcH, &outW, &outH, &flip };
-
-    dim3 block(16,16);
-    dim3 grid((srcW+block.x-1)/block.x, (srcH+block.y-1)/block.y);
-
-    cudaError_t err = cudaLaunchKernel((const void*)rgba_to_nv12x4_split_tex_kernel,
-                                       grid, block, args, 0, stream);
-
-    return launch_check(err, "rgba_to_nv12x4_split_tex_kernel");
-}
-
-//RGBA(tex)→NV12 8分割
-bool CUDA_ImageProcess::rgba_to_nv12x8_split_tex(cudaTextureObject_t in,
-                                                 uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
-                                                 uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
-                                                 uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
-                                                 uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
-                                                 uint8_t* y4, size_t pitchY4, uint8_t* uv4, size_t pitchUV4,
-                                                 uint8_t* y5, size_t pitchY5, uint8_t* uv5, size_t pitchUV5,
-                                                 uint8_t* y6, size_t pitchY6, uint8_t* uv6, size_t pitchUV6,
-                                                 uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
-                                                 int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream)
-{
-    void* args[] = {&in,
-                    &y0, &pitchY0, &uv0, &pitchUV0,
-                    &y1, &pitchY1, &uv1, &pitchUV1,
-                    &y2, &pitchY2, &uv2, &pitchUV2,
-                    &y3, &pitchY3, &uv3, &pitchUV3,
-                    &y4, &pitchY4, &uv4, &pitchUV4,
-                    &y5, &pitchY5, &uv5, &pitchUV5,
-                    &y6, &pitchY6, &uv6, &pitchUV6,
-                    &y7, &pitchY7, &uv7, &pitchUV7,
-                    &srcW, &srcH, &outW, &outH, &flip };
-
-    dim3 block(16,16);
-    dim3 grid((srcW+block.x-1)/block.x, (srcH+block.y-1)/block.y);
-
-    cudaError_t err = cudaLaunchKernel((const void*)rgba_to_nv12x8_split_tex_kernel,
-                                       grid, block, args, 0, stream);
-
-    return launch_check(err, "rgba_to_nv12x8_split_tex_kernel");
-}
-
-// ==============================================================
 // ヒストグラム（RGBA8 の FBO から。histogram_8bit.cu）
 // ==============================================================
 
@@ -598,30 +472,30 @@ bool CUDA_ImageProcess::p010_tiles_to_rgba16_surf(cudaSurfaceObject_t out, const
     return launch_check(err, "p010_tiles_to_rgba16_surf_kernel");
 }
 
-// NVDEC の NV12 タイル → RGBA8（8bit の NVDEC 経路の本線。詰めたタイルは差分を戻しながら。decode_8bit.cu / tile_rows.cuh）
-bool CUDA_ImageProcess::nv12_tiles_rows_to_rgba8_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
+// NVDEC の NV12 タイル → RGBA8（8bit の NVDEC 経路の本線。詰めたタイルは差分を戻しながら。decode_8bit.cu / decode_rows.cuh）
+bool CUDA_ImageProcess::decode_rows_nv12_to_rgba8(cudaSurfaceObject_t out, const P010Tiles& tiles,
                                                       int outW, int outH, cudaStream_t stream)
 {
     P010Tiles t = tiles;
     void* args[] = { &out, &t, &outW, &outH };
     dim3 block(256);
     dim3 grid((t.srcH + 1) / 2, t.count);   // 1 ブロック = 1 タイルの Y 2 行 + UV 1 行
-    cudaError_t err = cudaLaunchKernel((const void*)nv12_tiles_rows_to_rgba8_surf_kernel,
+    cudaError_t err = cudaLaunchKernel((const void*)decode_rows_nv12_to_rgba8_kernel,
                                        grid, block, args, 0, stream);
-    return launch_check(err, "nv12_tiles_rows_to_rgba8_surf_kernel");
+    return launch_check(err, "decode_rows_nv12_to_rgba8_kernel");
 }
 
-// NVDEC の P010 タイル → RGBA16（10bit の NVDEC 経路の本線。詰めたタイルは差分を戻しながら。decode_10bit.cu / tile_rows.cuh）
-bool CUDA_ImageProcess::p010_tiles_rows_to_rgba16_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
+// NVDEC の P010 タイル → RGBA16（10bit の NVDEC 経路の本線。詰めたタイルは差分を戻しながら。decode_10bit.cu / decode_rows.cuh）
+bool CUDA_ImageProcess::decode_rows_p010_to_rgba16(cudaSurfaceObject_t out, const P010Tiles& tiles,
                                                        int outW, int outH, cudaStream_t stream)
 {
     P010Tiles t = tiles;
     void* args[] = { &out, &t, &outW, &outH };
     dim3 block(256);
     dim3 grid((t.srcH + 1) / 2, t.count);   // 1 ブロック = 1 タイルの Y 2 行 + UV 1 行
-    cudaError_t err = cudaLaunchKernel((const void*)p010_tiles_rows_to_rgba16_surf_kernel,
+    cudaError_t err = cudaLaunchKernel((const void*)decode_rows_p010_to_rgba16_kernel,
                                        grid, block, args, 0, stream);
-    return launch_check(err, "p010_tiles_rows_to_rgba16_surf_kernel");
+    return launch_check(err, "decode_rows_p010_to_rgba16_kernel");
 }
 
 // CPU デコードの YUV420P 10bit → RGBA16
@@ -675,35 +549,38 @@ bool CUDA_ImageProcess::gbrp10_to_rgba16_surf(cudaSurfaceObject_t out,
     return launch_check(err, "gbrp10_to_rgba16_surf_kernel");
 }
 
-// RGBA16 の FBO → NV12（エンコード入力。タイル分割共通。encode_10bit.cu）
-bool CUDA_ImageProcess::rgba16_to_nv12_split_tex(cudaTextureObject_t in, const NV12Tiles& tiles,
-                                                 int srcW, int srcH, int flip, bool dither, cudaStream_t stream)
+// ---- エンコード入力: 行ごと（encode_rows.cuh）。1 ブロック = 1 タイルの Y 2 行 + UV 1 行 ----
+//   圧縮転送のタイル（tiles.packed[q]）は XferCodec の詰めた並びへ直接書く
+static bool launch_encode_rows(const void* kernel, const char* name, void** args, const NV12Tiles& t, cudaStream_t stream)
+{
+    dim3 block(256);
+    dim3 grid((t.outH + 1) / 2, t.count);
+    return launch_check(cudaLaunchKernel(kernel, grid, block, args, 0, stream), name);
+}
+
+bool CUDA_ImageProcess::encode_rows_rgba8_to_nv12(cudaTextureObject_t in, const NV12Tiles& tiles,
+                                                  int srcW, int srcH, int flip, cudaStream_t stream)
+{
+    NV12Tiles t = tiles;
+    void* args[] = { &in, &t, &srcW, &srcH, &flip };
+    return launch_encode_rows((const void*)encode_rows_rgba8_to_nv12_kernel, "encode_rows_rgba8_to_nv12_kernel", args, t, stream);
+}
+
+bool CUDA_ImageProcess::encode_rows_rgba16_to_nv12(cudaTextureObject_t in, const NV12Tiles& tiles,
+                                                   int srcW, int srcH, int flip, bool dither, cudaStream_t stream)
 {
     NV12Tiles t = tiles;
     int d = dither ? 1 : 0;
     void* args[] = { &in, &t, &srcW, &srcH, &flip, &d };
-
-    dim3 block(16,16);
-    dim3 grid((srcW+block.x-1)/block.x, (srcH+block.y-1)/block.y);
-
-    cudaError_t err = cudaLaunchKernel((const void*)rgba16_to_nv12_split_tex_kernel,
-                                       grid, block, args, 0, stream);
-    return launch_check(err, "rgba16_to_nv12_split_tex_kernel");
+    return launch_encode_rows((const void*)encode_rows_rgba16_to_nv12_kernel, "encode_rows_rgba16_to_nv12_kernel", args, t, stream);
 }
 
-// RGBA16 の FBO → P010（10bit 出力。HEVC Main10 / AV1 10bit。タイル分割共通）
-bool CUDA_ImageProcess::rgba16_to_p010_split_tex(cudaTextureObject_t in, const NV12Tiles& tiles,
-                                                 int srcW, int srcH, int flip, cudaStream_t stream)
+bool CUDA_ImageProcess::encode_rows_rgba16_to_p010(cudaTextureObject_t in, const NV12Tiles& tiles,
+                                                   int srcW, int srcH, int flip, cudaStream_t stream)
 {
     NV12Tiles t = tiles;
     void* args[] = { &in, &t, &srcW, &srcH, &flip };
-
-    dim3 block(16,16);
-    dim3 grid((srcW+block.x-1)/block.x, (srcH+block.y-1)/block.y);
-
-    cudaError_t err = cudaLaunchKernel((const void*)rgba16_to_p010_split_tex_kernel,
-                                       grid, block, args, 0, stream);
-    return launch_check(err, "rgba16_to_p010_split_tex_kernel");
+    return launch_encode_rows((const void*)encode_rows_rgba16_to_p010_kernel, "encode_rows_rgba16_to_p010_kernel", args, t, stream);
 }
 
 // RGBA16 の FBO → RGBA8（画像保存用）

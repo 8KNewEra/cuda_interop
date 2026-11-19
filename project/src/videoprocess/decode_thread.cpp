@@ -140,6 +140,113 @@ QString decode_thread::ffmpegErrStr(int errnum) {
 }
 
 // ==============================================================
+// 失敗の扱い（docs/DECODE_CORE.md 3.5）
+// ==============================================================
+// 再生を続けられない失敗。decode_error を 1 回だけ出す（PlayerController / MainWindow がファイルを閉じてダイアログ）。
+//   以降の processFrame は何もしない（同じ失敗を繰り返さない）
+void decode_thread::fail_decode(const QString& msg)
+{
+    if (decode_failed_) return;
+    decode_failed_ = true;
+    Error_String = msg;
+    qWarning().noquote() << "[decode] 続けられない失敗:" << msg;
+    emit decode_error(msg);
+}
+
+// 続けられる失敗のログ。毎フレーム出るとログが流れるので、最初の 10 回と以降 100 回ごと
+void decode_thread::warn_ffmpeg(const char* what, int ret)
+{
+    const int n = ++ffmpeg_warns_;
+    if (n <= 10 || n % 100 == 0)
+        qWarning().noquote() << QString("[decode] %1 に失敗（%2）累計 %3 回").arg(QString::fromUtf8(what), ffmpegErrStr(ret)).arg(n);
+}
+
+// ファイルから 1 パケット（av_read_frame の代わり）。EOF はそのまま返す。
+//   それ以外の失敗は 50ms おきに 3 回までやり直す。それでも駄目なとき:
+//     I/O の失敗（pb->error。ドライブが外れた・ネットワークが切れた等）→ fail_decode して EOF を返す
+//     それ以外（ファイル末尾の壊れたデータ等）→ 従来どおり EOF として扱う（終端の処理で先頭へ戻る）
+//   呼び出し側は戻り値が負なら EOF と同じに扱い、decode_failed_ なら抜ける
+int decode_thread::read_packet()
+{
+    if (decode_failed_ || !fmt_ctx) return AVERROR_EOF;
+    int ret = 0;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        ret = av_read_frame(fmt_ctx, packet);
+        if (ret >= 0 || ret == AVERROR_EOF) return ret;
+        av_packet_unref(packet);
+        warn_ffmpeg("av_read_frame", ret);
+        if (thread_stop_flag || attempt == 3) break;
+        QThread::msleep(50);
+    }
+    // 閉じる途中（thread_stop_flag）の失敗はダイアログを出さない
+    if (!thread_stop_flag && fmt_ctx->pb && fmt_ctx->pb->error < 0 && fmt_ctx->pb->error != AVERROR_EOF)
+        fail_decode(QStringLiteral("ファイルを読めません（%1）").arg(ffmpegErrStr(fmt_ctx->pb->error)));
+    return AVERROR_EOF;
+}
+
+// シーク（av_seek_frame）。失敗しても位置が変わらないだけなので、ログを出して続ける
+int decode_thread::seek_file(int stream_index, int64_t ts, int flags)
+{
+    const int r = av_seek_frame(fmt_ctx, stream_index, ts, flags);
+    if (r < 0) warn_ffmpeg("av_seek_frame", r);
+    return r;
+}
+
+// 音声（エンコード入力用）のデコーダ。開けなければ音声なしで続ける
+void decode_thread::open_audio_decoder()
+{
+    if (audio_stream_index < 0) { VideoInfo.audio = false; return; }
+
+    auto give_up = [&](const QString& why) {
+        qWarning().noquote() << "[decode] 音声を開けないので音声なしで続けます:" << why;
+        if (swr)         swr_free(&swr);
+        if (audio_ctx)   avcodec_free_context(&audio_ctx);
+        if (audio_frame) av_frame_free(&audio_frame);
+        av_channel_layout_uninit(&in_ch_layout);
+        audio_stream_index = -1;
+        VideoInfo.audio = false;
+    };
+
+    const AVCodecParameters* par = fmt_ctx->streams[audio_stream_index]->codecpar;
+    audio_frame   = av_frame_alloc();
+    audio_decoder = avcodec_find_decoder(par->codec_id);
+    if (!audio_frame)   return give_up(QStringLiteral("メモリ不足"));
+    if (!audio_decoder) return give_up(QStringLiteral("デコーダがありません（%1）").arg(avcodec_get_name(par->codec_id)));
+    audio_ctx = avcodec_alloc_context3(audio_decoder);
+    if (!audio_ctx)     return give_up(QStringLiteral("メモリ不足"));
+    int ret = avcodec_parameters_to_context(audio_ctx, par);
+    if (ret >= 0) ret = avcodec_open2(audio_ctx, audio_decoder, nullptr);
+    if (ret < 0)        return give_up(ffmpegErrStr(ret));
+
+    VideoInfo.in_sample_rate = audio_ctx->sample_rate;
+    VideoInfo.in_format      = audio_ctx->sample_fmt;
+    ret = av_channel_layout_copy(&in_ch_layout, &audio_ctx->ch_layout);
+    if (ret < 0)        return give_up(ffmpegErrStr(ret));
+
+    VideoInfo.out_sample_rate = audio_ctx->sample_rate;
+    // ★ float のまま配る。S16 へ先に落とすと 0dBFS 超えがここで潰れ、
+    //   音量を下げても歪みが残る（audio_decode::apply_volume 参照）。
+    VideoInfo.out_format      = AV_SAMPLE_FMT_FLT;
+    av_channel_layout_uninit(&out_ch_layout);
+    av_channel_layout_default(&out_ch_layout, 2);
+
+    // ★ チャンネル数はここで入れること。save_encode の init_audio_encoder() は
+    //   エンコーダ構築時に VideoInfo.audio_channels を読む（以前は最初の音声パケットの
+    //   変換時にしか入れておらず、初期値の 1 を拾ってモノラルで開いていた）。
+    VideoInfo.audio_channels  = out_ch_layout.nb_channels;
+
+    if (swr) swr_free(&swr);
+    ret = swr_alloc_set_opts2(&swr,
+                              &out_ch_layout, VideoInfo.out_format, VideoInfo.out_sample_rate,
+                              &in_ch_layout,  VideoInfo.in_format,  VideoInfo.in_sample_rate,
+                              0, nullptr);
+    if (ret >= 0) ret = swr_init(swr);
+    if (ret < 0)        return give_up(QStringLiteral("音声の変換を準備できません（%1）").arg(ffmpegErrStr(ret)));
+
+    VideoInfo.audio = true;
+}
+
+// ==============================================================
 // ★ 以下の3つは全派生クラス(nvgpudecode / cpudecode / avidecode)で
 //   同一実装だったものを基底へ集約したもの。
 //   派生固有のメンバには触れないので、ここに置いて差し支えない。
@@ -589,6 +696,9 @@ void decode_thread::high_res_sliderPlayback(int value){
 //デコードループ
 void decode_thread::processFrame() {
     QMutexLocker locker(&mutex);
+
+    // 続けられない失敗の後は何もしない（GUI がファイルを閉じる。fail_decode）
+    if (decode_failed_) return;
 
     // ★ エンコードの開始/終了はスロットを通らないので、ここでも見る。
     sync_audio_state();

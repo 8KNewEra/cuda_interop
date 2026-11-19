@@ -1,8 +1,10 @@
 #include "src/qmlui/encodecontroller.h"
+#include "src/qmlui/decodesettings.h"   // 転送の圧縮の選択肢（共用）
 
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QDir>
+#include <QStorageInfo>
 #include <QFile>
 #include <QRegularExpression>
 #include <QDebug>
@@ -88,9 +90,27 @@ void EncodeController::tileSplit(int tiles, int& wt, int& ht)
 }
 
 // NVENC の 1 本あたりの上限は 8192（H.264 は 4096）
+// 幅・高さが奇数のときの注記（書き出しは偶数に切り詰める。save_encode）
+QString EncodeController::sizeNote() const
+{
+    const int W = rawCanvasW(), H = rawCanvasH();
+    if (W == canvasW() && H == canvasH()) return {};
+    QStringList cut;
+    if (W != canvasW()) cut << "右端 1 列";
+    if (H != canvasH()) cut << "下端 1 行";
+    return QString("幅・高さが奇数のため %1×%2 で書き出します（%3 を除く）").arg(canvasW()).arg(canvasH()).arg(cut.join("・"));
+}
+
 bool EncodeController::tileAllowed(int tiles) const
 {
     const int W = canvasW(), H = canvasH();
+    // 1 タイルの幅・高さが偶数で割り切れること（4:2:0。奇数だと NVENC が偶数に切り上げて書き出し、
+    //   余った列が未初期化のまま入る。例: 1366 の 2 分割 = 683 → 1368 幅のファイルになり色がにじむ）
+    if (tiles > 1) {
+        int wt = 1, ht = 1;
+        tileSplit(tiles, wt, ht);
+        if (W % (2 * wt) != 0 || H % (2 * ht) != 0) return false;
+    }
     switch (tiles) {
     case 1:  return !(W > 8192 || H > 8192);
     case 2:  return !(W / 2 > 8192 || H > 8192);
@@ -137,11 +157,13 @@ void EncodeController::normalize()
 {
     EncodeSettings& s = es();
 
-    // タイル: 選べなければ、それ以上で最初に選べるもの（Widgets 版と同じ寄せ方）
+    // タイル: 選べなければ、それ以上で最初に選べるもの（Widgets 版と同じ寄せ方）。
+    //   それも無ければ（割り切れない解像度）それ未満で一番多いもの、最後は 1
     if (!tileAllowed(s.encode_tile)) {
-        int pick = 8;
+        int pick = 0;
         for (int t : {1, 2, 4, 8}) if (t >= s.encode_tile && tileAllowed(t)) { pick = t; break; }
-        s.encode_tile = pick;
+        if (!pick) for (int t : {8, 4, 2}) if (t < s.encode_tile && tileAllowed(t)) { pick = t; break; }
+        s.encode_tile = pick ? pick : 1;
     }
     tileSplit(s.encode_tile, s.width_tile, s.height_tile);
 
@@ -218,6 +240,25 @@ QVariantList EncodeController::depthOptions() const
 QVariantList EncodeController::ditherOptions() const
 {
     return { opt("あり（なめらか）", "1"), opt("なし（値そのまま）", "0") };
+}
+
+// 別 GPU へ送るタイルの圧縮（デコード設定と同じ選択肢）
+QVariantList EncodeController::xferCodecOptions() const
+{
+    return DecodeSettings::xferCodecOptionList();
+}
+
+QVariantList EncodeController::xferDeltaOptions() const
+{
+    return { opt("あり", "1"), opt("なし", "0") };
+}
+
+// 表示用以外の GPU にタイルを割り当てているか（転送があるか）
+bool EncodeController::xferUsed() const
+{
+    for (const auto& [id, tiles] : gpu_tiles_)
+        if (id != g_openglDeviceID && tiles > 0) return true;
+    return false;
 }
 
 QVariantList EncodeController::splitOptions() const
@@ -351,6 +392,10 @@ void EncodeController::setValue(const QString& key, const QVariant& value)
         s.output_depth = (value.toInt() >= 10) ? 10 : 8;
     } else if (key == "dither") {
         s.dither = (value.toString() != "0");
+    } else if (key == "xferCodec") {
+        s.xfer_codec = value.toString();
+    } else if (key == "xferDelta") {
+        s.xfer_delta = (value.toString() != "0");
     } else {
         qWarning() << "[EncodeController] unknown key" << key;
         return;
@@ -744,6 +789,21 @@ void EncodeController::start()
         emit stateChanged();
         return;
     }
+    // 空き容量の見込み（CBR / VBR は目標ビットレート × 本数 × 長さ。CQ / CQP は中身次第なので見ない）
+    //   足りなくなったときは書き込みの失敗で止まる（save_encode::fail）。ここは始める前に分かる分だけ
+    if (s.rc_mode == "cbr" || s.rc_mode == "vbr") {
+        const double sec  = progress_max_ / std::max(1.0, s.save_fps);
+        const double need = double(s.target_bit_rate) * std::max(1, s.encode_tile) * sec / 8.0 * 1.05;
+        QStorageInfo si(QFileInfo(s.encode_path).absolutePath());
+        si.refresh();
+        if (si.isValid() && si.bytesAvailable() >= 0 && need > double(si.bytesAvailable())) {
+            status_ = QString("空き容量不足の見込み（必要 %1 GB / 空き %2 GB）")
+                          .arg(need / 1e9, 0, 'f', 1).arg(si.bytesAvailable() / 1e9, 0, 'f', 1);
+            finished_ok_ = false;
+            emit stateChanged();
+            return;
+        }
+    }
     // 入力ファイルへの上書きは避ける
     if (QString::fromStdString(VideoInfo.Path) == s.encode_path)
         s.encode_path = fileCheck(s.encode_path);
@@ -800,7 +860,7 @@ void EncodeController::encodeFailed(const QString& message)
     encoding_ = false;
     finished_ok_ = false;
     progress_ = 0;
-    status_ = QString("開始できませんでした: %1").arg(message);
+    status_ = message;   // 「開始できません: …」「中断: …」（VideoEngine が付ける）
     emit changed();
     emit stateChanged();
     emit progressChanged();

@@ -1029,9 +1029,9 @@ void VideoEngine::initHistTarget(const QSize& size)
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-// NVDEC のタイルを行ごとのカーネル（tile_rows.cuh）に渡す形にする。行ごとに使えるか（先頭・pitch が 16 の倍数）と、
+// NVDEC のタイルを行ごとのカーネル（decode_rows.cuh）に渡す形にする。行ごとに使えるか（先頭・pitch が 16 の倍数）と、
 //   圧縮転送の詰めたタイルがあるかも返す（NVDEC の出力・cudaMallocPitch は常に 16 の倍数）
-static P010Tiles tilesForRows(const VideoFrame& Frame, int cols, bool& aligned, bool& packed)
+static P010Tiles decodeRowsTiles(const VideoFrame& Frame, int cols, bool& aligned, bool& packed)
 {
     P010Tiles t = {};
     t.count = Frame.tile_count;
@@ -1066,9 +1066,9 @@ bool VideoEngine::mergeToSurface(const VideoFrame& Frame, cudaSurfaceObject_t su
 
     if (Frame.tile_count == 1 || Frame.tile_count == 2 || Frame.tile_count == 4 || Frame.tile_count == 8) {
         bool aligned = false, packed = false;
-        const P010Tiles t = tilesForRows(Frame, VideoInfo.width_scale, aligned, packed);
+        const P010Tiles t = decodeRowsTiles(Frame, VideoInfo.width_scale, aligned, packed);
         if (aligned)
-            return CUDA_IMG_Proc->nv12_tiles_rows_to_rgba8_surf(surf, t, outW, outH, interop_stream);
+            return CUDA_IMG_Proc->decode_rows_nv12_to_rgba8(surf, t, outW, outH, interop_stream);
         if (packed) {
             qWarning() << "[VideoEngine] 詰めたタイルの先頭・pitch が 16 の倍数ではありません";
             return false;
@@ -1142,11 +1142,11 @@ bool VideoEngine::p010ToSurface(const VideoFrame& Frame, cudaSurfaceObject_t sur
         return false;
     }
     bool aligned = false, packed = false;
-    const P010Tiles t = tilesForRows(Frame, VideoInfo.width_scale, aligned, packed);
+    const P010Tiles t = decodeRowsTiles(Frame, VideoInfo.width_scale, aligned, packed);
     // 本線は行ごとのカーネル（圧縮転送の詰めたタイルもこれで差分を戻す）。先頭・pitch が 16 の倍数でないときだけ旧版
     //   （NVDEC の出力・cudaMallocPitch は常に満たすので、通常は通らない。詰めたタイルは旧版では読めない）
     if (aligned)
-        return CUDA_IMG_Proc->p010_tiles_rows_to_rgba16_surf(surf, t, width_, height_, interop_stream);
+        return CUDA_IMG_Proc->decode_rows_p010_to_rgba16(surf, t, width_, height_, interop_stream);
     if (packed) {
         qWarning() << "[VideoEngine] 詰めたタイルの先頭・pitch が 16 の倍数ではありません";
         return false;
@@ -1260,15 +1260,19 @@ void VideoEngine::downloadToGLTexture_and_Encode(const VideoFrame& Frame)
     }
 
     cudaArray_t array;
+    // ★ ここの CUDA の失敗はエンコード中なら中断する（abortEncode）。黙って return すると
+    //   コマ数が進まないまま毎コマ同じ失敗を繰り返し、エンコードが終わらない
     cudaError_t err = cudaGraphicsMapResources(1, &cudaResource2, interop_stream);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
+        abortEncode("FBO の受け渡し（map）", err);
         return;
     }
     err = cudaGraphicsSubResourceGetMappedArray(&array, cudaResource2, 0, 0);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsSubResourceGetMappedArray error:" << cudaGetErrorString(err);
         cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
+        abortEncode("FBO の受け渡し（配列の取得）", err);
         return;
     }
 
@@ -1279,13 +1283,15 @@ void VideoEngine::downloadToGLTexture_and_Encode(const VideoFrame& Frame)
     cudaTextureObject_t tex = 0;
     if (!createArrayTexture(array, tex, "fbo")) {
         cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
+        abortEncode("FBO の受け渡し（テクスチャの作成）", cudaGetLastError());
         return;
     }
     fboTexRetire.store(ti, tex);
 
     bool finished = false;
     cudaEvent_t convertDone = nullptr;
-    if (save_encoder != nullptr && encode_FrameCount <= (MaxFrame - MinFrame)) {
+    // 途中で失敗（ディスクの空き不足・エンコーダのエラー等）していたら、そこで終える
+    if (save_encoder != nullptr && !save_encoder->failed() && encode_FrameCount <= (MaxFrame - MinFrame)) {
         save_encoder->encode(Frame, tex, encode_gl_event, &convertDone);
         encode_FrameCount++;
     } else {
@@ -1301,15 +1307,34 @@ void VideoEngine::downloadToGLTexture_and_Encode(const VideoFrame& Frame)
     err = cudaGraphicsUnmapResources(1, &cudaResource2, interop_stream);
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsUnmapResources error:" << cudaGetErrorString(err);
+        abortEncode("FBO の受け渡し（unmap）", err);
         return;
     }
 
-    if (finished) {
-        delete save_encoder;
-        save_encoder = nullptr;
-        encode_FrameCount = 0;
-        emit encode_finished();
-    }
+    if (finished) finishEncode();
+}
+
+// 終わりの通知はエンコーダを閉じたときの 1 回だけ（閉じた後、状態が戻るまでに来たフレームでは出さない。
+//   エラーで終えた直後に完了が出ると、画面のエラー表示が「完了」で上書きされるため）
+void VideoEngine::finishEncode()
+{
+    if (!save_encoder) return;
+    // close で吐き切りと trailer まで済ませ、結果を見る（空き不足は trailer でも出る）
+    const bool ok = save_encoder->close();
+    const QString failMsg = ok ? QString() : save_encoder->failMessage();
+    delete save_encoder;
+    save_encoder = nullptr;
+    encode_FrameCount = 0;
+    if (ok) emit encode_finished();
+    else    emit encode_error(QStringLiteral("中断: %1（ファイルは不完全）").arg(failMsg));
+}
+
+void VideoEngine::abortEncode(const char* what, cudaError_t err)
+{
+    if (!save_encoder) return;   // エンコードしていない（表示だけ）なら今までどおり
+    cudaGetLastError();
+    save_encoder->abort(QStringLiteral("%1に失敗（%2）").arg(QString::fromUtf8(what), QString::fromUtf8(cudaGetErrorString(err))));
+    finishEncode();
 }
 
 void VideoEngine::encode_mode(int flag)
@@ -1327,13 +1352,13 @@ void VideoEngine::encode_mode(int flag)
             encode_state = STATE_NOT_ENCODE;
             const QString msg = QString::fromUtf8(e.what());
             qWarning() << "[VideoEngine] save_encode init failed:" << msg;
-            emit encode_error(msg);
+            emit encode_error(QStringLiteral("開始できません: %1").arg(msg));
         }
         catch (...) {
             save_encoder = nullptr;
             encode_state = STATE_NOT_ENCODE;
             qWarning() << "[VideoEngine] save_encode init failed (unknown exception)";
-            emit encode_error(QStringLiteral("不明なエラー"));
+            emit encode_error(QStringLiteral("開始できません: 不明なエラー"));
         }
     }
 }

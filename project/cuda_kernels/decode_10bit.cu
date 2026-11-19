@@ -6,7 +6,7 @@
 //
 //   前半: NVDEC の P010（10bit を 16bit の上位に詰めた NV12 形式）。タイル分割 x1 / x2 / x4 / x8 は
 //         1 本のカーネルで扱う（タイルは左上から行ごとの順。列数 cols で位置を決める）。
-//         本線は行ごとのカーネル（p010_tiles_rows_to_rgba16_surf_kernel、tile_rows.cuh。圧縮転送の詰めたタイルも読む）、
+//         本線は行ごとのカーネル（decode_rows_p010_to_rgba16_kernel、decode_rows.cuh。圧縮転送の詰めたタイルも読む）、
 //         画素ごとの p010_tiles_to_rgba16_surf_kernel は先頭・pitch が 16 の倍数でないときの予備
 //   後半: CPU デコード（cpudecode / avidecode）の 10bit プレーン（YUV420P / YUV422P / GBRP）
 //
@@ -20,7 +20,7 @@
 #include <surface_indirect_functions.h>
 #include <stdint.h>
 #include "tiles_10bit.h"   // P010Tiles
-#include "tile_rows.cuh"
+#include "decode_rows.cuh"
 
 // 0..1 → RGBA16 の 1 チャンネル（四捨五入）
 __device__ __forceinline__ unsigned short to_u16(float v)
@@ -78,7 +78,7 @@ __global__ void p010_tiles_to_rgba16_surf_kernel(
 
 // ##############################################################
 // NVDEC の P010 タイル → RGBA16（10bit の NVDEC 経路の本線。タイル分割 x1 / x2 / x4 / x8 共通）
-//   行ごとの共通部（tile_rows.cuh）で読み、圧縮転送の詰めたタイルは差分を戻しながら変換する
+//   行ごとの共通部（decode_rows.cuh）で読み、圧縮転送の詰めたタイルは差分を戻しながら変換する
 // ##############################################################
 namespace {
 struct WriteRgba16 {
@@ -93,12 +93,12 @@ struct WriteRgba16 {
 }
 
 extern "C"
-__global__ void p010_tiles_rows_to_rgba16_surf_kernel(
+__global__ void decode_rows_p010_to_rgba16_kernel(
     cudaSurfaceObject_t out,
     P010Tiles t,
     int outW, int outH)
 {
-    tile_rows::convert<unsigned short, 10, 6>(t, outW, outH, WriteRgba16{ out });
+    decode_rows::convert<unsigned short, 10, 6>(t, outW, outH, WriteRgba16{ out });
 }
 
 // ##############################################################

@@ -138,6 +138,8 @@ private:
 
     void FBO_Rendering(const VideoFrame& Frame);
     void downloadToGLTexture_and_Encode(const VideoFrame& Frame);
+    void finishEncode();                  // エンコーダを閉じて結果を通知（完了 / 中断）
+    void abortEncode(const char* what, cudaError_t err);   // FBO の受け渡しの失敗で中断する（エンコード中だけ）
     void setShaderUniformEnable();
     void uploadKernels();                 // 係数をシェーダの uniform へ
 

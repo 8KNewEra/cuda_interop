@@ -185,7 +185,9 @@ LIBS += -L$$CUDA_DIR/lib/x64 \
 #       encode_10bit.cu    : RGBA16 の FBO → NV12（エンコード入力）/ RGBA8（画像保存）
 #       histogram_10bit.cu : RGBA16 の FBO からヒストグラム（1024 段。集計先の構造体は histogram_10bit.h）
 #       tiles_10bit.h      : 10bit 経路のカーネルへ渡すタイルの構造体（cuda_imageprocess.cpp と共用）
-#       xfer_compress.cu   : マルチ GPU デコードの圧縮転送（差分・詰め直し・圧縮チャンクの受け渡し。xfer_codec.cpp から）
+#       decode_rows.cuh    : NVDEC のタイル → RGBA の行ごとの共通部（decode_8bit / decode_10bit。デコードの本線）
+#       encode_rows.cuh    : RGBA → NV12 / P010 のタイルの行ごとの共通部（encode_8bit / encode_10bit。エンコードの本線）
+#       xfer_compress.cu   : マルチ GPU の圧縮転送（差分・詰め直し・圧縮チャンクの受け渡し。xfer_codec.cpp から）
 #     起動口は src/imageprocess/cuda_imageprocess.cpp
 #   ・.cu を変更しただけなら通常のビルドで、変わったものだけ再コンパイルされる
 #   ・cuda_kernels/ の .cuh / .h を変えると、全カーネルを再コンパイルする

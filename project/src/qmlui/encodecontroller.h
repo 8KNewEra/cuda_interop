@@ -96,6 +96,8 @@ class EncodeController : public QObject
     Q_PROPERTY(QString rateInfoTarget READ rateInfoTarget NOTIFY changed)
     Q_PROPERTY(QString rateInfoMax    READ rateInfoMax    NOTIFY changed)
     Q_PROPERTY(QString vramInfo       READ vramInfo       NOTIFY changed)
+    // 幅・高さが奇数で切り詰めて書き出すときの注記（偶数なら空）
+    Q_PROPERTY(QString sizeNote       READ sizeNote       NOTIFY changed)
 
     // ---- 音声 ----
     Q_PROPERTY(bool audioAvailable READ audioAvailable NOTIFY changed)
@@ -110,6 +112,13 @@ class EncodeController : public QObject
     //   gpus と同じ並び。[{id, encUsage, gpuUsage, g3d, cuda, memUsed, memMax}]（g3d / cuda は取れない環境で -1）
     Q_PROPERTY(QVariantList gpuStats READ gpuStats NOTIFY statsChanged)
     Q_PROPERTY(bool multiGpu      READ multiGpu NOTIFY changed)
+    // 別 GPU へ送るタイルの圧縮（"none" / "ans" / "bitcomp" / "cascaded"）と差分（"1" / "0"）。
+    //   xferUsed = 表示用以外の GPU にタイルを割り当てているか（無ければ転送しないので使わない）
+    Q_PROPERTY(QVariantList xferCodecOptions READ xferCodecOptions CONSTANT)
+    Q_PROPERTY(QVariantList xferDeltaOptions READ xferDeltaOptions CONSTANT)
+    Q_PROPERTY(QVariant xferCodec READ xferCodec NOTIFY changed)
+    Q_PROPERTY(QVariant xferDelta READ xferDelta NOTIFY changed)
+    Q_PROPERTY(bool     xferUsed  READ xferUsed  NOTIFY changed)
 
 public:
     explicit EncodeController(QObject* parent = nullptr);
@@ -171,6 +180,11 @@ public:
     QVariantList ditherOptions() const;
     QVariant dither() const { return es().dither ? "1" : "0"; }
     bool showDither() const { return src_high_bit_ && !out10(); }
+    QVariantList xferCodecOptions() const;
+    QVariantList xferDeltaOptions() const;
+    QVariant xferCodec() const { return xferUsed() ? QVariant(es().xfer_codec) : QVariant("none"); }
+    QVariant xferDelta() const { return es().xfer_delta ? "1" : "0"; }
+    bool xferUsed() const;
 
     QVariant container() const { return es().container; }
     QVariant codec() const     { return es().codec; }
@@ -203,6 +217,7 @@ public:
     QString rateInfoTarget() const;
     QString rateInfoMax() const;
     QString vramInfo() const;
+    QString sizeNote() const;
 
     bool audioAvailable() const;
     bool audioEnabled() const { return es().audio_enable; }
@@ -244,8 +259,11 @@ private:
 
     int  unit() const { return es().bitrate_basis == "total" ? std::max(1, es().encode_tile) : 1; }
     bool primaryAv1() const;
-    int  canvasW() const { return VideoInfo.width  * VideoInfo.width_scale; }
-    int  canvasH() const { return VideoInfo.height * VideoInfo.height_scale; }
+    // 書き出す大きさ = 画面（素材 × タイル）を偶数に切り下げたもの（4:2:0。save_encode と同じ。奇数なら右端・下端を 1 画素捨てる）
+    int  rawCanvasW() const { return VideoInfo.width  * VideoInfo.width_scale; }
+    int  rawCanvasH() const { return VideoInfo.height * VideoInfo.height_scale; }
+    int  canvasW() const { return rawCanvasW() & ~1; }
+    int  canvasH() const { return rawCanvasH() & ~1; }
     bool tileAllowed(int tiles) const;
     bool codecAllowed(const QString& c) const;
     bool bframeAllowed(int bf) const;

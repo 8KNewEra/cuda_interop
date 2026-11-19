@@ -154,6 +154,7 @@ private:
     // ★ エンコーダ生成失敗（VRAM不足など）の受け口
     void encode_error_handler(const QString &error);
     bool wasCanceled=false;
+    QMetaObject::Connection encodeFinishedConn_;   // start_encode の完了の接続（エラーで終わったら外す）
     encode_setting *encodeSetting;
     int encode_state=STATE_NOT_ENCODE;
 

@@ -1,4 +1,4 @@
-// マルチ GPU デコードの圧縮転送のカーネル（src/videoprocess/xfer_codec.* から使う。docs/MULTI_GPU_DECODE.md）
+// マルチ GPU の圧縮転送のカーネル（src/videoprocess/xfer_codec.* から使う。デコード・エンコード共用。docs/DECODE_CORE.md 8.5）
 //   差分: 行の中で LAG 個左との差（Y = 1、UV = 2）をジグザグ（0,-1,1,-2.. → 0,1,2,3..）にする。可逆（bits ビットで巡回）
 //   P010 は >>6 して 10bit で扱い、戻すときに <<6
 #include <cuda_runtime.h>
@@ -39,7 +39,7 @@ __global__ void xfer_fwd_kernel(const uint8_t* src, size_t srcPitch, uint8_t* ds
 
 // 逆変換: 詰めた並び → pitched。差分なら行ごとに累積和（1 ブロック 1 行、LAG 系列ごとに走査）
 //   逆変換は「詰めたまま GUI に渡せない」とき（Widgets 版、1 行が 16 バイトの倍数でない）だけ使う。
-//   渡せるときは GUI の変換カーネル（tile_rows.cuh）が同じ計算で差分を戻す
+//   渡せるときは GUI の変換カーネル（decode_rows.cuh）が同じ計算で差分を戻す
 constexpr int kScanThreads = 256;
 
 template <typename T, int LAG>
@@ -238,12 +238,19 @@ __global__ void xfer_pack_kernel(const void* const* slots, const uint64_t* hdr, 
 }
 
 // 先頭 copied バイトは DMA 済み。超えた分だけメインメモリから読み、展開に渡すチャンク表を作る
+//   ヘッダが壊れていたら（チャンク数・大きさ・位置が範囲外）、そのチャンクは 0 バイトにして flag を立てる
+//   （範囲外を読まない。nvCOMP は 0 バイトのチャンクを失敗として返すので、展開側の状態でも分かる）
 __global__ void xfer_fetch_kernel(const uint64_t* hdr, int n, const uint8_t* hostData, uint8_t* devData,
-                                  uint64_t copied, const void** compPtrs, size_t* compBytes)
+                                  uint64_t copied, uint64_t maxChunk, uint64_t cap,
+                                  const void** compPtrs, size_t* compBytes, int* flag)
 {
     const int b = blockIdx.x;
     if (b >= n) return;
-    const uint64_t bytes = hdr[2 + b], off = hdr[2 + n + b];
+    uint64_t bytes = hdr[2 + b], off = hdr[2 + n + b];
+    if (hdr[0] != uint64_t(n) || bytes > maxChunk || (off & 15) || off > cap || cap - off < ((bytes + 15) & ~uint64_t(15))) {
+        if (threadIdx.x == 0) { *flag = 1; compPtrs[b] = devData; compBytes[b] = 0; }
+        return;
+    }
     const uint64_t end = off + ((bytes + 15) & ~uint64_t(15));
     if (end > copied) {
         const uint64_t from = off > copied ? off : copied;   // copied は 16 の倍数
@@ -255,6 +262,15 @@ __global__ void xfer_fetch_kernel(const uint64_t* hdr, int n, const uint8_t* hos
     if (threadIdx.x == 0) {
         compPtrs[b]  = devData + off;
         compBytes[b] = size_t(bytes);
+    }
+}
+
+// nvCOMP の結果（チャンクごとの状態。0 = 成功）を見て、失敗があれば flag を立てる（メインメモリ。CPU が後から読む）
+//   outBytes / expBytes があれば、展開後の大きさが元の大きさと一致するかも見る
+__global__ void xfer_status_kernel(const int* status, int n, const size_t* outBytes, const size_t* expBytes, int* flag)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        if (status[i] != 0 || (outBytes && outBytes[i] != expBytes[i])) *flag = 1;
     }
 }
 
@@ -311,8 +327,9 @@ extern "C" cudaError_t xfer_pack(const void* const* slots, const size_t* compByt
     xfer_scan_kernel<<<1, 1, 0, st>>>(compBytes, n, devHdr);
     constexpr int kPackBlocks = 32;
     xfer_pack_kernel<<<n < kPackBlocks ? n : kPackBlocks, 256, 0, st>>>(slots, devHdr, n, hostData);
-    cudaMemcpyAsync(hostHdr, devHdr, sizeof(uint64_t) * (2 + 2 * size_t(n)), cudaMemcpyDeviceToHost, st);
-    return cudaGetLastError();
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    return cudaMemcpyAsync(hostHdr, devHdr, sizeof(uint64_t) * (2 + 2 * size_t(n)), cudaMemcpyDeviceToHost, st);
 }
 
 extern "C" cudaError_t xfer_split(size_t* bytes, int n, size_t chunk, cudaStream_t st)
@@ -322,13 +339,25 @@ extern "C" cudaError_t xfer_split(size_t* bytes, int n, size_t chunk, cudaStream
 }
 
 // ヘッダと先頭 copyBytes バイト（見込み）は DMA、超えた分はカーネルが拾う
+//   maxChunk: 1 チャンクの圧縮後の最大、cap: データ域の大きさ（ヘッダの検査に使う）、flag: 壊れていたら 1
 extern "C" cudaError_t xfer_fetch(const uint64_t* hostHdr, uint64_t* devHdr, int n, const uint8_t* hostData,
-                                  uint8_t* devData, size_t copyBytes, const void** compPtrs, size_t* compBytes,
-                                  cudaStream_t st)
+                                  uint8_t* devData, size_t copyBytes, size_t maxChunk, size_t cap,
+                                  const void** compPtrs, size_t* compBytes, int* flag, cudaStream_t st)
 {
     copyBytes &= ~size_t(15);
-    cudaMemcpyAsync(devHdr, hostHdr, sizeof(uint64_t) * (2 + 2 * size_t(n)), cudaMemcpyHostToDevice, st);
-    if (copyBytes) cudaMemcpyAsync(devData, hostData, copyBytes, cudaMemcpyHostToDevice, st);
-    xfer_fetch_kernel<<<n, 256, 0, st>>>(devHdr, n, hostData, devData, uint64_t(copyBytes), compPtrs, compBytes);
+    cudaError_t e = cudaMemcpyAsync(devHdr, hostHdr, sizeof(uint64_t) * (2 + 2 * size_t(n)), cudaMemcpyHostToDevice, st);
+    if (e == cudaSuccess && copyBytes) e = cudaMemcpyAsync(devData, hostData, copyBytes, cudaMemcpyHostToDevice, st);
+    if (e != cudaSuccess) return e;
+    xfer_fetch_kernel<<<n, 256, 0, st>>>(devHdr, n, hostData, devData, uint64_t(copyBytes), uint64_t(maxChunk), uint64_t(cap),
+                                         compPtrs, compBytes, flag);
+    return cudaGetLastError();
+}
+
+// nvCOMP の状態の検査（xfer_status_kernel）。flag はメインメモリ（Mapped）
+extern "C" cudaError_t xfer_status(const int* status, int n, const size_t* outBytes, const size_t* expBytes,
+                                   int* flag, cudaStream_t st)
+{
+    const int blocks = (n + 255) / 256 < 64 ? (n + 255) / 256 : 64;
+    xfer_status_kernel<<<blocks > 0 ? blocks : 1, 256, 0, st>>>(status, n, outBytes, expBytes, flag);
     return cudaGetLastError();
 }

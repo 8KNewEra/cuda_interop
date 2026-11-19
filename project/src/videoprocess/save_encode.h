@@ -17,6 +17,7 @@
 #include "qmutex.h"
 #include "src/imageprocess/cuda_imageprocess.h"
 #include "src/main/__global__.h"
+#include "src/videoprocess/xfer_codec.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -31,9 +32,12 @@ extern "C" {
 }
 
 struct FrameSlot {
-    AVFrame* frame = nullptr;
-    cudaEvent_t ready = nullptr;   // このslotのコピー完了通知
+    AVFrame* frame = nullptr;      // NVENC の入力フレーム（エンコードする GPU 上）
+    cudaEvent_t ready = nullptr;   // frame が書き上がった（ワーカーがこれを待って NVENC へ渡す）
 
+    // 変換カーネルの書き込み先（表示用 GPU 上）
+    //   表示用 GPU のタイル: frame の面そのもの（encode_video が毎回入れる）
+    //   別 GPU のタイル    : 転送の中継（cudaMallocPitch）。圧縮転送するタイルは使わない（nullptr）
     uint8_t* d_y = nullptr;
     size_t y_pitch = 0;
     uint8_t* d_uv = nullptr;
@@ -67,7 +71,19 @@ struct VideoEncoder {
     AVBufferRef*    hw_frames_ctx = nullptr;
     std::vector<FrameSlot> hw_frames;
 
-    cudaStream_t st = nullptr;
+    int          dev = -1;              // エンコードする GPU
+    cudaStream_t st  = nullptr;         // 表示用 GPU 側（変換の完了待ち、転送の D2H）
+
+    // ---- 別 GPU のタイル: メインメモリ経由の転送（save_encode::transfer_remote。docs/ENCODE_CORE.md 6）----
+    //   圧縮なし: 2 段コピー（中継 d_y/d_uv → h_y/h_uv[s] → AVFrame）
+    //   圧縮あり: XferCodec（変換カーネルが詰めた並びを書き、圧縮 → メインメモリの枠 s → 展開 → AVFrame）
+    //   remoteXfer = false（表示用 GPU のタイル、または準備に失敗）なら transfer_remote を使わない
+    bool         remoteXfer = false;
+    cudaStream_t rst = nullptr;                 // 別 GPU 側（H2D / 展開）
+    std::unique_ptr<XferCodec> codec;           // 圧縮ありのとき（設定 xfer_codec / xfer_delta）
+    std::vector<uint8_t*>    h_y, h_uv;         // 圧縮なしの中継（ページ固定・Portable、kXferStage 枠）
+    std::vector<cudaEvent_t> d2h_ev;            // 表示用 GPU: 枠 s へ書き終えた（圧縮なし）
+    std::vector<cudaEvent_t> h2d_ev;            // 別 GPU: 枠 s を読み終えた（枠を再利用してよい）
 
     // ================= パイプライン用 =================
     std::thread             th;                 // このエンコーダ専用ワーカー
@@ -126,10 +142,31 @@ public:
     // 10bit（P010）で書き出すか（encode_out_10bit。HEVC Main10 / AV1 10bit）。コンストラクタで決まる
     bool out10 = false;
 
+    // 途中の失敗（ディスクの空き不足・書き込みエラー・エンコーダのエラー・転送の失敗）。どのスレッドからでも立つ。
+    //   呼び出し側は encode の後に failed() を見て、立っていたら close() → delete して failMessage() を画面に出す
+    bool    failed() const { return failed_; }
+    QString failMessage() const;
+    // 終了処理（ワーカー停止 → 吐き切り → trailer → 解放）。成功なら true。デストラクタも呼ぶ（2 回目以降は何もしない）
+    bool    close();
+    // 呼び出し側（VideoEngine）で起きた続けられない失敗（FBO の CUDA への受け渡しの失敗等）を記録する。以降は failed()
+    void    abort(const QString& msg) { fail(msg); }
+
 private:
+    void init(int h, int w, bool srcRgba16);    // コンストラクタの本体（失敗したらコンストラクタが release_all して投げ直す）
+    void release_all(bool finalize);            // 全部の解放（デストラクタ / 初期化の失敗）。途中まで確保した状態でも動く
+    std::vector<QString> openedPaths_;          // avio_open したファイル（初期化に失敗したら消す）
+    int  headersWritten_ = 0;                   // ヘッダを書けたファイル数（files_ の先頭から。trailer はここまで）
+    bool closed_ = false;
+    std::atomic<bool>  failed_{false};
+    mutable std::mutex failMutex_;
+    QString            failMsg_;
+    void fail(const QString& msg);
+    bool ck(cudaError_t e, const char* what);   // CUDA API の戻り値（失敗なら fail して false）
+
     void initialized_ffmpeg_hardware_context(int i);
     void initialized_ffmpeg_codec_context(int i,int max_split);
-    int height_,width_;
+    int height_,width_;          // 書き出す大きさ（偶数に切り下げ済み）
+    int texW_ = 0, texH_ = 0;    // 入力テクスチャ（FBO）の大きさ
 
     void encode_video(VideoFrame Frame,
                       cudaTextureObject_t srcTex,
@@ -190,6 +227,8 @@ private:
     void audio_loop();
     void stop_audio_thread();
     void audio_flush();
+    AVFrame* alloc_audio_frame(int n);          // 音声フレーム（失敗したら fail して nullptr）
+    void send_audio(AVFrame* f);                // エンコーダへ渡して出たパケットを書く（nullptr = 終わり）
 
     // ================= 映像パイプライン =================
     //   ★ b_frames_ / async_depth_ / nvenc_surfaces_ / encodeRingSize は
@@ -236,6 +275,26 @@ private:
     // FBO は GL のテクスチャ座標の都合で上下反転しているため 1。
     // GLをバイパスして linear な RGBA を直接渡す経路を作る場合は 0 にする。
     int srcFlip = 1;
+
+    // 1 タイルの大きさ（UV は U / V の組なので偶数要素に切り上げ。タイル幅が奇数でも最後の組を落とさない）
+    struct TileSize { int w, h; size_t yBytes, uvBytes; };
+    TileSize tileSize() const;
+
+    // 行ごとの変換カーネル（encode_rows.cuh）に渡すタイル情報
+    NV12Tiles encodeRowsTiles(int slot);
+
+    // 別 GPU へのメインメモリ経由の転送（VideoEncoder::remoteXfer）。メインメモリの枠はフレームごとに順に使う
+    static constexpr int kXferStage = 3;
+    int  xferStage_ = 0;
+    bool init_remote_xfer(VideoEncoder& e);
+    void release_remote_xfer(VideoEncoder& e);
+    void transfer_remote(VideoEncoder& e, FrameSlot& fs, int s);
+    void transfer_peer(VideoEncoder& e, FrameSlot& fs);   // 準備に失敗したとき（デバイスをまたぐコピー。遅い）
+    // 圧縮転送の計測（ログ。xferFrame_ = 今のフレームのタイルの最大、xferSum_ = その合計）
+    static constexpr int kXferLogFrames = 120;
+    XferCodec::Stats xferFrame_, xferSum_;
+    int  xferFrames_ = 0;
+    void log_xfer_stats();
 
     void encoder_loop(int idx);                 // エンコーダ毎ワーカー本体
     void start_encoder_threads();

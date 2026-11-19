@@ -25,7 +25,7 @@ struct AppSettings
     // Info
     bool videoInfo_flag = false;
     bool perf_hud = false;              // 性能 HUD（QML 版。映像の左下に処理段ごとの時間）
-    // マルチ GPU デコードの転送の圧縮: "none" / "ans" / "cascaded" / "bitcomp"、差分（docs/MULTI_GPU_DECODE.md）
+    // マルチ GPU デコードの転送の圧縮: "none" / "ans" / "cascaded" / "bitcomp"、差分（docs/DECODE_CORE.md 8）
     QString decode_xfer_codec = "ans";
     bool    decode_xfer_delta = true;
     // 実行時だけ（保存しない）: GUI が詰めたタイル（VideoFrame::tile_packed）を変換できるか。QML 版の VideoEngine だけ対応
@@ -168,6 +168,11 @@ struct EncodeSettings {
     int output_depth = 10;
     // 10bit 経路の素材を 8bit（NV12）で書き出すときのディザ（true = 縞を抑える / false = 値そのまま）
     bool dither = true;
+
+    // マルチ GPU エンコードで別 GPU へ送るタイルの圧縮（XferCodec。デコードの decode_xfer_codec と同じ値）
+    //   "none" / "ans" / "bitcomp" / "cascaded"、差分（前処理）あり / なし。表示用 GPU だけで書き出すときは使わない
+    QString xfer_codec = "ans";
+    bool    xfer_delta = true;
 };
 
 // 実際に 10bit（P010）で書き出すか。save_encode と設定画面で同じ判定を使う
@@ -403,7 +408,7 @@ struct VideoFrame {
     size_t   y_pitch [MAX_TILES] = {};
     uint8_t* d_uv    [MAX_TILES] = {};
     size_t   uv_pitch[MAX_TILES] = {};
-    // 圧縮転送で詰めたまま届いたタイル（docs/MULTI_GPU_DECODE.md 5.2）。tile_packed[i] = 1 なら d_y / d_uv は
+    // 圧縮転送で詰めたまま届いたタイル（docs/DECODE_CORE.md 8.5.2）。tile_packed[i] = 1 なら d_y / d_uv は
     //   詰めた並び（pitch = 1 行のバイト数）で値はそのまま（P010 も >>6 済み）。packed_delta = 1 なら差分のまま（変換で戻す）
     uint8_t  tile_packed[MAX_TILES] = {};
     int      packed_delta = 0;

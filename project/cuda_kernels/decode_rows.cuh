@@ -1,5 +1,6 @@
 // ==============================================================
 // NVDEC のタイル（NV12 / P010）→ RGBA を行ごとに変換する共通部（decode_8bit.cu / decode_10bit.cu から使う）
+//   エンコード側の encode_rows.cuh と対になる（こちらはタイルごとに読み方、向こうは書き方を切り替える）
 //
 //   1 ブロック = 1 タイルの Y 2 行と UV 1 行（kRowThreads スレッド）。
 //   読み込みは 1 スレッド 16 バイト（8bit なら 16 画素、P010 なら 8 画素）× Y 2 行 ＋ UV 1 行。
@@ -11,14 +12,14 @@
 //   詰めたタイルは 1 行が 16 バイトの倍数（nvgpudecode が保証）。高さが奇数なら最後のブロックは Y 1 行だけ。
 //   起動: grid((srcH + 1) / 2, count)、block(kRowThreads)
 // ==============================================================
-#ifndef TILE_ROWS_CUH
-#define TILE_ROWS_CUH
+#ifndef DECODE_ROWS_CUH
+#define DECODE_ROWS_CUH
 
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include "tiles_10bit.h"   // P010Tiles（8bit の NV12 も同じ並びで渡す）
 
-namespace tile_rows {
+namespace decode_rows {
 
 constexpr int kRowThreads = 256;
 
@@ -136,6 +137,6 @@ __device__ __forceinline__ void convert(const P010Tiles& t, int outW, int outH, 
     }
 }
 
-} // namespace tile_rows
+} // namespace decode_rows
 
-#endif // TILE_ROWS_CUH
+#endif // DECODE_ROWS_CUH

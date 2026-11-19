@@ -7,7 +7,7 @@ import QtQuick.Layouts
 //   値は PlayerController::perf（0.25 秒ごと。中身は PerfMeter::take、perfmeter.h）
 //     段: decode / convert / filter / display / hist / cpu（各 {avg, max, n}。n = 0 は「—」）
 //     マルチ GPU デコード: compress / transfer / expand と内訳 decodeParts / expandParts、nvdecs、frozen
-//     （意味は docs/MULTI_GPU_DECODE.md の 9）
+//     （意味は docs/DECODE_CORE.md の 8.9）
 //     interval（フレーム間隔の {avg, max}）、intervals（フレーム間隔の列）、budget（1 フレームの持ち時間 ms）
 //   バーの長さは「持ち時間」に対する割合。持ち時間を超えると赤。使っていない段（表示ツール・ヒストグラムが OFF）は
 //   「—」（行は消さない。消すと高さが変わってちらつく）。再生中以外は直前の値で止める（frozen、「停止中 ·」）

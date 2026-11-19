@@ -77,31 +77,6 @@ public:
                                 uint8_t* d_b, size_t pitch_b,
                                 int width, int height, cudaStream_t stream);
 
-    // ---- FBO（texture object）→ NV12（エンコード入力。x2 / x4 / x8 はタイル分割）----
-    //   flip: FBO は上下反転しているので通常 1
-    bool rgba_to_nv12x1_split_tex(cudaTextureObject_t in,
-                                  uint8_t* d_y, size_t pitch_y, uint8_t* d_uv, size_t pitch_uv,
-                                  int width, int height, int flip, cudaStream_t stream);
-    bool rgba_to_nv12x2_split_tex(cudaTextureObject_t in,
-                                  uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
-                                  uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
-                                  int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream);
-    bool rgba_to_nv12x4_split_tex(cudaTextureObject_t in,
-                                  uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
-                                  uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
-                                  uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
-                                  uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
-                                  int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream);
-    bool rgba_to_nv12x8_split_tex(cudaTextureObject_t in,
-                                  uint8_t* y0, size_t pitchY0, uint8_t* uv0, size_t pitchUV0,
-                                  uint8_t* y1, size_t pitchY1, uint8_t* uv1, size_t pitchUV1,
-                                  uint8_t* y2, size_t pitchY2, uint8_t* uv2, size_t pitchUV2,
-                                  uint8_t* y3, size_t pitchY3, uint8_t* uv3, size_t pitchUV3,
-                                  uint8_t* y4, size_t pitchY4, uint8_t* uv4, size_t pitchUV4,
-                                  uint8_t* y5, size_t pitchY5, uint8_t* uv5, size_t pitchUV5,
-                                  uint8_t* y6, size_t pitchY6, uint8_t* uv6, size_t pitchUV6,
-                                  uint8_t* y7, size_t pitchY7, uint8_t* uv7, size_t pitchUV7,
-                                  int srcW, int srcH, int outW, int outH, int flip, cudaStream_t stream);
 
     // ---- ヒストグラム ----
     bool calc_histgram(HistData* Histdata,cudaTextureObject_t texObj,int width,int height);
@@ -118,9 +93,9 @@ public:
     bool p010_tiles_to_rgba16_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
                                    int outW, int outH, cudaStream_t stream);
     // 8bit の NVDEC 経路の本線（行ごと。P010Tiles に NV12 のタイルを入れて渡す。条件は rows と同じ）
-    bool nv12_tiles_rows_to_rgba8_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
+    bool decode_rows_nv12_to_rgba8(cudaSurfaceObject_t out, const P010Tiles& tiles,
                                        int outW, int outH, cudaStream_t stream);
-    bool p010_tiles_rows_to_rgba16_surf(cudaSurfaceObject_t out, const P010Tiles& tiles,
+    bool decode_rows_p010_to_rgba16(cudaSurfaceObject_t out, const P010Tiles& tiles,
                                         int outW, int outH, cudaStream_t stream);
     // CPU デコードの 10bit プレーン → GL テクスチャ（RGBA16）
     bool yuv420p10_to_rgba16_surf(cudaSurfaceObject_t out,
@@ -138,15 +113,19 @@ public:
                                uint8_t* d_g, size_t pitch_g,
                                uint8_t* d_b, size_t pitch_b,
                                int width, int height, cudaStream_t stream);
-    // RGBA16 の FBO → NV12（エンコード入力。8bit 出力）/ P010（10bit 出力。ポインタ・ピッチはバイト単位）
-    //   / RGBA8（画像保存用）。NV12 / P010 はタイル分割共通
-    //   dither: 8bit に落とすとき（NV12 / RGBA8）に ±0.5 段階のノイズを足して縞を目立たなくする
-    bool rgba16_to_nv12_split_tex(cudaTextureObject_t in, const NV12Tiles& tiles,
-                                  int srcW, int srcH, int flip, bool dither, cudaStream_t stream);
-    bool rgba16_to_p010_split_tex(cudaTextureObject_t in, const NV12Tiles& tiles,
-                                  int srcW, int srcH, int flip, cudaStream_t stream);
+    // RGBA16 の FBO → RGBA8（画像保存用）
+    //   dither: 8bit に落とすときに ±0.5 段階のノイズを足して縞を目立たなくする
     bool rgba16_to_rgba8_tex(cudaTextureObject_t in, uint8_t* out, size_t pitch,
                              int width, int height, bool dither, cudaStream_t stream);
+    // FBO → エンコード入力（行ごと。encode_rows.cuh。タイル分割共通。デコード側の decode_rows_* と対）
+    //   RGBA8 → NV12、RGBA16 → NV12 / P010（ポインタ・ピッチはバイト単位）。flip: FBO は上下反転しているので通常 1
+    //   dither: RGBA16 → NV12 で 8bit に落とすときのディザ。圧縮転送のタイル（tiles.packed[q]）は詰めた並びへ直接書く
+    bool encode_rows_rgba8_to_nv12(cudaTextureObject_t in, const NV12Tiles& tiles,
+                                   int srcW, int srcH, int flip, cudaStream_t stream);
+    bool encode_rows_rgba16_to_nv12(cudaTextureObject_t in, const NV12Tiles& tiles,
+                                    int srcW, int srcH, int flip, bool dither, cudaStream_t stream);
+    bool encode_rows_rgba16_to_p010(cudaTextureObject_t in, const NV12Tiles& tiles,
+                                    int srcW, int srcH, int flip, cudaStream_t stream);
     // RGBA16 の FBO からヒストグラム（1024 段 = 10bit の値ごと）。統計の値は 0..1023
     bool calc_histgram_rgba16(HistData10* Histdata, cudaTextureObject_t texObj, int width, int height);
     bool histogram_status10(HistData10* Histdata, HistStats* out_stats);

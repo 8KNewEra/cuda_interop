@@ -1,7 +1,7 @@
 #ifndef DECODE_GPU_MAP_H
 #define DECODE_GPU_MAP_H
 
-// マルチ GPU デコードのタイル割り振り（詳細は docs/MULTI_GPU_DECODE.md）
+// マルチ GPU デコードのタイル割り振り（詳細は docs/DECODE_CORE.md 8.3）
 //   GPU ごとの重み（GPUInfo::decode_weight）で最大剰余法により按分する。戻り値はタイルごとの CUDA デバイス番号で、
 //   表示用 GPU のタイルが先頭。使うのは nvgpudecode（開くとき）と DecodeSettings（設定画面の見込み）
 

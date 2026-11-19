@@ -112,7 +112,7 @@ protected:
     // 累計の不一致回数
     int mismatch_total_ = 0;
 
-    // ---- マルチ GPU デコード（docs/MULTI_GPU_DECODE.md）----
+    // ---- マルチ GPU デコード（docs/DECODE_CORE.md 8）----
     //   別 GPU のタイルは publish_decode_frame → transfer_remote で表示用 GPU へ送ってから GUI に渡す。
     //   圧縮しない: その GPU → メインメモリ（h_y / h_uv）→ 表示用 GPU の r_y / r_uv（2 段コピー）
     //   圧縮する  : XferCodec（別 GPU ごと）。詰めたまま渡せるときは展開先を Frame に載せ、差分は GUI の変換で戻す
@@ -132,6 +132,8 @@ protected:
     cudaEvent_t  h2d_ev_[kStage]   = {};       // 枠の取り込み完了
     bool         h2d_used_[kStage] = {};
     int          stage_ = 0;
+    int          xfer_fail_ = 0;   // 別 GPU のタイルの転送が続けて失敗した回数（kMaxXferFails で fail_decode）
+    static constexpr int kMaxXferFails = 30;
     bool         remote_init_ = false;
     XferCodec::Algo xferAlgo_ = XferCodec::None;   // 開くときの設定
     bool            xferDelta_ = true;
