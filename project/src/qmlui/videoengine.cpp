@@ -6,6 +6,13 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QTextStream>
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dwmapi.h>      // DwmGetCompositionTimingInfo（表示の計測。実際の vblank）
+#endif
 #include <QThread>
 #include <QThreadPool>
 #include <QRunnable>
@@ -325,7 +332,6 @@ bool VideoEngine::initialize()
     doneCurrent();
 
     fpsTimer.start();
-    presentClock_.start();   // 表示の計測の時計（notePainted / onFrameSwapped）
     initialize_completed_flag = true;
     emit initialized();
     return true;
@@ -433,7 +439,7 @@ void VideoEngine::upload(const VideoFrame& Frame)
 
     // 性能 HUD: ここから upload の終わりまでを 1 フレームとして測る（OFF なら何もしない）
     perf_.frameBegin(this);
-    pendingUploadNs_ = presentClock_.nsecsElapsed();   // 表示の計測: upload → 画面に出るまで
+    pendingUploadNs_ = mono_now_ns();   // 表示の計測: upload → 画面に出るまで
 
     // in-flight クランプ（K フレーム前の GPU 処理が終わるまで投入しない）
     const int fdIdx = frameDoneNo;
@@ -518,6 +524,8 @@ void VideoEngine::reset()
     lastPresentNs_    = -1;
     lastPresentFrame_ = -1;
     overwrittenSince_ = 0;
+    prevTickNs_       = 0;
+    prevVblankIdx_    = -1;
     emit frameReady();
     emit histogramChanged();
 }
@@ -681,8 +689,12 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     frame_serial_++;
     rendered_.serial   = frame_serial_;
     rendered_.frameNo  = Frame.FrameNo;
-    rendered_.uploadNs = pendingUploadNs_ >= 0 ? pendingUploadNs_ : presentClock_.nsecsElapsed();
+    rendered_.uploadNs = pendingUploadNs_ >= 0 ? pendingUploadNs_ : mono_now_ns();
     pendingUploadNs_   = -1;
+    rendered_.tickNs        = Frame.t_tick_ns;
+    rendered_.decodeBeginNs = Frame.t_decode_begin_ns;
+    rendered_.emitNs        = Frame.t_emit_ns;
+    rendered_.recvNs        = Frame.t_recv_ns;
     publishFrameFence();
     emit frameReady();
 }
@@ -707,6 +719,8 @@ void VideoEngine::setSteadyPlayback(bool on)
         lastPresentNs_    = -1;
         lastPresentFrame_ = -1;
         overwrittenSince_ = 0;
+        prevTickNs_       = 0;
+        prevVblankIdx_    = -1;
         perf_.resetTiming();
     }
 }
@@ -716,7 +730,7 @@ void VideoEngine::onFrameSwapped()
     // 同じフレームの描き直し（UI だけの更新・ズーム）は数えない
     if (painted_.serial == 0 || painted_.serial == presented_.serial) return;
 
-    const qint64 now = presentClock_.nsecsElapsed();
+    const qint64 now = mono_now_ns();
     const double intervalMs = lastPresentNs_ >= 0 ? (now - lastPresentNs_) / 1e6 : -1.0;
     const double uploadIvMs = (lastPresentNs_ >= 0 && presented_.uploadNs >= 0 && painted_.uploadNs >= 0)
                               ? (painted_.uploadNs - presented_.uploadNs) / 1e6 : -1.0;
@@ -734,7 +748,10 @@ void VideoEngine::onFrameSwapped()
             presentLogFile_ = std::make_unique<QFile>(path);
             if (presentLogFile_->open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
                 presentLog_ = std::make_unique<QTextStream>(presentLogFile_.get());
-                *presentLog_ << "t_ms,frame_no,step,present_interval_ms,upload_interval_ms,upload_to_present_ms,overwritten,steady\n";
+                *presentLog_ << "t_ms,frame_no,step,present_interval_ms,upload_interval_ms,upload_to_present_ms,overwritten,steady,"
+                                "tick_interval_ms,tick_to_begin_ms,decode_ms,emit_to_recv_ms,recv_to_upload_ms,"
+                                "vblank_idx,vblank_step,swap_phase,refresh_ms\n";
+                logT0Ns_ = now;
                 qDebug() << "[VideoEngine] 表示のログ:" << path;
             } else {
                 qWarning() << "[VideoEngine] 表示のログを開けません:" << path;
@@ -743,10 +760,48 @@ void VideoEngine::onFrameSwapped()
         }
     }
     if (presentLog_) {
-        *presentLog_ << QString::number(now / 1e6, 'f', 3) << ',' << painted_.frameNo << ',' << step << ','
-                     << QString::number(intervalMs, 'f', 3) << ',' << QString::number(uploadIvMs, 'f', 3) << ','
-                     << QString::number(latencyMs, 'f', 3) << ',' << overwritten << ',' << (steady_ ? 1 : 0) << '\n';
+        // 受け渡しの内訳（ms。どれかの時刻が無ければ -1）
+        auto span = [](qint64 a, qint64 b) { return (a > 0 && b > 0) ? (b - a) / 1e6 : -1.0; };
+        const ShownFrame& f = painted_;
+        const double tickIv   = span(prevTickNs_, f.tickNs);
+        const double tickBeg  = span(f.tickNs, f.decodeBeginNs);
+        const double decodeMs = span(f.decodeBeginNs, f.emitNs);
+        const double emitRecv = span(f.emitNs, f.recvNs);
+        const double recvUp   = span(f.recvNs, f.uploadNs);
+
+        // 実際の vblank（DWM）。swap が戻った後の最初の vblank の番号と、swap がリフレッシュ周期のどこで起きたか（0..1。
+        //   1 に近い = vblank の直前で間に合うかぎりぎり）。ウィンドウ表示では DWM が次の vblank で合成するので、
+        //   vblank_step（前のフレームとの vblank の差）が実際に画面に出ていた vblank の数（遅れが一定なら）
+        qint64 vbIdx = -1; long long vbStep = -1; double phase = -1, refreshMs = -1;
+#ifdef Q_OS_WIN
+        DWM_TIMING_INFO ti{};
+        ti.cbSize = sizeof(ti);
+        static LARGE_INTEGER freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f; }();
+        if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &ti)) && ti.qpcRefreshPeriod > 0 && freq.QuadPart > 0) {
+            auto qpcNs = [&](ULONGLONG q) {   // MSVC の steady_clock と同じ換算
+                const long long fq = freq.QuadPart;
+                return qint64((long long)(q / fq) * 1000000000LL + (long long)(q % fq) * 1000000000LL / fq);
+            };
+            const qint64 vbNs  = qpcNs(ti.qpcVBlank);
+            const double perNs = double(ti.qpcRefreshPeriod) * 1e9 / double(freq.QuadPart);
+            const double k     = double(now - vbNs) / perNs;          // 最後の vblank から何周期後に swap したか
+            const double kf    = std::floor(k);
+            phase     = k - kf;
+            vbIdx     = qint64(ti.cRefresh) + qint64(kf) + 1;         // swap の後の最初の vblank
+            vbStep    = prevVblankIdx_ >= 0 ? (long long)(vbIdx - prevVblankIdx_) : -1;
+            refreshMs = perNs / 1e6;
+        }
+#endif
+        auto num = [](double v) { return QString::number(v, 'f', 3); };
+        *presentLog_ << num((now - logT0Ns_) / 1e6) << ',' << f.frameNo << ',' << step << ','
+                     << num(intervalMs) << ',' << num(uploadIvMs) << ','
+                     << num(latencyMs) << ',' << overwritten << ',' << (steady_ ? 1 : 0) << ','
+                     << num(tickIv) << ',' << num(tickBeg) << ',' << num(decodeMs) << ','
+                     << num(emitRecv) << ',' << num(recvUp) << ','
+                     << vbIdx << ',' << vbStep << ',' << QString::number(phase, 'f', 4) << ',' << num(refreshMs) << '\n';
         if (++presentLogLines_ % 120 == 0) presentLog_->flush();
+        prevTickNs_    = f.tickNs;
+        prevVblankIdx_ = vbIdx;
     }
 
     presented_        = painted_;

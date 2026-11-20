@@ -408,6 +408,7 @@ void cpudecode::gpu_upload(){
         }
     }
 
+    stamp_frame_times();   // 表示の計測
     emit send_decode_image(Frame,false,video_reverse_flag);
 
     // ★ emit の後に次の面へ。

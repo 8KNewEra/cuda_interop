@@ -288,7 +288,15 @@ HUD が OFF の間は各フックが即 return する（クエリもイベント
   それ以外の間は起点を捨てるので、一時停止・シークの明けの長い間隔は入らない（受け取り間隔も同じく `resetTiming`）。
 - 時刻は swap が戻った時刻（vsync で戻る）。ドライバがフリップを溜める場合は実際の表示はそれより後になりうるが、間隔のばらつきを見るには足りる。
 - CSV: 環境変数 `CUDA_VIEWER_PRESENT_LOG=<パス>` で 1 表示 1 行（HUD の ON/OFF と無関係。`steady` 列で再生中か分かる）。
-  列は `t_ms, frame_no, step, present_interval_ms, upload_interval_ms, upload_to_present_ms, overwritten, steady`。
+  列は `t_ms, frame_no, step, present_interval_ms, upload_interval_ms, upload_to_present_ms, overwritten, steady,
+  tick_interval_ms, tick_to_begin_ms, decode_ms, emit_to_recv_ms, recv_to_upload_ms, vblank_idx, vblank_step, swap_phase, refresh_ms`。
+  - 受け渡しの内訳: 刻み（`fps_thread` が `g_last_tick_ns` に記録）→ デコード開始（`processFrame`）→ 送出（`stamp_frame_times`）
+    → GUI の受け取り（`decode_view` の先頭）→ upload の先頭。時刻は `VideoFrame::t_*`（`mono_now_ns`。QPC の ns でスレッドをまたいで比べられる）。
+    `tick_interval_ms` は前に出たフレームの刻みとの差。受け取り待ち（`drop_flag`）で遅れたデコードは `tick_to_begin_ms` に出る。
+  - 実際の vblank: `DwmGetCompositionTimingInfo`（`qpcVBlank`・`qpcRefreshPeriod`・`cRefresh`）から、swap の後の最初の vblank の番号
+    （`vblank_idx`）、前のフレームとの差（`vblank_step`。29.97fps を 59.94Hz で出すなら常に 2 が正常）、swap がリフレッシュ周期のどこで
+    起きたか（`swap_phase` 0..1。1 に近いほど vblank の直前でぎりぎり）。ウィンドウ表示では swap は vblank を待たずに戻り、DWM が次の vblank で
+    合成するので、frameSwapped の時刻だけでは実際に出た vblank が分からないため。DWM の遅れが一定という前提の値。
   `upload_interval_ms`（そのフレームの upload の間隔）と `present_interval_ms` を並べると、ばらつきがデコード・受け取り側か表示側かを切り分けられる。
 - 実測（2026-11、4K 29.97fps・59.94Hz、HUD と動画情報を表示）: Canvas 版の推移グラフでは表示間隔が vblank 2 回以外になったのが 9.1%
   （σ 4.5ms）、乱れは性能 HUD の更新（250ms）の周期にそろっていた（upload→表示が 6ms → 15〜20ms に伸びて次の vblank へ押し出される）。

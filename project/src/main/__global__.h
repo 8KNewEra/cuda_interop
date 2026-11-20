@@ -7,6 +7,20 @@
 #include <string>
 #include <map>
 #include <cuda_runtime.h>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+
+// 表示の計測で使う時計（ns）。スレッドをまたいで比べられる。
+//   MSVC の steady_clock は QueryPerformanceCounter そのもの（QPC を ns にしたもの）なので、
+//   DWM の vblank 時刻（DWM_TIMING_INFO::qpcVBlank）とも同じ物差しで比べられる（VideoEngine::onFrameSwapped）
+inline int64_t mono_now_ns()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// fps_thread が最後に刻んだ時刻（mono_now_ns。decode_thread がフレームに写す。表示の計測用）
+inline std::atomic<int64_t> g_last_tick_ns{0};
 #define STATE_NOT_ENCODE 0
 #define STATE_ENCODE_READY 1
 #define STATE_ENCODING 2
@@ -437,6 +451,13 @@ struct VideoFrame {
 
     //音声（エンコード入力。再生は audio_decode が別に読む）
     QVector<QByteArray> audio_pcm{};
+
+    // 表示の計測（mono_now_ns。0 = なし。docs/IMG_PROCESS_CORE.md 13.1）
+    //   刻み（fps_thread）→ デコード開始 → 送出（emit）→ GUI の受け取り（decode_view）→ upload → 画面
+    int64_t t_tick_ns         = 0;   // このフレームを作らせた刻みの時刻（最後の刻み）
+    int64_t t_decode_begin_ns = 0;   // processFrame がデコードを始めた時刻
+    int64_t t_emit_ns         = 0;   // send_decode_image を出した時刻
+    int64_t t_recv_ns         = 0;   // GUI が decode_view で受け取った時刻
 };
 
 //UI表示CPUダウンロード用

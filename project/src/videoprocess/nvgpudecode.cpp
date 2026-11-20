@@ -1559,6 +1559,7 @@ void nvgpudecode::publish_decode_frame(const std::vector<bool>* got){
         }
     }
 
+    stamp_frame_times();   // 表示の計測
     emit send_decode_image(Frame,false,video_reverse_flag);
 }
 

@@ -98,6 +98,13 @@ protected:
     //デコード周り
     virtual bool initialized_ffmpeg()=0;
     virtual void get_decode_image()=0;
+    // 表示の計測: 送る直前に Frame へ刻み・デコード開始・送出の時刻を写す（通常の再生の送出だけ）
+    void stamp_frame_times() {
+        Frame.t_tick_ns         = cur_tick_ns_;
+        Frame.t_decode_begin_ns = cur_decode_begin_ns_;
+        Frame.t_emit_ns         = mono_now_ns();
+    }
+    int64_t cur_tick_ns_ = 0, cur_decode_begin_ns_ = 0;   // processFrame がデコードを始めたときの値
     virtual void high_res_seek_frame(int targetFrameNo,bool heavy_UI_flag)=0;
     double getFrameRate(AVFormatContext* fmt_ctx, int video_stream_index);
     // インデックスから 1 フレームぶんの pts を実測する。0 = 判定不能。

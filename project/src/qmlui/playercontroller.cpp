@@ -934,6 +934,7 @@ void PlayerController::setControlsEnabled(bool on)
 // ==============================================================
 void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
 {
+    Frame.t_recv_ns = mono_now_ns();   // 表示の計測: GUI が受け取った時刻
     const bool playingBefore = playing();
     const bool reverseBefore = reverse_flag;
     pause_flag   = pause;

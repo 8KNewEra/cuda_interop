@@ -299,13 +299,16 @@ private:
     PerfMeter perf_;             // 性能 HUD（OFF の間は何もしない）
 
     // ---- 表示の計測（notePainted / onFrameSwapped）----
-    //   時刻はすべて presentClock_（initialize で開始）の ns
+    //   時刻はすべて mono_now_ns（__global__.h。QPC の ns。スレッド・DWM の vblank と同じ物差し）
     struct ShownFrame {
         quint64 serial   = 0;    // frame_serial_（0 = なし）
         int     frameNo  = -1;
         qint64  uploadNs = -1;   // upload の先頭（一時停止中の描き直しは描いた時刻）
+        qint64  tickNs = 0, decodeBeginNs = 0, emitNs = 0, recvNs = 0;   // VideoFrame の t_*（0 = なし）
     };
-    QElapsedTimer presentClock_;
+    qint64     logT0Ns_ = 0;            // CSV の t_ms の起点
+    qint64     prevTickNs_ = 0;         // 前に出たフレームの刻み（刻みの間隔）
+    qint64     prevVblankIdx_ = -1;     // 前に出たフレームが乗った vblank の番号（DWM）
     qint64     pendingUploadNs_ = -1;   // upload の先頭の時刻（FBO_Rendering が rendered_ に移す）
     ShownFrame rendered_;               // 最後に fbo に描いたフレーム
     ShownFrame painted_;                // VideoItem が最後に描いた（swap 待ちの）フレーム

@@ -9,6 +9,7 @@ QT += openglwidgets
 LIBS += -lopengl32
 win32: LIBS += -lpdh      # GPU の 3D 使用率（info_thread）
 win32: LIBS += -ldxgi -ld3d11   # 表示経路の色深度（displayprobe.cpp。モニター出力・画面合成）
+win32: LIBS += -ldwmapi         # 実際の vblank の時刻（videoengine.cpp の表示の計測。DwmGetCompositionTimingInfo）
 
 # ---- 外部ライブラリ（すべて 3rdparty/ に同梱）----
 #   3rdparty/NVIDIAGPUComputingToolkit/CUDA/v13.0 : CUDA Toolkit（nvcc・cudart・NPP・NVML）

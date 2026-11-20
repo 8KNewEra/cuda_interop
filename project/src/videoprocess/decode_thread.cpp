@@ -760,6 +760,8 @@ void decode_thread::processFrame() {
         decode_state=STATE_DECODING;
         QElapsedTimer t;      // 性能 HUD 用（NVDEC の完了待ちを含む実時間）
         t.start();
+        cur_tick_ns_         = g_last_tick_ns.load(std::memory_order_relaxed);   // 表示の計測
+        cur_decode_begin_ns_ = mono_now_ns();
         get_decode_image();
         emit decode_time_ms(t.nsecsElapsed() / 1e6);
         decode_state = can_decode_ahead() ? STATE_DECODE_READY : STATE_WAIT_DECODE_FLAG;

@@ -1,4 +1,5 @@
 #include "src/main/fps_thread.h"
+#include "src/main/__global__.h"
 #include "qdebug.h"
 #include "qtimer.h"
 
@@ -23,6 +24,7 @@ void fps_thread::run() {
         int targetFrames = (int)(elapsed / interval);
 
         if (frames < targetFrames) {
+            g_last_tick_ns.store(mono_now_ns(), std::memory_order_relaxed);   // 表示の計測（刻みの時刻）
             emit fps_signal();
             frames++;
         }
