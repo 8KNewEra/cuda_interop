@@ -47,6 +47,8 @@
 #include <vector>
 
 namespace gpuimg { class Encoder; }
+class QFile;
+class QTextStream;
 
 class VideoEngine : public QObject, protected QOpenGLFunctions_4_5_Core
 {
@@ -117,6 +119,15 @@ public:
     // シーングラフのコンテキストがカレントの状態で呼ぶ
     void waitFrameFence();            // engine の描画完了を GPU 側で待つ
     void signalDisplayDone();         // シーングラフの描画完了を記録
+
+    // ---- 表示の計測（画面に出たフレーム。性能 HUD と CSV ログ）----
+    //   upload しただけでは画面に出たとは限らない（swap の前に次のフレームで fbo を上書きすると出ない）。
+    //   VideoItem が描いたフレームを notePainted で控え、frameSwapped で onFrameSwapped が「出た」と数える
+    //   CSV: 環境変数 CUDA_VIEWER_PRESENT_LOG=<パス> で 1 表示ごとに 1 行（HUD の ON/OFF と無関係）
+    void notePainted();                       // VideoItem::updatePaintNode から（描くフレームを控える）
+    void onFrameSwapped();                    // QQuickWindow::frameSwapped から（swap の直後）
+    void setSteadyPlayback(bool on);          // 安定して順方向に再生しているか（PlayerController::decode_view）。
+                                              //   false の間は間隔の起点を捨てる（一時停止・シークの明けを数えない）
 
     // ヒストグラム統計（QML 表示用）
     QVariantMap histStats() const;
@@ -286,6 +297,27 @@ private:
     QElapsedTimer fpsTimer;
     int fpsCount = 0;
     PerfMeter perf_;             // 性能 HUD（OFF の間は何もしない）
+
+    // ---- 表示の計測（notePainted / onFrameSwapped）----
+    //   時刻はすべて presentClock_（initialize で開始）の ns
+    struct ShownFrame {
+        quint64 serial   = 0;    // frame_serial_（0 = なし）
+        int     frameNo  = -1;
+        qint64  uploadNs = -1;   // upload の先頭（一時停止中の描き直しは描いた時刻）
+    };
+    QElapsedTimer presentClock_;
+    qint64     pendingUploadNs_ = -1;   // upload の先頭の時刻（FBO_Rendering が rendered_ に移す）
+    ShownFrame rendered_;               // 最後に fbo に描いたフレーム
+    ShownFrame painted_;                // VideoItem が最後に描いた（swap 待ちの）フレーム
+    ShownFrame presented_;              // 最後に画面に出たフレーム
+    qint64     lastPresentNs_ = -1;     // 前に出た時刻（-1 = 起点なし）
+    int        lastPresentFrame_ = -1;
+    int        overwrittenSince_ = 0;   // 前に出てから、出る前に上書きした枚数
+    bool       steady_ = false;
+    std::unique_ptr<QFile>       presentLogFile_;
+    std::unique_ptr<QTextStream> presentLog_;     // file より後に宣言（先に壊して flush する）
+    bool       presentLogTried_ = false;
+    int        presentLogLines_ = 0;
 
     // ---- ヒストグラム ----
     cudaStream_t hist_stream = nullptr;

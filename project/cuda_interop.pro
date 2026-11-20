@@ -84,6 +84,7 @@ SOURCES += \
     $$PWD/src/qmlui/filterkernel.cpp \
     $$PWD/src/qmlui/tonecurve.cpp \
     $$PWD/src/qmlui/mediaprobe.cpp \
+    $$PWD/src/qmlui/sparklineitem.cpp \
 
 HEADERS += \
     $$PWD/src/__global__.h \
@@ -120,6 +121,7 @@ HEADERS += \
     $$PWD/src/qmlui/filterkernel.h \
     $$PWD/src/qmlui/tonecurve.h \
     $$PWD/src/qmlui/mediaprobe.h \
+    $$PWD/src/qmlui/sparklineitem.h \
     src/main/__global__.h
 
 FORMS += \

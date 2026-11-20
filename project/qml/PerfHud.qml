@@ -47,11 +47,36 @@ Rectangle {
     onPerfChanged: {
         if (perf.frozen) return   // 再生していない間は直前の値のまま（推移も足さない）
         const add = perf.intervals || []
-        if (add.length === 0) return
-        const b = hist.concat(add)
-        hist = b.length > histLen ? b.slice(b.length - histLen) : b   // 作り直して代入（変更通知のため）
+        if (add.length > 0) {
+            const b = hist.concat(add)
+            hist = b.length > histLen ? b.slice(b.length - histLen) : b   // 作り直して代入（変更通知のため）
+        }
+        addPresent()
     }
-    onFileKeyChanged: hist = []
+    // ---- 表示（画面に出たフレーム）の推移と累計（PerfMeter::addPresent）----
+    //   present: 表示間隔 {avg, max, n, sd}、latency: upload → 表示、presentIntervals: 表示間隔の列
+    //   frameSkips / overwritten: 区間の番号の飛び / 未表示の上書き。累計は再生している間だけ足す（ファイルごと）
+    readonly property var pv: perf.present || ({})
+    property var presentHist: []
+    property int skipTotal: 0
+    property int overTotal: 0
+    property int shownTotal: 0
+    function addPresent() {
+        const add = perf.presentIntervals || []
+        if (add.length > 0) {
+            const b = presentHist.concat(add)
+            presentHist = b.length > histLen ? b.slice(b.length - histLen) : b
+        }
+        skipTotal  += perf.frameSkips  || 0
+        overTotal  += perf.overwritten || 0
+        shownTotal += add.length
+    }
+    readonly property real presentMax: {
+        let m = 0
+        for (const v of presentHist) if (v > m) m = v
+        return m
+    }
+    onFileKeyChanged: { hist = []; presentHist = []; skipTotal = 0; overTotal = 0; shownTotal = 0 }
     readonly property real histMax: {
         let m = 0
         for (const v of hist) if (v > m) m = v
@@ -263,10 +288,10 @@ Rectangle {
 
             Rectangle { Layout.fillWidth: true; Layout.topMargin: 2; height: 1; color: Theme.borderSoft }
 
-            // フレーム間隔（= 実際のフレーム時間）と推移。破線 = 持ち時間
+            // 受け取り間隔（新しいフレームを upload した間隔。画面に出た間隔は下の「表示」）と推移。破線 = 持ち時間
             RowLayout {
                 Layout.fillWidth: true
-                Text { text: "フレーム間隔"; color: Theme.muted2; font.family: Theme.font; font.pixelSize: 12 }
+                Text { text: "受け取り間隔（upload）"; color: Theme.muted2; font.family: Theme.font; font.pixelSize: 12 }
                 Item { Layout.fillWidth: true }
                 Text {
                     text: root.ms(iv.n > 0 ? iv.avg : -1) + " ms  最大 " + root.ms(iv.n > 0 ? iv.max : -1)
@@ -284,6 +309,48 @@ Rectangle {
                 refValue: root.budget > 0 ? root.budget : -1
                 maxValue: Math.max(root.budget * 2, root.histMax * 1.1, 1)
                 lineColor: Theme.accent
+            }
+
+            Rectangle { Layout.fillWidth: true; Layout.topMargin: 2; height: 1; color: Theme.borderSoft }
+
+            // 表示（画面に出たフレーム。frameSwapped の時刻）。upload しても swap の前に上書きされると出ない
+            //   表示間隔のばらつき（σ）が大きい = 間隔が一定でない（カクついて見える）
+            Text { text: "表示（画面に出たフレーム）"; color: Theme.text2; font.family: Theme.font; font.pixelSize: 12; font.weight: Font.Medium }
+            Stage { label: "表示間隔";    v: root.pv;           budget: root.budget; labelWidth: root.labelW; valueWidth: root.valW }
+            Stage { label: "upload→表示"; v: root.perf.latency; budget: root.budget; labelWidth: root.labelW; valueWidth: root.valW }
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: "ばらつき σ"; color: Theme.muted2; font.family: Theme.font; font.pixelSize: 12 }
+                Item { Layout.fillWidth: true }
+                Text {
+                    // σ が持ち時間の 10% を超えたら橙、25% を超えたら赤
+                    readonly property real sd: root.pv.sd !== undefined ? root.pv.sd : -1
+                    text: root.ms(sd) + " ms"
+                    color: sd < 0 || root.budget <= 0 ? Theme.text2
+                         : sd > root.budget * 0.25 ? "#FF7A7A"
+                         : sd > root.budget * 0.10 ? Theme.marker : Theme.text2
+                    font.family: Theme.mono; font.pixelSize: 12
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: "出なかったコマ（累計）"; color: Theme.muted2; font.family: Theme.font; font.pixelSize: 12 }
+                Item { Layout.fillWidth: true }
+                Text {
+                    // 番号の飛び（うち、描いたのに swap 前に上書きした枚数）/ 表示した枚数
+                    text: root.skipTotal + "（上書き " + root.overTotal + "）/ " + root.shownTotal
+                    color: root.skipTotal > 0 ? Theme.marker : Theme.text2
+                    font.family: Theme.mono; font.pixelSize: 12
+                }
+            }
+            Sparkline {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 44
+                capacity: root.histLen
+                values: root.presentHist
+                refValue: root.budget > 0 ? root.budget : -1
+                maxValue: Math.max(root.budget * 2, root.presentMax * 1.1, 1)
+                lineColor: Theme.marker
             }
 
             // NVDEC の使用率と、そこから見たデコードの上限 fps（デコードが詰まっているかの目安）

@@ -269,8 +269,30 @@ QML の書き込み口は 3 種類: ON/OFF は `player.<名前>`（`gaussian` / 
 | 表示ツール | 表示専用パスの前後（`DisplayBegin` / `DisplayEnd`） | 同上 |
 | ヒストグラム | 集計 ＋ 描画 | CPU の実時間 |
 | 描画スレッド | `upload` 全体 | CPU の実時間 |
+| 受け取り間隔 | `upload` の先頭どうし（`PerfMeter::frameBegin`） | CPU の実時間 |
+| 表示間隔・upload→表示・出なかったコマ | 画面に出たフレーム（下記） | CPU の実時間（frameSwapped の時刻） |
 
 HUD が OFF の間は各フックが即 return する（クエリもイベントも出さない）。値の意味は `QML_UI_CORE.md` の 4.4。
+
+### 13.1 表示の計測（画面に出たフレーム）
+
+- upload したフレームが画面に出るとは限らない。`fbo` は 1 枚なので、シーングラフが swap する前に次の `upload` が来ると
+  前のフレームは出ないまま上書きされる（`waitDisplayDone` は前回表示した分しか待たない）。受け取り間隔だけ見ても分からないので、
+  画面に出た側で測る。
+- 流れ: `FBO_Rendering` の最後で描いたフレームを `rendered_` に控える（通し番号・FrameNo・upload の時刻）
+  → `VideoItem::updatePaintNode` が `notePainted`（`painted_`）→ swap → `QQuickWindow::frameSwapped`（`main.cpp`）が `onFrameSwapped`。
+  `painted_` が前に出たものと違えば「出た」として、表示間隔・upload→表示・番号の差・その間の上書き枚数を `PerfMeter::addPresent` へ。
+  同じフレームの描き直し（UI だけの更新・ズーム）は数えない。
+- 上書きは `FBO_Rendering` で数える（前に描いたフレームが描かれも出もしていないうちに次を描いた）。
+- 数えるのは安定して順方向に再生している間だけ（`setSteadyPlayback`。PlayerController の `render_active_ && !reverse_flag`）。
+  それ以外の間は起点を捨てるので、一時停止・シークの明けの長い間隔は入らない（受け取り間隔も同じく `resetTiming`）。
+- 時刻は swap が戻った時刻（vsync で戻る）。ドライバがフリップを溜める場合は実際の表示はそれより後になりうるが、間隔のばらつきを見るには足りる。
+- CSV: 環境変数 `CUDA_VIEWER_PRESENT_LOG=<パス>` で 1 表示 1 行（HUD の ON/OFF と無関係。`steady` 列で再生中か分かる）。
+  列は `t_ms, frame_no, step, present_interval_ms, upload_interval_ms, upload_to_present_ms, overwritten, steady`。
+  `upload_interval_ms`（そのフレームの upload の間隔）と `present_interval_ms` を並べると、ばらつきがデコード・受け取り側か表示側かを切り分けられる。
+- 実測（2026-11、4K 29.97fps・59.94Hz、HUD と動画情報を表示）: Canvas 版の推移グラフでは表示間隔が vblank 2 回以外になったのが 9.1%
+  （σ 4.5ms）、乱れは性能 HUD の更新（250ms）の周期にそろっていた（upload→表示が 6ms → 15〜20ms に伸びて次の vblank へ押し出される）。
+  推移グラフを C++ の `SparklineItem` に置き換えた。
 
 ## 14. 画像処理を 1 つ足す手順
 

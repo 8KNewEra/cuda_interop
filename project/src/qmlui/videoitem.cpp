@@ -243,6 +243,7 @@ QSGNode* VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
 
     // engine が FBO を描き終えるのを GPU 側で待つ（CPU は止めない）
     eng->waitFrameFence();
+    eng->notePainted();   // 表示の計測: このフレームを描いた（swap 後の frameSwapped で「出た」と数える）
 
     auto* node = static_cast<QSGImageNode*>(oldNode);
     if (!node) {

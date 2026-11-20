@@ -18,7 +18,11 @@
 //     圧縮         : 圧縮転送のとき、別 GPU で差分の前処理と圧縮にかかった時間（その GPU の CUDA イベント間）
 //     転送         : マルチ GPU デコードで別 GPU → メインメモリに送った時間（その GPU の CUDA イベント間）と速度
 //     展開         : 圧縮転送のとき、表示用 GPU で取り込んで展開した時間（詰めたまま渡すときの差分戻しは「変換」に入る）
-//     フレーム間隔 : 新しいフレームを受け取った間隔（= 実際の描画のフレーム時間）
+//     受け取り間隔 : 新しいフレームを upload した間隔（画面に出た間隔ではない）
+//     表示間隔     : 新しいフレームが画面に出た間隔（QQuickWindow::frameSwapped の時刻。VideoEngine::onFrameSwapped）
+//     upload→表示  : upload の先頭から画面に出るまで
+//     番号の飛び   : 画面に出たフレームの番号が 2 以上進んだ分（出なかったコマ数）
+//     未表示の上書き: fbo に描いたのに、画面に出る前に次のフレームで上書きした枚数（番号の飛びの内訳）
 //
 //   GPU の計測結果は後から届く（待たない）。数フレームぶんのリングで発行して、届いたものから集計する
 //   集計は take() を呼ぶまでの区間の平均と最大。フレーム間隔は推移グラフ用に 1 フレームずつ返す
@@ -59,6 +63,12 @@ public:
     void addExpandParts(double fetchMs, double decompMs, double invMs);
     // デコード（待ち）の内訳（nvgpudecode::decode_breakdown。[{key, label, ms}]）
     void addDecodeBreakdown(const QVariantList& parts);
+    // ---- VideoEngine::onFrameSwapped から（画面に出たフレーム）----
+    //   intervalMs: 前に出てからの間隔（< 0 = 起点なし）、latencyMs: upload → 表示、
+    //   frameStep: 前に出たフレームからの番号の差、overwritten: その間に出ないまま上書きした枚数
+    void addPresent(double intervalMs, double latencyMs, int frameStep, int overwritten);
+    // 間隔の起点を捨てる（一時停止・シークの明け。受け取り間隔も）
+    void resetTiming() { haveLast_ = false; }
     // 前回からの集計（平均・最大）とフレーム間隔の列。呼ぶと区間をリセットする
     QVariantMap take();
 
@@ -92,6 +102,9 @@ private:
 
     Acc decode_, convert_, filter_, display_, hist_, cpu_, interval_ms_, transfer_, transferGbps_, ratio_, compress_, expand_, fetch_, decomp_, inv_;
     std::vector<float> intervals_;    // take() までのフレーム間隔（ms）
+    Acc present_, latency_;           // 表示間隔、upload → 表示
+    std::vector<float> presentIntervals_;   // take() までの表示間隔（ms。推移とばらつき用）
+    int frameSkips_ = 0, overwritten_ = 0;  // take() までの番号の飛び・未表示の上書き
     struct Part { QString key, label; Acc acc; };
     std::vector<Part> parts_;         // デコード（待ち）の内訳（来た順）
 

@@ -2,6 +2,7 @@
 #include "src/qmlui/playercontroller.h"
 #include "src/qmlui/videoengine.h"
 #include "src/qmlui/videoitem.h"
+#include "src/qmlui/sparklineitem.h"
 #include "src/qmlui/windowchrome.h"
 #include "src/qmlui/encodecontroller.h"
 #include "src/qmlui/screenshotsettings.h"
@@ -95,6 +96,7 @@ static int runQmlUi(QApplication& app)
 
     qmlRegisterType<VideoItem>("CudaViewer", 1, 0, "VideoItem");
     qmlRegisterType<HistogramItem>("CudaViewer", 1, 0, "HistogramItem");
+    qmlRegisterType<SparklineItem>("CudaViewer", 1, 0, "SparklineItem");   // qml/Sparkline.qml の中身
 
     // player より後に宣言する（QML を先に破棄し、その後に engine を破棄する）
     // OS のタイトルバーを消してヘッダーをタイトルバーにする
@@ -114,8 +116,10 @@ static int runQmlUi(QApplication& app)
     if (window) {
         // シーングラフが描き終えたことを engine に伝える（FBO 上書き前に待つ）
         QObject::connect(window, &QQuickWindow::frameSwapped, window, [] {
-            if (VideoEngine* eng = VideoEngine::instance())
+            if (VideoEngine* eng = VideoEngine::instance()) {
                 eng->signalDisplayDone();
+                eng->onFrameSwapped();   // 表示の計測（画面に出たフレーム）
+            }
         }, Qt::DirectConnection);
 
         chrome.attach(window);

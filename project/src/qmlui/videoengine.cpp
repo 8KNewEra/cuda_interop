@@ -4,6 +4,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
+#include <QTextStream>
 #include <QThread>
 #include <QThreadPool>
 #include <QRunnable>
@@ -323,6 +325,7 @@ bool VideoEngine::initialize()
     doneCurrent();
 
     fpsTimer.start();
+    presentClock_.start();   // 表示の計測の時計（notePainted / onFrameSwapped）
     initialize_completed_flag = true;
     emit initialized();
     return true;
@@ -430,6 +433,7 @@ void VideoEngine::upload(const VideoFrame& Frame)
 
     // 性能 HUD: ここから upload の終わりまでを 1 フレームとして測る（OFF なら何もしない）
     perf_.frameBegin(this);
+    pendingUploadNs_ = presentClock_.nsecsElapsed();   // 表示の計測: upload → 画面に出るまで
 
     // in-flight クランプ（K フレーム前の GPU 処理が終わるまで投入しない）
     const int fdIdx = frameDoneNo;
@@ -508,6 +512,12 @@ void VideoEngine::reset()
     frame_valid_ = false;
     hist_valid_  = false;
     frame_serial_++;
+    // 表示の計測も次のファイルへ持ち越さない
+    rendered_ = painted_ = presented_ = ShownFrame{};
+    pendingUploadNs_  = -1;
+    lastPresentNs_    = -1;
+    lastPresentFrame_ = -1;
+    overwrittenSince_ = 0;
     emit frameReady();
     emit histogramChanged();
 }
@@ -662,10 +672,87 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     // スポイト: このフレームの画素のコピーを積む（要求があるときだけ。待たない）
     if (pickX_ >= 0) pickIssue(Frame.FrameNo);
 
+    // 表示の計測: 前に描いたフレームがまだ画面に出ていなければ、ここで上書きされて出ないまま消える
+    if (frame_valid_ && rendered_.serial != 0 && rendered_.serial != presented_.serial
+        && rendered_.serial != painted_.serial)
+        ++overwrittenSince_;
+
     frame_valid_ = true;
     frame_serial_++;
+    rendered_.serial   = frame_serial_;
+    rendered_.frameNo  = Frame.FrameNo;
+    rendered_.uploadNs = pendingUploadNs_ >= 0 ? pendingUploadNs_ : presentClock_.nsecsElapsed();
+    pendingUploadNs_   = -1;
     publishFrameFence();
     emit frameReady();
+}
+
+// ==============================================================
+// 表示の計測（画面に出たフレーム）
+//   VideoItem::updatePaintNode → notePainted（このフレームを描いた）
+//   → swap → QQuickWindow::frameSwapped → onFrameSwapped（画面に出た）
+//   すべて GUI スレッド（render loop basic）。swap は vsync で戻るので、frameSwapped の時刻 ≒ 画面に出た時刻
+//   （ドライバがフリップを溜めるときは実際の表示はそれより後になりうる。間隔のばらつきを見る目的には足りる）
+// ==============================================================
+void VideoEngine::notePainted()
+{
+    if (rendered_.serial != 0 && frame_valid_) painted_ = rendered_;
+}
+
+void VideoEngine::setSteadyPlayback(bool on)
+{
+    steady_ = on;
+    if (!on) {
+        // 一時停止・シーク・逆再生の間は起点を捨てる（再開直後の長い間隔を数えない）
+        lastPresentNs_    = -1;
+        lastPresentFrame_ = -1;
+        overwrittenSince_ = 0;
+        perf_.resetTiming();
+    }
+}
+
+void VideoEngine::onFrameSwapped()
+{
+    // 同じフレームの描き直し（UI だけの更新・ズーム）は数えない
+    if (painted_.serial == 0 || painted_.serial == presented_.serial) return;
+
+    const qint64 now = presentClock_.nsecsElapsed();
+    const double intervalMs = lastPresentNs_ >= 0 ? (now - lastPresentNs_) / 1e6 : -1.0;
+    const double uploadIvMs = (lastPresentNs_ >= 0 && presented_.uploadNs >= 0 && painted_.uploadNs >= 0)
+                              ? (painted_.uploadNs - presented_.uploadNs) / 1e6 : -1.0;
+    const double latencyMs  = painted_.uploadNs >= 0 ? (now - painted_.uploadNs) / 1e6 : -1.0;
+    const int    step       = lastPresentFrame_ >= 0 ? painted_.frameNo - lastPresentFrame_ : 1;
+    const int    overwritten = overwrittenSince_;
+
+    if (steady_) perf_.addPresent(intervalMs, latencyMs, step, overwritten);
+
+    // CSV（CUDA_VIEWER_PRESENT_LOG=<パス>。最初の表示で開く）
+    if (!presentLogTried_) {
+        presentLogTried_ = true;
+        const QString path = qEnvironmentVariable("CUDA_VIEWER_PRESENT_LOG");
+        if (!path.isEmpty()) {
+            presentLogFile_ = std::make_unique<QFile>(path);
+            if (presentLogFile_->open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+                presentLog_ = std::make_unique<QTextStream>(presentLogFile_.get());
+                *presentLog_ << "t_ms,frame_no,step,present_interval_ms,upload_interval_ms,upload_to_present_ms,overwritten,steady\n";
+                qDebug() << "[VideoEngine] 表示のログ:" << path;
+            } else {
+                qWarning() << "[VideoEngine] 表示のログを開けません:" << path;
+                presentLogFile_.reset();
+            }
+        }
+    }
+    if (presentLog_) {
+        *presentLog_ << QString::number(now / 1e6, 'f', 3) << ',' << painted_.frameNo << ',' << step << ','
+                     << QString::number(intervalMs, 'f', 3) << ',' << QString::number(uploadIvMs, 'f', 3) << ','
+                     << QString::number(latencyMs, 'f', 3) << ',' << overwritten << ',' << (steady_ ? 1 : 0) << '\n';
+        if (++presentLogLines_ % 120 == 0) presentLog_->flush();
+    }
+
+    presented_        = painted_;
+    lastPresentNs_    = now;
+    lastPresentFrame_ = painted_.frameNo;
+    overwrittenSince_ = 0;
 }
 
 void VideoEngine::setShaderUniformEnable()

@@ -978,6 +978,9 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
     if (playingBefore != playing() || reverseBefore != reverse_flag || activeBefore != render_active_)
         emit stateChanged();
 
+    // 表示の計測: 安定して順方向に再生している間だけ表示間隔を数える（性能 HUD の frozen と同じ条件）
+    if (engine_) engine_->setSteadyPlayback(render_active_ && !reverse_flag);
+
     // OpenGL へ画像を渡して描画。一時停止中は再描画だけ（フィルタ変更・画像保存用）
     if (!pause_flag && encode_state != STATE_ENCODE_READY) {
         engine_->upload(Frame);

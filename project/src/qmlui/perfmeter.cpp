@@ -3,6 +3,7 @@
 #include <QOpenGLFunctions_4_5_Core>
 #include <QVariantList>
 #include <algorithm>
+#include <cmath>
 
 QVariantMap PerfMeter::Acc::toMap() const
 {
@@ -27,6 +28,8 @@ void PerfMeter::setEnabled(bool on)
     fetch_.clear(); decomp_.clear(); inv_.clear();
     intervals_.clear();
     parts_.clear();
+    present_.clear(); latency_.clear(); presentIntervals_.clear();
+    frameSkips_ = 0; overwritten_ = 0;
 }
 
 void PerfMeter::create(QOpenGLFunctions_4_5_Core* gl)
@@ -139,6 +142,19 @@ void PerfMeter::addDecodeBreakdown(const QVariantList& parts)
     }
 }
 
+void PerfMeter::addPresent(double intervalMs, double latencyMs, int frameStep, int overwritten)
+{
+    if (!on_) return;
+    if (intervalMs >= 0) {
+        present_.add(intervalMs);
+        presentIntervals_.push_back(float(intervalMs));
+    }
+    if (latencyMs >= 0) latency_.add(latencyMs);
+    const int step = frameStep < 0 ? -frameStep : frameStep;
+    if (step > 1) frameSkips_ += step - 1;
+    overwritten_ += overwritten;
+}
+
 void PerfMeter::frameEnd()
 {
     if (!on_) return;
@@ -211,6 +227,31 @@ QVariantMap PerfMeter::take()
     iv.reserve(int(intervals_.size()));
     for (float v : intervals_) iv << double(v);
     m["intervals"] = iv;
+    // 表示（画面に出たフレーム）。present.sd = 表示間隔の標準偏差（ばらつき）
+    {
+        QVariantMap pm = present_.toMap();
+        double sd = -1.0;
+        const size_t n = presentIntervals_.size();
+        if (n >= 2) {
+            double mean = 0;
+            for (float v : presentIntervals_) mean += v;
+            mean /= double(n);
+            double var = 0;
+            for (float v : presentIntervals_) var += (v - mean) * (v - mean);
+            sd = std::sqrt(var / double(n - 1));
+        }
+        pm["sd"] = sd;
+        m["present"] = pm;
+        QVariantList pv;
+        pv.reserve(int(n));
+        for (float v : presentIntervals_) pv << double(v);
+        m["presentIntervals"] = pv;
+        m["latency"]     = latency_.toMap();
+        m["frameSkips"]  = frameSkips_;
+        m["overwritten"] = overwritten_;
+        present_.clear(); latency_.clear(); presentIntervals_.clear();
+        frameSkips_ = 0; overwritten_ = 0;
+    }
     decode_.clear(); convert_.clear(); filter_.clear(); display_.clear(); hist_.clear(); cpu_.clear(); interval_ms_.clear();
     transfer_.clear(); transferGbps_.clear(); ratio_.clear(); compress_.clear(); expand_.clear();
     intervals_.clear();

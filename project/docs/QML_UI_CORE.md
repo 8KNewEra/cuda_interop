@@ -132,6 +132,7 @@ flowchart LR
 | tonecurve | トーンカーブの点 ⇔ 文字列 ⇔ 256 段の表（単調 3 次補間、Fritsch–Carlson） |
 | mediaprobe | FFmpeg でファイルの詳細情報を読む（プロパティ画面。別スレッド） |
 | perfmeter | 性能 HUD の計測（段ごとの GPU / CPU 時間） |
+| sparklineitem | 推移グラフ `SparklineItem`（シーングラフの三角形で描く。`qml/Sparkline.qml` の中身） |
 | displayprobe | 画面に出るまでの深さ（モニター出力・画面合成・独立フリップ・NVIDIA Deep color。5 節） |
 | displayverify | 表示の 10bit 検証（検証用ビルドだけ。5.3） |
 | windowchrome | フレームレスでもスナップ・影・角丸を残すための WM_NCCALCSIZE / WM_NCHITTEST 処理（Windows） |
@@ -154,7 +155,7 @@ flowchart LR
 | PeakingParams | ソーベル（エッジのみ / ピーキング） |
 | CompareParams / ChannelParams / TileSeamParams / EyedropperParams / ZebraParams | 表示ツール |
 | EncodePanel / DecodePanel / ScreenshotPanel / PropertiesPanel | 画面全体に重ねるダイアログ |
-| Sparkline | 推移グラフ（動画情報・エンコード設定で共用） |
+| Sparkline | 推移グラフ（動画情報・性能 HUD・エンコード設定で共用）。中身は C++ の `SparklineItem`（`CudaViewer`）。Canvas は使わない（8 節） |
 | MiniSlider / NumberSpin / ValueRow / Segmented / Select / ColorSwatches / ToggleSwitch / Icon / IconButton / ChipButton / AppMenu / AppMenuSeparator | 共通部品 |
 | Theme | 色・フォント定数（シングルトン）。`seamColors` は C++ の `kSeamColors` と同じ順 |
 
@@ -242,7 +243,10 @@ flowchart LR
 
 ### 4.4 性能 HUD（PerfHud.qml / PerfMeter。Ctrl+Shift+P・表示トグル「性能」）
 
-- 映像の左下。段ごとの時間（直近 0.25 秒の平均・最大 ms）とフレーム間隔の推移（直近 300 フレーム、破線 = 持ち時間）、NVDEC 使用率。
+- 映像の左下。段ごとの時間（直近 0.25 秒の平均・最大 ms）と受け取り間隔（upload の間隔）の推移（直近 300 フレーム、破線 = 持ち時間）、NVDEC 使用率。
+- 「表示（画面に出たフレーム）」: 表示間隔（frameSwapped の間隔）・upload→表示・表示間隔のばらつき σ（持ち時間の 10% 超で橙、25% 超で赤）・
+  出なかったコマの累計（番号の飛び、うち swap 前に上書きした枚数 / 表示した枚数。ファイルごと）と表示間隔の推移。
+  受け取り間隔が一定でも表示間隔がばらつけばカクついて見える。測り方は `IMG_PROCESS_CORE.md` 13.1（CSV ログもそこ）。
 - 段と測り方は `IMG_PROCESS_CORE.md` 13 節。デコード = `decode_thread::decode_time_ms`（`get_decode_image` の実時間）。
   GPU の結果は 4 フレームのリングで待たずに回収。
 - `PlayerController::perf` は 0.25 秒ごと。持ち時間 = 1000 / (fps × 再生速度)。ON/OFF は ini `Info/perf_hud`。
@@ -360,6 +364,9 @@ flowchart LR
 - **Repeater に毎回新しくなる配列を直接渡さない**。`player.gpus` / `encoder.gpus` は更新のたびに新しい配列なので、model は台数（`length`）にして
   中身は `list[index]` から読む（行が作り直されてグラフがちらつくのを防ぐ）。
 - 推移グラフは配列を作り直して代入する（中身を書き換えても変更通知が出ない）。
+- **映像の上に重ねる部品で Canvas を使わない**。render loop が basic なので、Canvas（Image ＋ Immediate）の JS とソフトウェア描画が
+  GUI スレッドで映像の upload と swap の間に割り込み、表示の間隔が乱れる（性能 HUD の 250ms 周期でガタついていた。`IMG_PROCESS_CORE.md` 13.1）。
+  線や塗りはシーングラフのノード（`SparklineItem` が見本）で描く。
 - `Item.scale` など既存プロパティ名と衝突する名前を付けない（NumberSpin は `factor`）。
 - StyledText は空白が縮むので桁そろえは `&nbsp;`。
 - 色は文字列＋opacity で扱い、`Qt.color()` は使っていない。
