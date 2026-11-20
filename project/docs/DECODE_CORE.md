@@ -113,6 +113,7 @@ sequenceDiagram
   1 表示フレームに 2 回デコードするとリングを追い越し、GUI が変換中の面を上書きする。
 - **先行**: 順方向の通常再生だけ、GUI の未受け取り（`inflight_frames`）が 2 未満なら受け取りを待たずに次の刻みでもデコードする
   （`can_decode_ahead`、`CUDA_VIEWER_DECODE_AHEAD=0` で 1:1）。一時停止はボタンより 1 コマ後で止まる。
+- **表示のペース（QML 版）**: 安定した順方向の通常再生は、GUI が受け取ったコマをすぐ出さず、vblank に合わせて出したときに返事をする（3.6）。
 - **エンコード中**: タイマーを切り、「1 枚受け取ったら 1 枚デコード」で自己駆動（`receve_decode_flag` の `self_drive`）。先行しない。
 - **シーク**: スライダー・1 コマ送り / 戻し・高精度シークは `high_res_seek_frame`（経路ごと）。重い間は `heavy_process_signal(false)` で操作を止める。
 - フレーム番号 ↔ pts の変換は `frame_to_pts` / `pts_to_frame` だけを使う（丸めを 1 か所に）。fps の宣言が怪しいファイルは
@@ -152,6 +153,35 @@ sequenceDiagram
 - `fail_decode` は 1 回だけ `decode_error` を出し、以降の `processFrame` は何もしない。
 - 再生のループ（1 タイル・CPU・AVI）は、終端 → 読み直し → 終端 を 2 回で打ち切り、範囲の終わりと同じ扱いにする
   （processFrame のミューテックスの中で回り続けると GUI まで固まるため。シークの側は従来から同じ打ち切り）。
+
+### 3.6 表示のペース（vblank に合わせて出す。QML 版の PlayerController）
+
+- 以前は届いたコマをすぐ `upload` していたので、画面に出る時刻 = 刻み（`fps_thread`。steady_clock）＋ デコード時間 ＋ GUI の待ち。
+  刻みと画面の vblank は別の時計なのでゆっくりずれ、境目を通るあいだ swap の約 1ms の揺れで 5・3・5・3 vblank と行ったり来たりした
+  （120Hz で 29.97fps の素材、10〜17 秒ごとに 1〜2 秒。キーフレームのデコード約 4ms も境目で効いた。実測は `IMG_PROCESS_CORE.md` 13.1）。
+- 安定した順方向の通常再生（`render_active_`・一時停止でない・逆再生でない・エンコードしていない・シークの保持中でない）だけ、
+  `decode_view` は届いたコマを待ち行列 `presentQueue_` に置き、`presentTick` が 1 枚ずつ出す（`showFrame` → `upload` → 返事）。
+  - 理想の表示時刻 = 起点 ＋ k × 1 コマ（fps × 再生速度から）。計算で決まるので測った時刻の揺れが入らない。
+    起点 = 最初のコマが届いた時刻 ＋ max(1 コマ, 25ms)（待ち行列にほぼ 1 コマ溜まり、キーフレームの遅れを吸収する）。
+  - 理想の時刻に一番近い実際の vblank（`VideoEngine::vblankGrid`。DWM の `qpcVBlank` と周期）を選び、
+    swap がその vblank の周期の真ん中に来る時刻（vblank − 周期 / 2 − upload→swap の移動平均）に `presentTimer_`（PreciseTimer）で upload を始める。
+  - ずれが溜まって選ぶ vblank が 1 つ動くのは 1 回だけ（120Hz で 29.97fps なら約 10 秒に 1 回、5 vblank のコマが 1 枚）。
+  - 前に描いたコマがまだ swap していなければ 1ms ずつ待つ（最大 20 回。1 回の swap に 2 枚描かない）。大きく遅れたら起点を取り直す。
+  - upload の直後に `VideoEngine::renderNow`（ウィンドウへ UpdateRequest を直接送り、basic の render loop にその場で swap まで描かせる）。
+    requestUpdate に任せると、性能 HUD の更新（250ms）などで先に予約されていた描画に乗って swap が 4〜5ms 早まり、狙った vblank の
+    1 つ前に入っていた（3 → 5 vblank の組が 250ms の周期で出た）。`CUDA_VIEWER_RENDER_NOW=0` で切る。
+  - 実測（120Hz、29.97fps、HUD あり、144 秒）: 4 vblank が 98.3%（入れる前 89.7%）、swap の位置は周期の 0.52 ± 0.11。
+    残りは 約 8.7 秒ごとの 5 vblank（狙いどおり。29.97fps を 120Hz で出す限り避けられない）、HUD 由来の 3→5 の組（renderNow で対策）、
+    GUI スレッドが 16〜57ms 止まったもの数回。
+- **受け取りの返事**: 待ち行列のコマは出したときに 1 枚ずつ `receve_decode_flag` を直接呼ぶ（Queued）。`decode_please` は
+  SingleShotConnection を 1 回の emit で全部動かすので、待ち行列の経路では使わない（使うと 2 枚分の返事が 1 回で出る）。
+- **リングの勘定は変わらない**: 待ち行列のコマは「GUI の未受け取り ≦ 2」（デコードの先行の上限 = `inflight_frames < 2`）の枠そのもの。
+  あふれたら（来ないはず）古い方を捨てて返事をする。
+- 使わない経路へ移るとき（`decode_view` に待ち行列を通らないコマが来た・一時停止・逆再生・エンコード設定を開く）は `flushPresentQueue`。
+  一時停止は待っていた最後のコマを出してから止める。ファイルを閉じるときは捨てる（デコーダごと止める）。
+- 使わない条件: 1 コマが vblank の 1.1 倍より短い高速再生（ベンチマークは従来どおりすぐ出す）、DWM の時刻が取れない、`CUDA_VIEWER_PACING=0`。
+- 音声は従来どおりデコード側の映像位置（`play_pos_us_`）に合わせるので、待ち行列のぶん（約 1 コマ）音が先に出る。
+- Widgets 版（MainWindow）は従来どおり（すぐ出す）。
 
 ## 4. 経路ごとのデコード
 

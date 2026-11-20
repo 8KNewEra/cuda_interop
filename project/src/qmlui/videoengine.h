@@ -49,6 +49,7 @@
 namespace gpuimg { class Encoder; }
 class QFile;
 class QTextStream;
+class QQuickWindow;
 
 class VideoEngine : public QObject, protected QOpenGLFunctions_4_5_Core
 {
@@ -128,6 +129,22 @@ public:
     void onFrameSwapped();                    // QQuickWindow::frameSwapped から（swap の直後）
     void setSteadyPlayback(bool on);          // 安定して順方向に再生しているか（PlayerController::decode_view）。
                                               //   false の間は間隔の起点を捨てる（一時停止・シークの明けを数えない）
+
+    // ---- 表示のペース（PlayerController の待ち行列が使う）----
+    // 実際の vblank の格子（DWM）。vbNs = 直近の vblank の時刻（mono_now_ns と同じ物差し）、perNs = 周期。取れなければ false
+    bool   vblankGrid(qint64& vbNs, double& perNs) const;
+    // upload の先頭から swap（frameSwapped）までの時間の移動平均（ms）。upload を始める時刻の逆算に使う
+    double uploadToSwapMs() const { return uploadToSwapEmaMs_; }
+    // 描いたのにまだ swap していないフレームがあるか（1 回の swap に 2 枚描かないため）
+    bool   hasPendingPresent() const { return frame_valid_ && rendered_.serial != 0 && rendered_.serial != presented_.serial; }
+    // 映像を出すウィンドウ（main.cpp が渡す）と、その場で描かせる（表示のペースが upload の直後に呼ぶ）。
+    //   requestUpdate に任せると、UI の更新（性能 HUD の 250ms など）で先に予約されていた描画に乗って swap が早まり、
+    //   狙った vblank の 1 つ前に入ってしまう（upload→swap が 7ms → 2〜3ms）。UpdateRequest を直接送れば
+    //   render loop（basic）がその場で描くので、upload→swap が毎回同じになる。CUDA_VIEWER_RENDER_NOW=0 で切る
+    void   setPresentWindow(QQuickWindow* w) { presentWindow_ = w; }
+    void   renderNow();
+    // QQuickWindow::afterRendering（swap の直前。main.cpp）から: swap にかかった時間を測る起点
+    void   noteAfterRendering() { afterRenderNs_ = mono_now_ns(); }
 
     // ヒストグラム統計（QML 表示用）
     QVariantMap histStats() const;
@@ -305,10 +322,20 @@ private:
         int     frameNo  = -1;
         qint64  uploadNs = -1;   // upload の先頭（一時停止中の描き直しは描いた時刻）
         qint64  tickNs = 0, decodeBeginNs = 0, emitNs = 0, recvNs = 0;   // VideoFrame の t_*（0 = なし）
+        int     paced = 0;                                              // VideoFrame::paced
+        qint64  wakePlanNs = 0, wakeNs = 0; int pendWaits = 0;          // VideoFrame::t_wake_plan_ns / t_wake_ns / pend_waits
     };
     qint64     logT0Ns_ = 0;            // CSV の t_ms の起点
     qint64     prevTickNs_ = 0;         // 前に出たフレームの刻み（刻みの間隔）
-    qint64     prevVblankIdx_ = -1;     // 前に出たフレームが乗った vblank の番号（DWM）
+    qint64     prevVblankIdx_ = -1;     // 前に出たフレームが乗った vblank の番号（DWM。時刻から数える）
+    qint64     prevVblankNs_  = 0;      // 前に出たフレームの swap の後の最初の vblank の時刻
+    double     uploadToSwapEmaMs_ = 7.0;
+    QQuickWindow* presentWindow_ = nullptr;
+    int        renderNowEnv_ = -1;      // CUDA_VIEWER_RENDER_NOW（0 で切る）。-1 = 未読
+    // swap の回数と時間（CSV の swaps / swap_ms / swap_max_ms。前に出たコマから今のコマが出るまで）
+    qint64     afterRenderNs_ = 0;
+    int        swapsSincePresent_ = 0;
+    double     swapMaxMsSince_ = -1;
     qint64     pendingUploadNs_ = -1;   // upload の先頭の時刻（FBO_Rendering が rendered_ に移す）
     ShownFrame rendered_;               // 最後に fbo に描いたフレーム
     ShownFrame painted_;                // VideoItem が最後に描いた（swap 待ちの）フレーム

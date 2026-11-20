@@ -458,6 +458,10 @@ struct VideoFrame {
     int64_t t_decode_begin_ns = 0;   // processFrame がデコードを始めた時刻
     int64_t t_emit_ns         = 0;   // send_decode_image を出した時刻
     int64_t t_recv_ns         = 0;   // GUI が decode_view で受け取った時刻
+    uint8_t paced             = 0;   // 1 = 表示のペース（vblank に合わせて出す）を通った（PlayerController::presentTick）
+    int64_t t_wake_plan_ns    = 0;   // 表示のペース: upload を始める予定の時刻（schedulePresent）
+    int64_t t_wake_ns         = 0;   // 表示のペース: 実際に upload を始めた時刻（presentTick。swap 待ちの延長の後）
+    uint8_t pend_waits        = 0;   // 表示のペース: 前のコマの swap 待ちで 1ms 延ばした回数
 };
 
 //UI表示CPUダウンロード用

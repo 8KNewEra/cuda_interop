@@ -289,18 +289,28 @@ HUD が OFF の間は各フックが即 return する（クエリもイベント
 - 時刻は swap が戻った時刻（vsync で戻る）。ドライバがフリップを溜める場合は実際の表示はそれより後になりうるが、間隔のばらつきを見るには足りる。
 - CSV: 環境変数 `CUDA_VIEWER_PRESENT_LOG=<パス>` で 1 表示 1 行（HUD の ON/OFF と無関係。`steady` 列で再生中か分かる）。
   列は `t_ms, frame_no, step, present_interval_ms, upload_interval_ms, upload_to_present_ms, overwritten, steady,
-  tick_interval_ms, tick_to_begin_ms, decode_ms, emit_to_recv_ms, recv_to_upload_ms, vblank_idx, vblank_step, swap_phase, refresh_ms`。
+  tick_interval_ms, tick_to_begin_ms, decode_ms, emit_to_recv_ms, recv_to_upload_ms, vblank_idx, vblank_step, swap_phase, refresh_ms, paced`。
+  `paced` = 表示のペース（`DECODE_CORE.md` 3.6）を通ったコマ。待ち行列で待った時間は `recv_to_upload_ms` に入る。
+  続けて `swaps, swap_ms, swap_max_ms, wake_late_ms, pend_waits`:
+  `swaps` = 前のコマが出てからこのコマが出るまでの swap の回数（1 が理想。2 以上は同じ内容を描き直している）、
+  `swap_ms` = このコマの swap にかかった時間（`afterRendering` → `frameSwapped`。swap がブロックしていないか）、
+  `swap_max_ms` = その間の swap で一番長かったもの、`wake_late_ms` = 表示のペースのタイマーが予定より遅れた時間（swap 待ちの延長を含む）、
+  `pend_waits` = 前のコマの swap 待ちで 1ms 延ばした回数。
   - 受け渡しの内訳: 刻み（`fps_thread` が `g_last_tick_ns` に記録）→ デコード開始（`processFrame`）→ 送出（`stamp_frame_times`）
     → GUI の受け取り（`decode_view` の先頭）→ upload の先頭。時刻は `VideoFrame::t_*`（`mono_now_ns`。QPC の ns でスレッドをまたいで比べられる）。
     `tick_interval_ms` は前に出たフレームの刻みとの差。受け取り待ち（`drop_flag`）で遅れたデコードは `tick_to_begin_ms` に出る。
   - 実際の vblank: `DwmGetCompositionTimingInfo`（`qpcVBlank`・`qpcRefreshPeriod`・`cRefresh`）から、swap の後の最初の vblank の番号
-    （`vblank_idx`）、前のフレームとの差（`vblank_step`。29.97fps を 59.94Hz で出すなら常に 2 が正常）、swap がリフレッシュ周期のどこで
+    （`vblank_idx`。時刻の差から数える。DWM の `cRefresh` は `qpcVBlank` と食い違うことがあったので使わない）、
+    前のフレームとの差（`vblank_step`。29.97fps を 120Hz で出すなら 4 が正常で、約 10 秒に 1 回 5）、swap がリフレッシュ周期のどこで
     起きたか（`swap_phase` 0..1。1 に近いほど vblank の直前でぎりぎり）。ウィンドウ表示では swap は vblank を待たずに戻り、DWM が次の vblank で
     合成するので、frameSwapped の時刻だけでは実際に出た vblank が分からないため。DWM の遅れが一定という前提の値。
   `upload_interval_ms`（そのフレームの upload の間隔）と `present_interval_ms` を並べると、ばらつきがデコード・受け取り側か表示側かを切り分けられる。
 - 実測（2026-11、4K 29.97fps・59.94Hz、HUD と動画情報を表示）: Canvas 版の推移グラフでは表示間隔が vblank 2 回以外になったのが 9.1%
   （σ 4.5ms）、乱れは性能 HUD の更新（250ms）の周期にそろっていた（upload→表示が 6ms → 15〜20ms に伸びて次の vblank へ押し出される）。
   推移グラフを C++ の `SparklineItem` に置き換えた。
+- 実測（同じ素材、120Hz のモニター。上の 59.94Hz は誤りで、実際の vblank で数え直した）: 推移グラフを置き換えた後も、4 vblank 以外が約 10%。
+  `swap_phase` が 0〜1 に一様（刻みと vblank がずれていく）で、境目を通る 1〜2 秒のあいだ 5・3 が交互に出ていた。
+  さらに 29 コマごと（キーフレーム）に `decode_ms` が 3.4〜5.3ms。表示を vblank に合わせる（`DECODE_CORE.md` 3.6）ようにした。
 
 ## 14. 画像処理を 1 つ足す手順
 

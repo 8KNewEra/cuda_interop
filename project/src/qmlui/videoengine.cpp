@@ -6,6 +6,9 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QTextStream>
+#include <QQuickWindow>
+#include <QCoreApplication>
+#include <QEvent>
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -526,6 +529,7 @@ void VideoEngine::reset()
     overwrittenSince_ = 0;
     prevTickNs_       = 0;
     prevVblankIdx_    = -1;
+    prevVblankNs_     = 0;
     emit frameReady();
     emit histogramChanged();
 }
@@ -695,8 +699,52 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     rendered_.decodeBeginNs = Frame.t_decode_begin_ns;
     rendered_.emitNs        = Frame.t_emit_ns;
     rendered_.recvNs        = Frame.t_recv_ns;
+    rendered_.paced         = Frame.paced;
+    rendered_.wakePlanNs    = Frame.t_wake_plan_ns;
+    rendered_.wakeNs        = Frame.t_wake_ns;
+    rendered_.pendWaits     = Frame.pend_waits;
     publishFrameFence();
     emit frameReady();
+}
+
+// ==============================================================
+// 実際の vblank の格子（DWM）
+//   DwmGetCompositionTimingInfo（hwnd = nullptr: 画面合成全体）の qpcVBlank と qpcRefreshPeriod を使う。
+//   cRefresh（通し番号）は qpcVBlank と食い違うことがあったので使わない（番号が要るときは時刻の差から数える）。
+//   周期が 3〜50ms から外れる値（モード切り替えの途中など）は捨てる
+// ==============================================================
+bool VideoEngine::vblankGrid(qint64& vbNs, double& perNs) const
+{
+#ifdef Q_OS_WIN
+    static const LARGE_INTEGER freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f; }();
+    if (freq.QuadPart <= 0) return false;
+    DWM_TIMING_INFO ti{};
+    ti.cbSize = sizeof(ti);
+    if (FAILED(DwmGetCompositionTimingInfo(nullptr, &ti)) || ti.qpcRefreshPeriod == 0 || ti.qpcVBlank == 0) return false;
+    const long long fq = freq.QuadPart;
+    const ULONGLONG q  = ti.qpcVBlank;   // MSVC の steady_clock（mono_now_ns）と同じ換算
+    vbNs  = qint64((long long)(q / fq) * 1000000000LL + (long long)(q % fq) * 1000000000LL / fq);
+    perNs = double(ti.qpcRefreshPeriod) * 1e9 / double(fq);
+    return perNs >= 3e6 && perNs <= 50e6;
+#else
+    Q_UNUSED(vbNs); Q_UNUSED(perNs);
+    return false;
+#endif
+}
+
+void VideoEngine::renderNow()
+{
+    if (!presentWindow_) return;
+    if (renderNowEnv_ < 0) {
+        bool ok = false;
+        const int v = qEnvironmentVariableIntValue("CUDA_VIEWER_RENDER_NOW", &ok);
+        renderNowEnv_ = ok ? (v != 0 ? 1 : 0) : 1;
+    }
+    if (!renderNowEnv_) return;
+    // frameReady → VideoItem::update で描画は予約済み。basic の render loop は UpdateRequest を受けたらその場で
+    //   polish → sync → render → swap まで進む（QQuickWindow::event → handleUpdateRequest）
+    QEvent ev(QEvent::UpdateRequest);
+    QCoreApplication::sendEvent(presentWindow_, &ev);
 }
 
 // ==============================================================
@@ -721,16 +769,22 @@ void VideoEngine::setSteadyPlayback(bool on)
         overwrittenSince_ = 0;
         prevTickNs_       = 0;
         prevVblankIdx_    = -1;
+        prevVblankNs_     = 0;
         perf_.resetTiming();
     }
 }
 
 void VideoEngine::onFrameSwapped()
 {
-    // 同じフレームの描き直し（UI だけの更新・ズーム）は数えない
-    if (painted_.serial == 0 || painted_.serial == presented_.serial) return;
-
+    // swap の回数と時間は同じフレームの描き直しも数える（二重に描いていないか、swap が止まっていないか）
     const qint64 now = mono_now_ns();
+    const double swapMs = afterRenderNs_ > 0 ? (now - afterRenderNs_) / 1e6 : -1.0;
+    afterRenderNs_ = 0;
+    ++swapsSincePresent_;
+    if (swapMs > swapMaxMsSince_) swapMaxMsSince_ = swapMs;
+
+    // 同じフレームの描き直し（UI だけの更新・ズーム）は表示として数えない
+    if (painted_.serial == 0 || painted_.serial == presented_.serial) return;
     const double intervalMs = lastPresentNs_ >= 0 ? (now - lastPresentNs_) / 1e6 : -1.0;
     const double uploadIvMs = (lastPresentNs_ >= 0 && presented_.uploadNs >= 0 && painted_.uploadNs >= 0)
                               ? (painted_.uploadNs - presented_.uploadNs) / 1e6 : -1.0;
@@ -739,6 +793,8 @@ void VideoEngine::onFrameSwapped()
     const int    overwritten = overwrittenSince_;
 
     if (steady_) perf_.addPresent(intervalMs, latencyMs, step, overwritten);
+    // upload → swap の移動平均（表示のペースが upload を始める時刻を逆算するのに使う）
+    if (latencyMs > 0 && latencyMs < 50) uploadToSwapEmaMs_ += (latencyMs - uploadToSwapEmaMs_) * 0.1;
 
     // CSV（CUDA_VIEWER_PRESENT_LOG=<パス>。最初の表示で開く）
     if (!presentLogTried_) {
@@ -750,7 +806,8 @@ void VideoEngine::onFrameSwapped()
                 presentLog_ = std::make_unique<QTextStream>(presentLogFile_.get());
                 *presentLog_ << "t_ms,frame_no,step,present_interval_ms,upload_interval_ms,upload_to_present_ms,overwritten,steady,"
                                 "tick_interval_ms,tick_to_begin_ms,decode_ms,emit_to_recv_ms,recv_to_upload_ms,"
-                                "vblank_idx,vblank_step,swap_phase,refresh_ms\n";
+                                "vblank_idx,vblank_step,swap_phase,refresh_ms,paced,"
+                                "swaps,swap_ms,swap_max_ms,wake_late_ms,pend_waits\n";
                 logT0Ns_ = now;
                 qDebug() << "[VideoEngine] 表示のログ:" << path;
             } else {
@@ -773,37 +830,42 @@ void VideoEngine::onFrameSwapped()
         //   1 に近い = vblank の直前で間に合うかぎりぎり）。ウィンドウ表示では DWM が次の vblank で合成するので、
         //   vblank_step（前のフレームとの vblank の差）が実際に画面に出ていた vblank の数（遅れが一定なら）
         qint64 vbIdx = -1; long long vbStep = -1; double phase = -1, refreshMs = -1;
-#ifdef Q_OS_WIN
-        DWM_TIMING_INFO ti{};
-        ti.cbSize = sizeof(ti);
-        static LARGE_INTEGER freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f; }();
-        if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &ti)) && ti.qpcRefreshPeriod > 0 && freq.QuadPart > 0) {
-            auto qpcNs = [&](ULONGLONG q) {   // MSVC の steady_clock と同じ換算
-                const long long fq = freq.QuadPart;
-                return qint64((long long)(q / fq) * 1000000000LL + (long long)(q % fq) * 1000000000LL / fq);
-            };
-            const qint64 vbNs  = qpcNs(ti.qpcVBlank);
-            const double perNs = double(ti.qpcRefreshPeriod) * 1e9 / double(freq.QuadPart);
-            const double k     = double(now - vbNs) / perNs;          // 最後の vblank から何周期後に swap したか
-            const double kf    = std::floor(k);
-            phase     = k - kf;
-            vbIdx     = qint64(ti.cRefresh) + qint64(kf) + 1;         // swap の後の最初の vblank
-            vbStep    = prevVblankIdx_ >= 0 ? (long long)(vbIdx - prevVblankIdx_) : -1;
-            refreshMs = perNs / 1e6;
+        {
+            qint64 vbNs = 0; double perNs = 0;
+            if (vblankGrid(vbNs, perNs)) {
+                const double k  = double(now - vbNs) / perNs;          // 最後の vblank から何周期後に swap したか
+                const double kf = std::floor(k);
+                phase     = k - kf;
+                const qint64 nextVb = vbNs + qint64((kf + 1) * perNs);  // swap の後の最初の vblank
+                // 番号は時刻の差から数える（DWM の cRefresh は qpcVBlank と食い違うことがあり使わない）
+                if (prevVblankIdx_ >= 0 && prevVblankNs_ > 0) {
+                    vbStep = std::llround(double(nextVb - prevVblankNs_) / perNs);
+                    vbIdx  = prevVblankIdx_ + vbStep;
+                } else {
+                    vbIdx = 0;
+                }
+                prevVblankNs_ = nextVb;
+                refreshMs     = perNs / 1e6;
+            }
         }
-#endif
         auto num = [](double v) { return QString::number(v, 'f', 3); };
         *presentLog_ << num((now - logT0Ns_) / 1e6) << ',' << f.frameNo << ',' << step << ','
                      << num(intervalMs) << ',' << num(uploadIvMs) << ','
                      << num(latencyMs) << ',' << overwritten << ',' << (steady_ ? 1 : 0) << ','
                      << num(tickIv) << ',' << num(tickBeg) << ',' << num(decodeMs) << ','
                      << num(emitRecv) << ',' << num(recvUp) << ','
-                     << vbIdx << ',' << vbStep << ',' << QString::number(phase, 'f', 4) << ',' << num(refreshMs) << '\n';
+                     << vbIdx << ',' << vbStep << ',' << QString::number(phase, 'f', 4) << ',' << num(refreshMs) << ','
+                     << f.paced << ','
+                     << swapsSincePresent_ << ',' << num(swapMs) << ',' << num(swapMaxMsSince_) << ','
+                     << num(f.wakePlanNs > 0 && f.wakeNs > 0 ? (f.wakeNs - f.wakePlanNs) / 1e6 : -1.0) << ','
+                     << f.pendWaits << '\n';
         if (++presentLogLines_ % 120 == 0) presentLog_->flush();
         prevTickNs_    = f.tickNs;
         prevVblankIdx_ = vbIdx;
     }
 
+    swapsSincePresent_ = 0;
+    swapMaxMsSince_    = -1;
     presented_        = painted_;
     lastPresentNs_    = now;
     lastPresentFrame_ = painted_.frameNo;

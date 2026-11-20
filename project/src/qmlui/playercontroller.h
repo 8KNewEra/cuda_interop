@@ -21,6 +21,7 @@
 #include <QVariantMap>
 #include <QVariantList>
 #include <QElapsedTimer>
+#include <deque>
 #include "src/main/__global__.h"
 
 class VideoEngine;
@@ -276,6 +277,24 @@ private:
     void stop_decode_thread();
     bool canUseGpuDecode(const QString& filename);
     void decode_view(VideoFrame Frame, bool pause, bool reverse);
+    void showFrame(const VideoFrame& f);   // 表示するコマの番号・時刻を画面へ（frameChanged）
+
+    // ---- 表示のペース（vblank に合わせて出す。docs/DECODE_CORE.md 3.6）----
+    //   安定した順方向の通常再生だけ、届いたコマをすぐ upload せず待ち行列に置き、実際の vblank（DWM）の格子に
+    //   合わせた時刻に 1 枚ずつ出す。受け取りの返事（receve_decode_flag）は出したときに 1 枚ずつ返す
+    //   （待ち行列のコマは「GUI の未受け取り ≦ 2」の枠の中。リング 6 段の勘定は変わらない）
+    std::deque<VideoFrame> presentQueue_;
+    QTimer  presentTimer_;              // 次のコマを出す時刻（Qt::PreciseTimer、単発）
+    qint64  nextIdealNs_ = 0;           // 次のコマの理想の表示時刻（0 = 起点を取り直す）
+    qint64  pacedFrameDurNs_ = 0;       // 1 コマの長さ（fps × 再生速度から）
+    int     pacingEnv_ = -1;            // CUDA_VIEWER_PACING（0 で切る）。-1 = 未読
+    int     pendingWaits_ = 0;          // 前のコマの swap 待ちで延ばした回数
+    qint64  presentWakePlanNs_ = 0;     // 先頭のコマの upload を始める予定の時刻（表示の計測。タイマーの遅れ）
+    bool    updatePacing();             // このコマを待ち行列に通すか（条件と 1 コマの長さの更新）
+    void    schedulePresent();          // 先頭のコマを出す時刻にタイマーを掛ける
+    void    presentTick();              // 先頭のコマを出す
+    void    flushPresentQueue(bool showNewest);   // 待ち行列を空ける（showNewest なら最後のコマを出す）
+    void    replyDecode();              // デコードへ 1 枚受け取ったと返す
     void init_decodethread_complete();
     void setControlsEnabled(bool on);
 

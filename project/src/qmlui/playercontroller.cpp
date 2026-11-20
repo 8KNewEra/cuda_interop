@@ -44,6 +44,11 @@ PlayerController::PlayerController(QObject* parent)
     seekHoldTimer_.setInterval(10000);
     connect(&seekHoldTimer_, &QTimer::timeout, this, [this] { clearSeekHold(); });
 
+    // 表示のペース: 次のコマを出す時刻（ms 単位。誤差 ±0.5ms は vblank の周期の半分の余裕で吸収する）
+    presentTimer_.setSingleShot(true);
+    presentTimer_.setTimerType(Qt::PreciseTimer);
+    connect(&presentTimer_, &QTimer::timeout, this, &PlayerController::presentTick);
+
     // 性能 HUD: 0.25 秒ごとに集計を取り出して QML へ（毎フレーム通知すると描画が増えて計測を乱す）
     perfTimer_.setInterval(250);
     connect(&perfTimer_, &QTimer::timeout, this, [this] {
@@ -888,6 +893,11 @@ void PlayerController::stop_decode_thread()
     seek_hold_ = false;
     setControlsEnabled(false);
 
+    // 表示のペースの待ち行列は捨てる（デコーダごと止めるので返事は要らない）
+    presentTimer_.stop();
+    presentQueue_.clear();
+    nextIdealNs_ = 0;
+
     disconnect(decodestream, nullptr, this, nullptr);
     disconnect(this, nullptr, decodestream, nullptr);
 
@@ -939,7 +949,6 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
     const bool reverseBefore = reverse_flag;
     pause_flag   = pause;
     reverse_flag = reverse;
-    FrameNo      = Frame.FrameNo;
 
     // 範囲つまみで押し出した後は、実際に表示されたコマを確定位置にする。
     //   押し出しは軽いシークなので狙った番号とずれたコマが出ることがあり、離したときに
@@ -951,21 +960,8 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
     if (seek_hold_ && Frame.FrameNo == seek_target_)
         clearSeekHold();
 
-    if (!run_decode_thread) return;
+    if (!run_decode_thread) { FrameNo = Frame.FrameNo; return; }
 
-    // 1 表示フレームにつき 1 本だけ接続する（リング追い越し防止）
-    connect(this, &PlayerController::decode_please, decodestream,
-            &decode_thread::receve_decode_flag, Qt::SingleShotConnection);
-
-    play_time_ = (VideoInfo.max_hour > 0)
-                     ? QString::asprintf("%02d:%02d:%02d", Frame.hour, Frame.minute, Frame.second)
-                     : QString::asprintf("%02d:%02d", Frame.minute, Frame.second);
-    slider_No = Frame.FrameNo;
-    // エンコード中は後ろの画面（スライダー・時刻・動画情報）を更新しない。
-    //   毎フレーム通知するとシーングラフが描き直して NVENC と GPU を取り合う。
-    //   終わったら finished_encode() でまとめて 1 回通知する
-    if (encode_state != STATE_ENCODING)
-        emit frameChanged();
     // コマ送りでも 1 枚だけ pause=false のフレームが来るので、数枚続いたときだけ
     //   再生中とみなす（止まる側は即反映）。ユーザーが再生を指示していないときは数えない
     const bool activeBefore = render_active_;
@@ -982,6 +978,28 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
     // 表示の計測: 安定して順方向に再生している間だけ表示間隔を数える（性能 HUD の frozen と同じ条件）
     if (engine_) engine_->setSteadyPlayback(render_active_ && !reverse_flag);
 
+    // ---- 表示のペース: 安定した順方向の通常再生は待ち行列へ（出すのは presentTick）----
+    if (updatePacing()) {
+        if (presentQueue_.size() >= 2) {
+            // デコードの先行は 2 枚までなので来ないはず。来たら古い方を捨てて枠を守る
+            qWarning() << "[PlayerController] 表示の待ち行列があふれた。古いコマを捨てる FrameNo =" << presentQueue_.front().FrameNo;
+            presentQueue_.pop_front();
+            replyDecode();
+        }
+        presentQueue_.push_back(Frame);
+        schedulePresent();
+        return;
+    }
+    // 待ち行列を使わない経路（一時停止・シーク・逆再生・エンコード・高速再生など）へ移るときは空ける。
+    //   一時停止のコマ（pause = true）は入力テクスチャを描き直すだけなので、待っていた最後のコマを出しておく
+    flushPresentQueue(pause_flag && encode_state == STATE_NOT_ENCODE);
+
+    // 1 表示フレームにつき 1 本だけ接続する（リング追い越し防止）
+    connect(this, &PlayerController::decode_please, decodestream,
+            &decode_thread::receve_decode_flag, Qt::SingleShotConnection);
+
+    showFrame(Frame);
+
     // OpenGL へ画像を渡して描画。一時停止中は再描画だけ（フィルタ変更・画像保存用）
     if (!pause_flag && encode_state != STATE_ENCODE_READY) {
         engine_->upload(Frame);
@@ -993,6 +1011,138 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
         emit decode_please();
 }
 
+void PlayerController::showFrame(const VideoFrame& f)
+{
+    FrameNo = f.FrameNo;
+    play_time_ = (VideoInfo.max_hour > 0)
+                     ? QString::asprintf("%02d:%02d:%02d", f.hour, f.minute, f.second)
+                     : QString::asprintf("%02d:%02d", f.minute, f.second);
+    slider_No = f.FrameNo;
+    // エンコード中は後ろの画面（スライダー・時刻・動画情報）を更新しない。
+    //   毎フレーム通知するとシーングラフが描き直して NVENC と GPU を取り合う。
+    //   終わったら finished_encode() でまとめて 1 回通知する
+    if (encode_state != STATE_ENCODING)
+        emit frameChanged();
+}
+
+// ==============================================================
+// 表示のペース（vblank に合わせて出す。docs/DECODE_CORE.md 3.6）
+//
+//   以前は届いたコマをすぐ upload していたので、画面に出る時刻 = 刻み（fps_thread の steady_clock）＋ デコード時間。
+//   刻みと画面の vblank は別の時計なのでゆっくりずれ、境目を通るあいだ swap の 1ms の揺れで 5・3・5・3 vblank と
+//   行ったり来たりしていた（120Hz で 29.97fps のとき 10〜17 秒ごとに 1〜2 秒）。キーフレームのデコード（約 4ms）も境目で効いた。
+//
+//   ここでは
+//     ・コマ k の理想の表示時刻 = 起点 ＋ k × 1 コマの長さ（計算で決まる。測った時刻の揺れが入らない）
+//     ・それに一番近い vblank を選び、swap がその vblank の周期の真ん中（前後に周期の半分の余裕）になる時刻に upload を始める
+//       （開始 = vblank − 周期 / 2 − upload→swap の移動平均）
+//     ・理想の時刻は計算なので、ずれが溜まって選ぶ vblank が 1 つ動くのは 1 回だけ（5 vblank のコマが 1 枚入る）。行ったり来たりしない
+//     ・起点 = 最初のコマが届いた時刻 ＋ max(1 コマ, 25ms)。キーフレームのデコードの遅れ（約 4ms）は待ち行列が吸収する
+//   使わない: 一時停止・シーク・コマ送り・逆再生・エンコード、1 コマが vblank の 1.1 倍より短い高速再生（ベンチマーク）、
+//            DWM の時刻が取れないとき、CUDA_VIEWER_PACING=0
+// ==============================================================
+bool PlayerController::updatePacing()
+{
+    if (pacingEnv_ < 0) {
+        bool ok = false;
+        const int v = qEnvironmentVariableIntValue("CUDA_VIEWER_PACING", &ok);
+        pacingEnv_ = ok ? (v != 0 ? 1 : 0) : 1;
+        if (!pacingEnv_) qDebug() << "[PlayerController] 表示のペースを使わない（CUDA_VIEWER_PACING=0）";
+    }
+    if (!pacingEnv_ || !engine_) return false;
+    if (pause_flag || reverse_flag || encode_state != STATE_NOT_ENCODE || !play_intent_ || seek_hold_ || !render_active_)
+        return false;
+    const double fps = VideoInfo.fps * (speed() > 0 ? speed() : 1.0);
+    if (fps <= 0) return false;
+    qint64 vb = 0; double per = 0;
+    if (!engine_->vblankGrid(vb, per)) return false;
+    const qint64 dur = qint64(1e9 / fps);
+    if (dur < qint64(per * 1.1)) return false;   // 画面のリフレッシュより速い再生は従来どおり（すぐ出す）
+    if (dur != pacedFrameDurNs_) {               // 再生速度が変わったら起点を取り直す
+        pacedFrameDurNs_ = dur;
+        nextIdealNs_ = 0;
+    }
+    return true;
+}
+
+void PlayerController::schedulePresent()
+{
+    if (presentQueue_.empty()) { presentTimer_.stop(); return; }
+    if (presentTimer_.isActive()) return;          // 先頭のコマの時刻はもう掛けてある
+
+    const qint64 now = mono_now_ns();
+    qint64 vb = 0; double per = 0;
+    if (!engine_ || !engine_->vblankGrid(vb, per)) { presentWakePlanNs_ = now; presentTimer_.start(0); return; }
+
+    if (nextIdealNs_ == 0) {
+        const qint64 recv = presentQueue_.front().t_recv_ns > 0 ? presentQueue_.front().t_recv_ns : now;
+        nextIdealNs_ = recv + std::max<qint64>(pacedFrameDurNs_, 25000000);
+    }
+    // 理想の時刻に一番近い vblank
+    const double  n = std::round(double(nextIdealNs_ - vb) / per);
+    const qint64  V = vb + qint64(n * per);
+    // swap が V の周期の真ん中に来るように upload を始める
+    const qint64  wake = V - qint64(per * 0.5) - qint64(engine_->uploadToSwapMs() * 1e6);
+    const qint64  waitNs = wake - now;
+    presentWakePlanNs_ = waitNs <= 0 ? now : wake;   // 表示の計測（タイマーの遅れ）
+    presentTimer_.start(waitNs <= 0 ? 0 : int((waitNs + 500000) / 1000000));
+}
+
+void PlayerController::presentTick()
+{
+    if (presentQueue_.empty() || !engine_ || !run_decode_thread) return;
+
+    // 前に描いたコマがまだ swap していなければ待つ（1 回の swap に 2 枚描くと前のコマが出ない）。
+    //   最小化などで swap が来ないときに止まらないよう、20 回（約 20ms）で諦めて進む
+    if (engine_->hasPendingPresent() && pendingWaits_ < 20) {
+        ++pendingWaits_;
+        presentTimer_.start(1);
+        return;
+    }
+    const int waits = pendingWaits_;
+    pendingWaits_ = 0;
+
+    VideoFrame f = presentQueue_.front();
+    presentQueue_.pop_front();
+    f.paced          = 1;
+    f.t_wake_plan_ns = presentWakePlanNs_;
+    f.t_wake_ns      = mono_now_ns();
+    f.pend_waits     = uint8_t(std::min(waits, 255));
+    showFrame(f);
+    engine_->upload(f);
+    engine_->renderNow();   // その場で描いて swap まで進める（upload→swap を毎回同じにする）
+    replyDecode();
+
+    // 次のコマの理想の時刻。大きく遅れたら（デコードが追いつかない等）起点を取り直す
+    const qint64 now = mono_now_ns();
+    nextIdealNs_ += pacedFrameDurNs_;
+    if (nextIdealNs_ < now - 2 * pacedFrameDurNs_) nextIdealNs_ = 0;
+    schedulePresent();
+}
+
+void PlayerController::flushPresentQueue(bool showNewest)
+{
+    presentTimer_.stop();
+    pendingWaits_ = 0;
+    nextIdealNs_ = 0;
+    if (presentQueue_.empty()) return;
+    if (showNewest && engine_ && run_decode_thread) {
+        const VideoFrame f = presentQueue_.back();
+        showFrame(f);
+        engine_->upload(f);
+    }
+    for (size_t i = 0; i < presentQueue_.size(); ++i) replyDecode();
+    presentQueue_.clear();
+}
+
+void PlayerController::replyDecode()
+{
+    // decode_please（SingleShotConnection）は 1 回の emit で張ってある接続が全部動くので、待ち行列からは使わない。
+    //   1 枚ごとに直接返す（Queued。decode_thread のスレッドで receve_decode_flag が動く）
+    if (decodestream)
+        QMetaObject::invokeMethod(decodestream, "receve_decode_flag", Qt::QueuedConnection);
+}
+
 // ==============================================================
 // 再生操作（MainWindow の各 *_pushbutton_control と同じ）
 // ==============================================================
@@ -1000,7 +1150,11 @@ void PlayerController::togglePlay()
 {
     if (!run_decode_thread) return;
     if (pause_flag || reverse_flag) { setPlayIntent(true);  emit send_manual_resumeplayback(); }
-    else                            { setPlayIntent(false); emit send_manual_pause(); }
+    else {
+        setPlayIntent(false);
+        emit send_manual_pause();
+        flushPresentQueue(true);   // 待っていたコマを出して止める（出し切るまで待つと止まるのが遅れる）
+    }
 }
 
 void PlayerController::stop()
@@ -1017,6 +1171,7 @@ void PlayerController::stop()
 void PlayerController::reverse()
 {
     if (!run_decode_thread) return;
+    flushPresentQueue(true);
     setPlayIntent(true);
     emit send_manual_reverse();
 }
@@ -1286,6 +1441,7 @@ void PlayerController::openEncodeSettings()
     if (!run_decode_thread || !encoder_) return;
 
     // 閉じたときに戻る位置を覚えておく（エンコードで再生位置が範囲の終端まで進むため）
+    flushPresentQueue(true);   // 表示のペースの待ち行列を空けてから止める
     resume_frame_   = frameNo();
     resume_playing_ = play_intent_ && !pause_flag && !reverse_flag;
 

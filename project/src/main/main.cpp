@@ -124,6 +124,15 @@ static int runQmlUi(QApplication& app)
 
         chrome.attach(window);
 
+        // 表示のペース: upload の直後にこのウィンドウをその場で描かせる（VideoEngine::renderNow）
+        if (VideoEngine* eng = VideoEngine::instance())
+            eng->setPresentWindow(window);
+        // 表示の計測: 描き終えてから swap が戻るまでの時間（swap が止まっていないか）
+        QObject::connect(window, &QQuickWindow::afterRendering, window, [] {
+            if (VideoEngine* eng = VideoEngine::instance())
+                eng->noteAfterRendering();
+        }, Qt::DirectConnection);
+
 #ifdef CUDA_VIEWER_DISPLAY_VERIFY
         DisplayVerify::install(window);   // 表示の 10bit 検証（Ctrl+Shift+D）。検証用ビルドだけ
 #endif
