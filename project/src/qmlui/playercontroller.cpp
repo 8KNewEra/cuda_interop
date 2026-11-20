@@ -49,6 +49,10 @@ PlayerController::PlayerController(QObject* parent)
     presentTimer_.setTimerType(Qt::PreciseTimer);
     connect(&presentTimer_, &QTimer::timeout, this, &PlayerController::presentTick);
 
+    // videoInfo / gpus の作り置きを捨てる合図（QML の接続より先に張るので、QML が読む前に進む）
+    connect(this, &PlayerController::infoChanged,  this, [this] { ++infoGen_; });
+    connect(this, &PlayerController::stateChanged, this, [this] { ++infoGen_; });
+
     // 性能 HUD: 0.25 秒ごとに集計を取り出して QML へ（毎フレーム通知すると描画が増えて計測を乱す）
     perfTimer_.setInterval(250);
     connect(&perfTimer_, &QTimer::timeout, this, [this] {
@@ -96,13 +100,13 @@ PlayerController::PlayerController(QObject* parent)
             m["nvdec"]  = mx;
         }
         perf_ = m;
-        emit perfChanged();
+        deferUi(UiPerf);   // 表示のペースの最中は swap の直後に出す
     });
 
     infoTimer_.setInterval(500);
     connect(&infoTimer_, &QTimer::timeout, this, [this] {
         // エンコード中は動画情報も更新しない（後ろは隠れている）
-        if (g_AppSettings.videoInfo_flag && encode_state != STATE_ENCODING) emit infoChanged();
+        if (g_AppSettings.videoInfo_flag && encode_state != STATE_ENCODING) deferUi(UiInfo);
     });
 }
 
@@ -577,6 +581,50 @@ QString PlayerController::formatFrames(int frames) const
 
 QVariantMap PlayerController::videoInfo() const
 {
+    if (videoInfoGen_ != infoGen_) { videoInfoCache_ = buildVideoInfo(); videoInfoGen_ = infoGen_; }
+    return videoInfoCache_;
+}
+
+QVariantList PlayerController::gpus() const
+{
+    if (gpusGen_ != infoGen_) { gpusCache_ = buildGpus(); gpusGen_ = infoGen_; }
+    return gpusCache_;
+}
+
+// ==============================================================
+// UI の定期更新を表示のペースの空き時間に寄せる
+//   表示のペースの最中に HUD / 動画情報の通知をタイマーの時刻のまま出すと、QML の評価（数 ms）が upload の時刻に重なって
+//   タイマーが遅れたり（5→3 vblank）、追加の描画が 1 つの vblank に 3〜4 回重なって swap が 10〜16ms 止まったり（6→2）した。
+//   印だけ付けて、presentTick の swap の直後に出す。印が付いたまま次の刻みが来たら（コマが出ていない）その場で出す
+// ==============================================================
+void PlayerController::deferUi(int what)
+{
+    if (!pacingActive() || (pendingUi_ & what)) {
+        pendingUi_ &= ~what;
+        emitUi(what);
+        return;
+    }
+    pendingUi_ |= what;
+}
+
+void PlayerController::emitUi(int what)
+{
+    if (what & UiPerf) emit perfChanged();
+    if (what & UiInfo) {
+        emit infoChanged();
+        if ((++infoTicks_ & 1) == 0) emit infoSampleTick();   // 1 秒ごと
+    }
+}
+
+void PlayerController::flushDeferredUi()
+{
+    const int w = pendingUi_;
+    pendingUi_ = 0;
+    if (w) emitUi(w);
+}
+
+QVariantMap PlayerController::buildVideoInfo() const
+{
     QVariantMap m;
     m["fileName"]      = QString::fromStdString(VideoInfo.Name);
     m["decoder"]       = QString::fromStdString(VideoInfo.Codec);
@@ -634,6 +682,10 @@ QVariantMap PlayerController::videoInfo() const
         }
         m["renderDepth"] = QString("%1bit / %2").arg(hi ? 16 : 8).arg(disp);
     }
+    // vsync（NVIDIA ドライバの「垂直同期」設定。起動時に決めたもの。DisplayProbe::vsyncPolicy）
+    {
+        m["vsync"] = g_vsync_text;
+    }
     return m;
 }
 
@@ -656,7 +708,7 @@ void PlayerController::showProperties()
     mediaInfo_->open(QString::fromStdString(VideoInfo.Path));
 }
 
-QVariantList PlayerController::gpus() const
+QVariantList PlayerController::buildGpus() const
 {
     QVariantList list;
     for (const GPUInfo& g : g_GPUInfo) {
@@ -1038,7 +1090,8 @@ void PlayerController::showFrame(const VideoFrame& f)
 //       （開始 = vblank − 周期 / 2 − upload→swap の移動平均）
 //     ・理想の時刻は計算なので、ずれが溜まって選ぶ vblank が 1 つ動くのは 1 回だけ（5 vblank のコマが 1 枚入る）。行ったり来たりしない
 //     ・起点 = 最初のコマが届いた時刻 ＋ max(1 コマ, 25ms)。キーフレームのデコードの遅れ（約 4ms）は待ち行列が吸収する
-//   使わない: 一時停止・シーク・コマ送り・逆再生・エンコード、1 コマが vblank の 1.1 倍より短い高速再生（ベンチマーク）、
+//     ・リフレッシュより速い再生では、同じ vblank に重なるコマを upload せずに捨てる（vblank ごとに 1 コマ）
+//   使わない: 一時停止・シーク・コマ送り・逆再生・エンコード、vsync オフ・高速（ドライバの「垂直同期」。届いたらすぐ描く）、
 //            DWM の時刻が取れないとき、CUDA_VIEWER_PACING=0
 // ==============================================================
 bool PlayerController::updatePacing()
@@ -1050,6 +1103,7 @@ bool PlayerController::updatePacing()
         if (!pacingEnv_) qDebug() << "[PlayerController] 表示のペースを使わない（CUDA_VIEWER_PACING=0）";
     }
     if (!pacingEnv_ || !engine_) return false;
+    if (!g_vsync_paced) return false;               // vsync オフ・高速（ドライバの設定）: 届いたらすぐ描く（ティアリングは覚悟）
     if (pause_flag || reverse_flag || encode_state != STATE_NOT_ENCODE || !play_intent_ || seek_hold_ || !render_active_)
         return false;
     const double fps = VideoInfo.fps * (speed() > 0 ? speed() : 1.0);
@@ -1057,7 +1111,9 @@ bool PlayerController::updatePacing()
     qint64 vb = 0; double per = 0;
     if (!engine_->vblankGrid(vb, per)) return false;
     const qint64 dur = qint64(1e9 / fps);
-    if (dur < qint64(per * 1.1)) return false;   // 画面のリフレッシュより速い再生は従来どおり（すぐ出す）
+    // リフレッシュより速い再生（16K 2 倍速 = 119.88fps を 120Hz など）も使う。vblank ごとに 1 コマを選び、
+    //   同じ vblank に重なるコマは upload せずに捨てる（presentTick）。以前はすぐ出していて、swap がブロックしている間に届いた
+    //   2 コマを続けて upload し 1 枚目が出ないまま上書きされ、その無駄な変換で GPU がさらに重くなって 60fps に張り付いていた
     if (dur != pacedFrameDurNs_) {               // 再生速度が変わったら起点を取り直す
         pacedFrameDurNs_ = dur;
         nextIdealNs_ = 0;
@@ -1075,12 +1131,17 @@ void PlayerController::schedulePresent()
     if (!engine_ || !engine_->vblankGrid(vb, per)) { presentWakePlanNs_ = now; presentTimer_.start(0); return; }
 
     if (nextIdealNs_ == 0) {
+        // 起点 = 届いた時刻 ＋ 遅延（1 コマ、ただし 25ms か 2 コマの短い方以上）。待ち行列は 2 コマまでなので長くしすぎない
         const qint64 recv = presentQueue_.front().t_recv_ns > 0 ? presentQueue_.front().t_recv_ns : now;
-        nextIdealNs_ = recv + std::max<qint64>(pacedFrameDurNs_, 25000000);
+        nextIdealNs_ = recv + std::max<qint64>(pacedFrameDurNs_, std::min<qint64>(25000000, 2 * pacedFrameDurNs_));
     }
-    // 理想の時刻に一番近い vblank
+    // 理想の時刻に一番近い vblank。ただし最後に出した vblank より後（同じ vblank に 2 枚出さない）
     const double  n = std::round(double(nextIdealNs_ - vb) / per);
-    const qint64  V = vb + qint64(n * per);
+    qint64        V = vb + qint64(n * per);
+    if (lastPresentedVNs_ > 0 && V < lastPresentedVNs_ + qint64(per * 0.5))
+        V = lastPresentedVNs_ + qint64(per);
+    presentTargetVNs_ = V;
+    presentPerNs_     = per;
     // swap が V の周期の真ん中に来るように upload を始める
     const qint64  wake = V - qint64(per * 0.5) - qint64(engine_->uploadToSwapMs() * 1e6);
     const qint64  waitNs = wake - now;
@@ -1102,16 +1163,30 @@ void PlayerController::presentTick()
     const int waits = pendingWaits_;
     pendingWaits_ = 0;
 
+    // 同じ vblank に次のコマも間に合う（次のコマの理想の時刻もこの vblank に丸まる）なら、先頭は出さずに捨てる。
+    //   upload しないので変換・画像処理の GPU を使わない。リフレッシュより速い再生（2 倍速・4 倍速）と、遅れを取り戻すとき
+    int dropped = 0;
+    while (presentQueue_.size() >= 2 && presentTargetVNs_ > 0
+           && nextIdealNs_ + pacedFrameDurNs_ <= presentTargetVNs_ + qint64(presentPerNs_ * 0.5)) {
+        presentQueue_.pop_front();
+        replyDecode();
+        nextIdealNs_ += pacedFrameDurNs_;
+        ++dropped;
+    }
+
     VideoFrame f = presentQueue_.front();
     presentQueue_.pop_front();
     f.paced          = 1;
     f.t_wake_plan_ns = presentWakePlanNs_;
     f.t_wake_ns      = mono_now_ns();
     f.pend_waits     = uint8_t(std::min(waits, 255));
+    f.paced_dropped  = uint8_t(std::min(dropped, 255));
     showFrame(f);
     engine_->upload(f);
     engine_->renderNow();   // その場で描いて swap まで進める（upload→swap を毎回同じにする）
     replyDecode();
+    flushDeferredUi();      // swap の直後: 待たせていた HUD / 動画情報の通知を出す（次の upload まで空いている）
+    lastPresentedVNs_ = presentTargetVNs_;
 
     // 次のコマの理想の時刻。大きく遅れたら（デコードが追いつかない等）起点を取り直す
     const qint64 now = mono_now_ns();
@@ -1125,7 +1200,9 @@ void PlayerController::flushPresentQueue(bool showNewest)
     presentTimer_.stop();
     pendingWaits_ = 0;
     nextIdealNs_ = 0;
-    if (presentQueue_.empty()) return;
+    lastPresentedVNs_ = 0;
+    presentTargetVNs_ = 0;
+    if (presentQueue_.empty()) { flushDeferredUi(); return; }
     if (showNewest && engine_ && run_decode_thread) {
         const VideoFrame f = presentQueue_.back();
         showFrame(f);
@@ -1133,6 +1210,7 @@ void PlayerController::flushPresentQueue(bool showNewest)
     }
     for (size_t i = 0; i < presentQueue_.size(); ++i) replyDecode();
     presentQueue_.clear();
+    flushDeferredUi();
 }
 
 void PlayerController::replyDecode()

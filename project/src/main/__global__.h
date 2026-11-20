@@ -19,6 +19,14 @@ inline int64_t mono_now_ns()
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+// vsync（NVIDIA ドライバの「垂直同期」設定から起動時に決める。DisplayProbe::vsyncPolicy、main.cpp の prepareQmlUi）
+//   g_vsync_paced = true（オン）: 表示のペース（docs/DECODE_CORE.md 3.6）で vblank ごとに 1 コマを選んで出す。リフレッシュより速い再生も同じ
+//   g_vsync_paced = false（オフ・高速）: 表示のペースを使わず、届いたらすぐ描く（ティアリングは覚悟。ベンチマーク向け）
+//   設定を変えたらアプリの再起動で反映（swap interval はウィンドウを作るときに決まる）
+inline int     g_vsync_swap_interval = 1;
+inline bool    g_vsync_paced         = true;
+inline QString g_vsync_text;            // 動画情報・ログ用（例「オン（ドライバ: アプリの設定 → 既定）」）
+
 // fps_thread が最後に刻んだ時刻（mono_now_ns。decode_thread がフレームに写す。表示の計測用）
 inline std::atomic<int64_t> g_last_tick_ns{0};
 #define STATE_NOT_ENCODE 0
@@ -462,6 +470,7 @@ struct VideoFrame {
     int64_t t_wake_plan_ns    = 0;   // 表示のペース: upload を始める予定の時刻（schedulePresent）
     int64_t t_wake_ns         = 0;   // 表示のペース: 実際に upload を始めた時刻（presentTick。swap 待ちの延長の後）
     uint8_t pend_waits        = 0;   // 表示のペース: 前のコマの swap 待ちで 1ms 延ばした回数
+    uint8_t paced_dropped     = 0;   // 表示のペース: このコマを出す前に、同じ vblank に重なって upload せず捨てたコマの数
 };
 
 //UI表示CPUダウンロード用

@@ -73,7 +73,8 @@ Rectangle {
         root.hist = h
         root.fpsHist = pushed(root.fpsHist, root.playing ? root.renderFps : null)
     }
-    Timer { interval: 1000; running: true; repeat: true; onTriggered: root.sample() }
+    // 1 秒ごと（player.infoSampleTick。表示のペースの最中は swap の直後に来る。docs/DECODE_CORE.md 3.6）
+    Connections { target: player; function onInfoSampleTick() { root.sample() } }
     // ファイルを閉じた・別のファイルを開いたら記録をやり直す
     property bool fileOpen: false
     readonly property string fileKey: fileOpen ? (info.fileName || "") : ""
@@ -124,6 +125,8 @@ Rectangle {
                 Key { text: "Bit Depth" }        Val { text: root.info.pixel || "-" }
                 // 処理（8bit / 10bit 経路）/ 表示（ウィンドウの色バッファ）の深さ。例 "16bit / 10bit"
                 Key { text: "Process/Render Depth" } Val { text: root.info.renderDepth || "-" }
+                // vsync（NVIDIA ドライバの「垂直同期」設定。オン = vblank に合わせて出す / オフ・高速 = 届いたらすぐ描く）
+                Key { text: "Vsync" }            Val { text: root.info.vsync || "-" }
                 Key { text: "Video Framerate" }  Num { text: root.fmtFps(root.info.fps) }
                 Key { text: "Max Frame" }        Num { text: root.info.maxFrame !== undefined ? root.info.maxFrame : "-" }
                 Key { text: "FrameNo" }          Num { text: root.frameNo }

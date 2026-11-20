@@ -18,6 +18,9 @@ UI のクラス構成・スレッド・QML と C++ の約束ごと・画面ご�
 
 ## 1. 起動とビルド
 
+- 表示まわりの検証用の環境変数: `CUDA_VIEWER_PRESENT_LOG=<パス>`（表示の CSV）、`CUDA_VIEWER_PACING=0`（表示のペースを切る）、
+  `CUDA_VIEWER_RENDER_NOW=0`（upload 直後の描画を切る）。vsync は環境変数ではなく NVIDIA ドライバの「垂直同期」設定に従う（`DECODE_CORE.md` 3.6）。
+  中身は `DECODE_CORE.md` 3.6 と `IMG_PROCESS_CORE.md` 13.1。
 - `--qml` 引数、または環境変数 `CUDA_VIEWER_UI=qml` で Qt Quick 版。なしなら従来の Widgets 版（`MainWindow` / `GLWidget`）。
 - ファイルを追加・削除したら **qmake を実行してから再ビルド**（`cuda_interop.pro`・`qml.qrc`・`qml/qmldir` の 3 か所に登録が要る）。
 - Windows 専用のリンク: `opengl32`、`nvml`、`pdh`（GPU の 3D / CUDA 使用率）、`dxgi` / `d3d11`（表示の深さ。5 節）、`nvapi64`。
@@ -117,6 +120,8 @@ flowchart LR
 - **fps_thread**: 目標 fps（素材の fps × 再生速度）で `processFrame` を叩く。エンコード中は切り離す（`set_fps_driving(false)`）。
 - **info_thread**: GPU ごとの使用率（NVML ＋ PDH）を `g_GPUInfo` に書く。PlayerController が 0.5 秒ごと（`infoTimer_`）に読んで `infoChanged`。
 - 性能 HUD は 0.25 秒ごと（`perfTimer_`）に `PerfMeter::take` → `perfChanged`。
+- 動画情報の推移グラフの記録は 1 秒ごとの `infoSampleTick`（`infoChanged` の 2 回に 1 回。以前は InfoPanel の QML の Timer）。
+- 再生中（表示のペースの最中）はこの 3 つの通知を swap の直後に寄せる（`DECODE_CORE.md` 3.6）。映像のタイミングに UI の処理を重ねないため。
 
 ### 2.3 C++（`src/qmlui/`）
 

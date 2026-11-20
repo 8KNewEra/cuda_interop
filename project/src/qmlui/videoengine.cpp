@@ -703,6 +703,7 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     rendered_.wakePlanNs    = Frame.t_wake_plan_ns;
     rendered_.wakeNs        = Frame.t_wake_ns;
     rendered_.pendWaits     = Frame.pend_waits;
+    rendered_.dropped       = Frame.paced_dropped;
     publishFrameFence();
     emit frameReady();
 }
@@ -807,7 +808,7 @@ void VideoEngine::onFrameSwapped()
                 *presentLog_ << "t_ms,frame_no,step,present_interval_ms,upload_interval_ms,upload_to_present_ms,overwritten,steady,"
                                 "tick_interval_ms,tick_to_begin_ms,decode_ms,emit_to_recv_ms,recv_to_upload_ms,"
                                 "vblank_idx,vblank_step,swap_phase,refresh_ms,paced,"
-                                "swaps,swap_ms,swap_max_ms,wake_late_ms,pend_waits\n";
+                                "swaps,swap_ms,swap_max_ms,wake_late_ms,pend_waits,dropped\n";
                 logT0Ns_ = now;
                 qDebug() << "[VideoEngine] 表示のログ:" << path;
             } else {
@@ -858,7 +859,7 @@ void VideoEngine::onFrameSwapped()
                      << f.paced << ','
                      << swapsSincePresent_ << ',' << num(swapMs) << ',' << num(swapMaxMsSince_) << ','
                      << num(f.wakePlanNs > 0 && f.wakeNs > 0 ? (f.wakeNs - f.wakePlanNs) / 1e6 : -1.0) << ','
-                     << f.pendWaits << '\n';
+                     << f.pendWaits << ',' << f.dropped << '\n';
         if (++presentLogLines_ % 120 == 0) presentLog_->flush();
         prevTickNs_    = f.tickNs;
         prevVblankIdx_ = vbIdx;

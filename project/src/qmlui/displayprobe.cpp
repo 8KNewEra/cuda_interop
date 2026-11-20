@@ -206,8 +206,92 @@ void probeComposed(QQuickWindow* w, PlayerController* player)
     QTimer::singleShot(50, w, [tick] { if (*tick) (*tick)(); });
 }
 
+// DRS の設定を 1 つ読む（このアプリのプロファイル → 全体プロファイル）。where: 0 = 既定（誰も設定していない）/ 1 = アプリ / 2 = 全体
+//   戻り値: 読めたか（NVAPI が使えないと false）
+bool drsSetting(NvU32 id, NvU32 defaultValue, NvU32& value, int& where)
+{
+    value = defaultValue;
+    where = 0;
+    if (NvAPI_Initialize() != NVAPI_OK) return false;
+    NvDRSSessionHandle session = nullptr;
+    if (NvAPI_DRS_CreateSession(&session) != NVAPI_OK) return false;
+    bool ok = false;
+    if (NvAPI_DRS_LoadSettings(session) == NVAPI_OK) {
+        ok = true;
+        NvAPI_UnicodeString exe = {};
+        wchar_t path[MAX_PATH] = {};
+        const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+        for (DWORD i = 0; i < n && i < NVAPI_UNICODE_STRING_MAX - 1; ++i) exe[i] = NvU16(path[i]);
+        NvDRSProfileHandle appProfile = nullptr, baseProfile = nullptr;
+        NVDRS_APPLICATION app = {};
+        app.version = NVDRS_APPLICATION_VER;
+        if (NvAPI_DRS_FindApplicationByName(session, exe, &appProfile, &app) != NVAPI_OK) appProfile = nullptr;
+        if (NvAPI_DRS_GetBaseProfile(session, &baseProfile) != NVAPI_OK) baseProfile = nullptr;
+        auto get = [&](NvDRSProfileHandle p) -> bool {
+            if (!p) return false;
+            NVDRS_SETTING st = {};
+            st.version = NVDRS_SETTING_VER;
+            if (NvAPI_DRS_GetSetting(session, p, id, &st) != NVAPI_OK) return false;
+            value = st.u32CurrentValue;
+            return true;
+        };
+        if (get(appProfile)) where = 1;
+        else if (get(baseProfile)) where = 2;
+    }
+    NvAPI_DRS_DestroySession(session);
+    return ok;
+}
+
 } // namespace
 #endif
+
+DisplayProbe::VsyncPolicy DisplayProbe::vsyncPolicy()
+{
+    VsyncPolicy p;
+#ifdef _WIN32
+    NvU32 mode = 0; int where = 0;
+    if (!drsSetting(VSYNCMODE_ID, VSYNCMODE_DEFAULT, mode, where)) {
+        p.text = QStringLiteral("オン（ドライバの設定を読めない → 既定）");
+        qDebug() << "[display] vsync:" << p.text;
+        return p;
+    }
+    const QString src = where == 1 ? QStringLiteral("このアプリの設定") : where == 2 ? QStringLiteral("全体の設定") : QStringLiteral("既定");
+    NvU32 tear = 0; int tw = 0;
+    drsSetting(VSYNCTEARCONTROL_ID, VSYNCTEARCONTROL_DEFAULT, tear, tw);
+    const bool adaptive = tear == VSYNCTEARCONTROL_ENABLE;
+    switch (mode) {
+    case VSYNCMODE_FORCEOFF:
+        p.swapInterval = 0; p.paced = false;
+        p.text = QStringLiteral("オフ（ドライバ: 強制オフ・%1）").arg(src);
+        break;
+    case VSYNCMODE_VIRTUAL:
+        p.swapInterval = 0; p.paced = false;
+        p.text = QStringLiteral("高速（ドライバ: Fast Sync・%1）").arg(src);
+        break;
+    case VSYNCMODE_FORCEON:
+    case VSYNCMODE_FLIPINTERVAL2:
+    case VSYNCMODE_FLIPINTERVAL3:
+    case VSYNCMODE_FLIPINTERVAL4:
+        p.text = QStringLiteral("オン（ドライバ: 強制オン%1・%2）").arg(adaptive ? QStringLiteral("・アダプティブ") : QString(), src);
+        break;
+    default:   // VSYNCMODE_PASSIVE（アプリに任せる）。このアプリの既定はオン
+        p.text = QStringLiteral("オン（ドライバ: アプリの設定を使用・%1）").arg(src);
+        break;
+    }
+    // G-SYNC（表示だけ）
+    NvU32 vrr = 0, vrrApp = 0; int vw = 0, vaw = 0;
+    drsSetting(VRR_MODE_ID, VRR_MODE_DEFAULT, vrr, vw);
+    drsSetting(VRR_APP_OVERRIDE_ID, VRR_APP_OVERRIDE_DEFAULT, vrrApp, vaw);
+    const bool vrrAllowed = vrrApp == VRR_APP_OVERRIDE_ALLOW;
+    const QString g = !vrrAllowed || vrr == VRR_MODE_DISABLED ? QString()
+                    : vrr == VRR_MODE_FULLSCREEN_AND_WINDOWED ? QStringLiteral(" · G-SYNC 設定: ウィンドウも")
+                                                              : QStringLiteral(" · G-SYNC 設定: 全画面のみ");
+    p.text += g;
+    qDebug() << "[display] vsync:" << p.text << "swap interval" << p.swapInterval
+             << (p.paced ? "（vblank に合わせて出す）" : "（届いたらすぐ描く）");
+#endif
+    return p;
+}
 
 void DisplayProbe::install(QQuickWindow* window, PlayerController* player)
 {

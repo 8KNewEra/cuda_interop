@@ -295,7 +295,8 @@ HUD が OFF の間は各フックが即 return する（クエリもイベント
   `swaps` = 前のコマが出てからこのコマが出るまでの swap の回数（1 が理想。2 以上は同じ内容を描き直している）、
   `swap_ms` = このコマの swap にかかった時間（`afterRendering` → `frameSwapped`。swap がブロックしていないか）、
   `swap_max_ms` = その間の swap で一番長かったもの、`wake_late_ms` = 表示のペースのタイマーが予定より遅れた時間（swap 待ちの延長を含む）、
-  `pend_waits` = 前のコマの swap 待ちで 1ms 延ばした回数。
+  `pend_waits` = 前のコマの swap 待ちで 1ms 延ばした回数、`dropped` = このコマを出す前に同じ vblank に重なって upload せず捨てたコマの数
+  （リフレッシュより速い再生。`step` = 前に出たコマとの番号の差と合わせて見る）。
   - 受け渡しの内訳: 刻み（`fps_thread` が `g_last_tick_ns` に記録）→ デコード開始（`processFrame`）→ 送出（`stamp_frame_times`）
     → GUI の受け取り（`decode_view` の先頭）→ upload の先頭。時刻は `VideoFrame::t_*`（`mono_now_ns`。QPC の ns でスレッドをまたいで比べられる）。
     `tick_interval_ms` は前に出たフレームの刻みとの差。受け取り待ち（`drop_flag`）で遅れたデコードは `tick_to_begin_ms` に出る。

@@ -24,6 +24,7 @@
 #include <QOpenGLContext>
 #include <QDebug>
 #include <cstring>
+#include <algorithm>
 
 
 std::vector<GPUInfo> g_GPUInfo;
@@ -55,7 +56,20 @@ static void prepareQmlUi()
     fmt.setProfile(QSurfaceFormat::CompatibilityProfile);
     fmt.setDepthBufferSize(24);
     fmt.setStencilBufferSize(8);
-    fmt.setSwapInterval(1);
+    // vsync（swap を vblank に合わせて待つか）は NVIDIA ドライバの「垂直同期」設定に合わせる（DisplayProbe::vsyncPolicy）。
+    //   QML 版の通常再生は表示のペース（docs/DECODE_CORE.md 3.6）が upload の時刻を vblank に合わせるので、swap で待つ必要は薄い。
+    //   1 のままだと、1 つの vblank に描画が 3〜4 回重なったときや GPU が重いとき（16K）に swap が 10〜16ms ブロックし、
+    //   GUI スレッドが止まってコマを取りこぼしていた（16K 2 倍速で画面に出るのが 60fps 止まり）。
+    //   0 にするとウィンドウ表示では DWM が vblank で合成するのでティアリングしないが、全画面（独立フリップ）では
+    //   ティアリングしうる。UI のアニメーションが vblank で抑えられなくなるので CPU / GPU の使用が増えることもある
+    //   オフ・高速のときは表示のペースも使わない（届いたらすぐ描く。g_vsync_paced、__global__.h）。設定の変更は再起動で反映
+    {
+        const DisplayProbe::VsyncPolicy vp = DisplayProbe::vsyncPolicy();
+        g_vsync_swap_interval = vp.swapInterval;
+        g_vsync_paced         = vp.paced;
+        g_vsync_text          = vp.text;
+        fmt.setSwapInterval(vp.swapInterval);
+    }
     // 表示の 10bit 化: ウィンドウの色バッファを 10:10:10 で要求する（10bit の動画は RGBA16 のまま
     //   シーングラフが描くので、ここが 10bit なら 10bit のまま画面に出る）。
     //   取れない環境（GPU・ドライバ・モニタが非対応）では 8bit の形式に落ちるだけで、動作は変わらない。

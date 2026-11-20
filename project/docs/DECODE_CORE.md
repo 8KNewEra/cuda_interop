@@ -173,13 +173,30 @@ sequenceDiagram
   - 実測（120Hz、29.97fps、HUD あり、144 秒）: 4 vblank が 98.3%（入れる前 89.7%）、swap の位置は周期の 0.52 ± 0.11。
     残りは 約 8.7 秒ごとの 5 vblank（狙いどおり。29.97fps を 120Hz で出す限り避けられない）、HUD 由来の 3→5 の組（renderNow で対策）、
     GUI スレッドが 16〜57ms 止まったもの数回。
+- **UI の定期更新は swap の直後へ寄せる**: 性能 HUD（`perfTimer_` 250ms）・動画情報（`infoTimer_` 500ms）・推移の記録（1 秒。
+  `infoSampleTick`）の通知は、表示のペースの最中は印だけ付け（`deferUi`）、`presentTick` の swap の直後にまとめて出す（`flushDeferredUi`）。
+  次の upload まで 20ms 以上空いているので、QML の評価も追加の描画もそこに収まる。印が付いたまま次の刻みが来たら（コマが出ていない）その場で出す。
+  以前はタイマーの時刻のまま出していて、`infoChanged` の評価（約 5ms）が upload の時刻に重なるとタイマーが遅れ（5→3 vblank、2.5 秒ごと）、
+  追加の描画が 1 つの vblank に 3〜4 回重なると swap が 10〜16ms 止まった（6→2 vblank）。あわせて `videoInfo` / `gpus` は
+  `infoChanged` / `stateChanged` ごとに 1 回だけ作って使い回す（バインディングごとに作り直していた）。
 - **受け取りの返事**: 待ち行列のコマは出したときに 1 枚ずつ `receve_decode_flag` を直接呼ぶ（Queued）。`decode_please` は
   SingleShotConnection を 1 回の emit で全部動かすので、待ち行列の経路では使わない（使うと 2 枚分の返事が 1 回で出る）。
 - **リングの勘定は変わらない**: 待ち行列のコマは「GUI の未受け取り ≦ 2」（デコードの先行の上限 = `inflight_frames < 2`）の枠そのもの。
   あふれたら（来ないはず）古い方を捨てて返事をする。
 - 使わない経路へ移るとき（`decode_view` に待ち行列を通らないコマが来た・一時停止・逆再生・エンコード設定を開く）は `flushPresentQueue`。
   一時停止は待っていた最後のコマを出してから止める。ファイルを閉じるときは捨てる（デコーダごと止める）。
-- 使わない条件: 1 コマが vblank の 1.1 倍より短い高速再生（ベンチマークは従来どおりすぐ出す）、DWM の時刻が取れない、`CUDA_VIEWER_PACING=0`。
+- **vsync オン / オフ**は NVIDIA ドライバの「垂直同期」設定（DRS の `VSYNCMODE`）に合わせる（`DisplayProbe::vsyncPolicy`、起動時に 1 回。
+  `g_vsync_swap_interval` / `g_vsync_paced`、`__global__.h`。動画情報の「Vsync」に出る。設定の変更は再起動で反映）。
+  このアプリのプロファイル → 全体プロファイル → 既定 の順に読む。アプリに任せる（既定）/ 強制オン / フリップ間隔 → オン、
+  強制オフ → オフ、高速（Fast Sync）→ すぐ描く、読めない（NVIDIA 以外）→ オン。G-SYNC の設定は表示だけ（動きは変えない）
+  - オン（1 以上）: 表示のペースで vblank に合わせて出す。**リフレッシュより速い再生も同じ**で、vblank ごとに 1 コマを選び、
+    同じ vblank に重なるコマ（次のコマの理想の時刻もその vblank に丸まる）は upload せずに捨てて返事だけする（`presentTick`、CSV の `dropped`）。
+    同じ vblank に 2 枚は出さない（`lastPresentedVNs_`）。
+  - オフ（0）: 表示のペースを使わず、届いたらすぐ描く（ティアリングは覚悟。ベンチマーク向け。描画 fps = upload の数）。
+  - 以前はリフレッシュより速い再生だけすぐ出していて、16K 2 倍速（119.88fps、120Hz）で swap が毎回約 10.7ms ブロック
+    （vsync ではなく GPU 待ち。swap interval 0 でも同じ）し、その間に届いた 2 コマを続けて upload して 1 枚目が出ないまま上書きされ、
+    無駄な変換で GPU がさらに重くなって画面に出るのは 60fps に張り付いていた（HUD の描画 fps 約 120 は upload の数）。
+- 使わない条件: 一時停止・シーク・コマ送り・逆再生・エンコード、vsync オフ、DWM の時刻が取れない、`CUDA_VIEWER_PACING=0`。
 - 音声は従来どおりデコード側の映像位置（`play_pos_us_`）に合わせるので、待ち行列のぶん（約 1 コマ）音が先に出る。
 - Widgets 版（MainWindow）は従来どおり（すぐ出す）。
 

@@ -324,6 +324,7 @@ private:
         qint64  tickNs = 0, decodeBeginNs = 0, emitNs = 0, recvNs = 0;   // VideoFrame の t_*（0 = なし）
         int     paced = 0;                                              // VideoFrame::paced
         qint64  wakePlanNs = 0, wakeNs = 0; int pendWaits = 0;          // VideoFrame::t_wake_plan_ns / t_wake_ns / pend_waits
+        int     dropped = 0;                                            // VideoFrame::paced_dropped
     };
     qint64     logT0Ns_ = 0;            // CSV の t_ms の起点
     qint64     prevTickNs_ = 0;         // 前に出たフレームの刻み（刻みの間隔）

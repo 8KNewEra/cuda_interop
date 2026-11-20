@@ -207,8 +207,8 @@ public:
     void setSpeed(double ratio);
     void setVolume(int value);
 
-    QVariantMap  videoInfo() const;
-    QVariantList gpus() const;
+    QVariantMap  videoInfo() const;   // 作り置き（infoChanged / stateChanged ごとに 1 回だけ作る）
+    QVariantList gpus() const;        // 同上
     QVariantMap  histogram() const;
 
     // ---- QML から呼ぶ操作 ----
@@ -252,6 +252,8 @@ signals:
     void speedChanged();
     void volumeChanged();
     void infoChanged();
+    // 動画情報の推移グラフの記録の刻み（1 秒ごと。infoChanged 2 回に 1 回。InfoPanel.sample）
+    void infoSampleTick();
     void histogramChanged();
     void perfChanged();
     void pickChanged();
@@ -290,6 +292,28 @@ private:
     int     pacingEnv_ = -1;            // CUDA_VIEWER_PACING（0 で切る）。-1 = 未読
     int     pendingWaits_ = 0;          // 前のコマの swap 待ちで延ばした回数
     qint64  presentWakePlanNs_ = 0;     // 先頭のコマの upload を始める予定の時刻（表示の計測。タイマーの遅れ）
+    qint64  presentTargetVNs_ = 0;      // 先頭のコマを出す vblank の時刻（schedulePresent）
+    double  presentPerNs_ = 0;          // そのときの vblank の周期
+    qint64  lastPresentedVNs_ = 0;      // 最後にコマを出した vblank（同じ vblank に 2 枚出さない）
+
+    // ---- UI の定期更新を表示のペースの空き時間に寄せる（docs/DECODE_CORE.md 3.6）----
+    //   性能 HUD（250ms）・動画情報（500ms）・推移の記録（1 秒）の通知は QML の評価と追加の描画を起こす。
+    //   表示のペースの最中は印だけ付け、presentTick の swap の直後（次の upload まで 20ms 以上空いている）にまとめて出す
+    enum UiTick { UiPerf = 1, UiInfo = 2 };
+    int     pendingUi_ = 0;
+    int     infoTicks_ = 0;
+    bool    pacingActive() const { return !presentQueue_.empty() || presentTimer_.isActive(); }
+    void    deferUi(int what);          // 表示のペースの最中なら印だけ、そうでなければすぐ出す
+    void    emitUi(int what);
+    void    flushDeferredUi();          // 印の付いた通知を出す（presentTick の swap の直後・待ち行列を空けたとき）
+
+    // videoInfo / gpus の作り置き（バインディングごとに作り直すと 1 回の通知で数 ms かかっていた）
+    QVariantMap  buildVideoInfo() const;
+    QVariantList buildGpus() const;
+    quint64              infoGen_ = 0;                 // infoChanged / stateChanged ごとに進む
+    mutable quint64      videoInfoGen_ = ~0ull, gpusGen_ = ~0ull;
+    mutable QVariantMap  videoInfoCache_;
+    mutable QVariantList gpusCache_;
     bool    updatePacing();             // このコマを待ち行列に通すか（条件と 1 コマの長さの更新）
     void    schedulePresent();          // 先頭のコマを出す時刻にタイマーを掛ける
     void    presentTick();              // 先頭のコマを出す

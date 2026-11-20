@@ -21,11 +21,27 @@
 //         公開 API では取れない）。設定が有効で色バッファが 10bit なら、その経路で出ているとみなす
 // ==============================================================
 
+#include <QString>
+
 class QQuickWindow;
 class PlayerController;
 
 namespace DisplayProbe {
 void install(QQuickWindow* window, PlayerController* player);
+
+// vsync の方針（NVIDIA ドライバの「垂直同期」= DRS の VSYNCMODE から決める。起動時に 1 回）
+//   このアプリのプロファイルに設定があればそれ、なければ全体（ベース）プロファイル、それもなければ既定（アプリに任せる）
+//     アプリに任せる / 強制オン / フリップ間隔 2〜4 → オン（swap interval 1、表示のペースを使う）
+//     強制オフ                                    → オフ（swap interval 0、届いたらすぐ描く）
+//     高速（Fast Sync）                            → 高速（swap interval 0、すぐ描く。ドライバが最新のコマを vblank で出す）
+//     読めない（NVIDIA 以外・古いドライバ）          → オン
+//   G-SYNC（VRR_MODE / VRR_APP_OVERRIDE）は表示（text）とログに出すだけ（モニターが対応しているかまでは分からないので動きは変えない）
+struct VsyncPolicy {
+    int     swapInterval = 1;
+    bool    paced = true;
+    QString text;
+};
+VsyncPolicy vsyncPolicy();
 }
 
 #endif // DISPLAYPROBE_H
