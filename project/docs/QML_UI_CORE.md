@@ -19,7 +19,7 @@ UI のクラス構成・スレッド・QML と C++ の約束ごと・画面ご�
 ## 1. 起動とビルド
 
 - 表示まわりの検証用の環境変数: `CUDA_VIEWER_PRESENT_LOG=<パス>`（表示の CSV）、`CUDA_VIEWER_PACING=0`（表示のペースを切る）、
-  `CUDA_VIEWER_RENDER_NOW=0`（upload 直後の描画を切る）。vsync は環境変数ではなく NVIDIA ドライバの「垂直同期」設定に従う（`DECODE_CORE.md` 3.6）。
+  `CUDA_VIEWER_RENDER_NOW=1`（upload 直後にその場で描く。既定は使わない）。vsync は環境変数ではなく NVIDIA ドライバの「垂直同期」設定に従う（`DECODE_CORE.md` 3.6）。
   中身は `DECODE_CORE.md` 3.6 と `IMG_PROCESS_CORE.md` 13.1。
 - `--qml` 引数、または環境変数 `CUDA_VIEWER_UI=qml` で Qt Quick 版。なしなら従来の Widgets 版（`MainWindow` / `GLWidget`）。
 - ファイルを追加・削除したら **qmake を実行してから再ビルド**（`cuda_interop.pro`・`qml.qrc`・`qml/qmldir` の 3 か所に登録が要る）。

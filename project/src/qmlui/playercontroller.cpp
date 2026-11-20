@@ -137,6 +137,9 @@ bool PlayerController::initialize()
     connect(engine_, &VideoEngine::encode_error, this,
             &PlayerController::encode_error_handler, Qt::QueuedConnection);
     connect(engine_, &VideoEngine::histogramChanged, this, &PlayerController::histogramChanged);
+    // 表示のペース: コマが swap されたら（描画が終わってから）待たせていた HUD / 動画情報の通知を出す。
+    //   Queued: frameSwapped の中（描画の途中）で QML を動かさない
+    connect(engine_, &VideoEngine::framePresented, this, [this] { flushDeferredUi(); }, Qt::QueuedConnection);
     connect(engine_, &VideoEngine::pickUpdated,      this, &PlayerController::pickChanged);
 
     // フィルタ係数。変わったら次の描画でシェーダへ送る（一時停止中も同じフレームを描き直す）
@@ -1142,8 +1145,18 @@ void PlayerController::schedulePresent()
         V = lastPresentedVNs_ + qint64(per);
     presentTargetVNs_ = V;
     presentPerNs_     = per;
-    // swap が V の周期の真ん中に来るように upload を始める
-    const qint64  wake = V - qint64(per * 0.5) - qint64(engine_->uploadToSwapMs() * 1e6);
+    // swap が V の周期の真ん中に来るように upload を始める。
+    //   ただし前のコマを出した vblank（lastPresentedVNs_）より前には始めない（＋1ms）。前のコマがまだ画面に出ていないうちに
+    //   swap すると、vsync オンのドライバは前のコマが出るまで swap をブロックする。そのブロックの時間が upload→swap の移動平均に
+    //   入ると、次はさらに早く始めて、さらに長くブロックする（16K 60p で swap が毎回約 14.5ms 止まり、GUI スレッドが止まって
+    //   コマの受け取りと返事が遅れ、デコードの刻みを取りこぼして 55.7fps に落ちていた）。前の vblank の後なら待つものがない
+    //   さらに upload→swap の見込みは周期の半分までで打ち切る（始めるのは V の 1 周期前より早くしない）。
+    //   ウィンドウ表示では DWM が前のコマを画面に出すのは狙った vblank のさらに 1 つ後で、それまでに次の swap を呼ぶと
+    //   そこまでブロックする。そのブロックが移動平均に入ると早く始める → またブロック、で 60fps の素材が
+    //   swap 約 14.5ms・55fps に張り付いていた（4K 2 倍速でも）。打ち切れば前のコマが出た後に始めるので待つものがない
+    const double  leadNs = std::min(engine_->uploadToSwapMs() * 1e6, per * 0.5);
+    qint64        wake = V - qint64(per * 0.5) - qint64(leadNs);
+    if (lastPresentedVNs_ > 0) wake = std::max(wake, lastPresentedVNs_ + 1000000);
     const qint64  waitNs = wake - now;
     presentWakePlanNs_ = waitNs <= 0 ? now : wake;   // 表示の計測（タイマーの遅れ）
     presentTimer_.start(waitNs <= 0 ? 0 : int((waitNs + 500000) / 1000000));
@@ -1183,9 +1196,10 @@ void PlayerController::presentTick()
     f.paced_dropped  = uint8_t(std::min(dropped, 255));
     showFrame(f);
     engine_->upload(f);
-    engine_->renderNow();   // その場で描いて swap まで進める（upload→swap を毎回同じにする）
+    engine_->renderNow();   // CUDA_VIEWER_RENDER_NOW=1 のときだけ、その場で描いて swap まで進める（既定は requestUpdate に任せる）
     replyDecode();
-    flushDeferredUi();      // swap の直後: 待たせていた HUD / 動画情報の通知を出す（次の upload まで空いている）
+    // 待たせていた HUD / 動画情報の通知は swap の後（framePresented）に出す。その場で描いたときはもう swap 済みなのでここで出す
+    if (engine_->renderNowEnabled()) flushDeferredUi();
     lastPresentedVNs_ = presentTargetVNs_;
 
     // 次のコマの理想の時刻。大きく遅れたら（デコードが追いつかない等）起点を取り直す
@@ -1208,17 +1222,25 @@ void PlayerController::flushPresentQueue(bool showNewest)
         showFrame(f);
         engine_->upload(f);
     }
-    for (size_t i = 0; i < presentQueue_.size(); ++i) replyDecode();
+    for (size_t i = 0; i < presentQueue_.size(); ++i) replyDecode(false);   // 待ち行列を使わない経路へ移るので刻みに戻す
     presentQueue_.clear();
     flushDeferredUi();
 }
 
-void PlayerController::replyDecode()
+void PlayerController::replyDecode(bool kick)
 {
     // decode_please（SingleShotConnection）は 1 回の emit で張ってある接続が全部動くので、待ち行列からは使わない。
     //   1 枚ごとに直接返す（Queued。decode_thread のスレッドで receve_decode_flag が動く）
-    if (decodestream)
-        QMetaObject::invokeMethod(decodestream, "receve_decode_flag", Qt::QueuedConnection);
+    if (!decodestream) return;
+    QMetaObject::invokeMethod(decodestream, "receve_decode_flag", Qt::QueuedConnection);
+    // 表示のペースの最中は、返事のたびに次のデコードも促す（kick）。
+    //   デコードは fps_thread の刻みで進むが、返事が来るまでに刻みが 2 回来ると、覚えておけるのは 1 回（drop_flag）なので
+    //   1 回分の刻みが消え、再生がその分遅れる。性能 HUD の更新（250ms）で返事が遅れるたびに刻みが消え、
+    //   60fps の素材で 60 − 4.2 = 55.8fps に落ちていた（4K でも 16K でも）。
+    //   ここでは表示のペースが理想の時刻で消費を決めているので、デコードは待ち行列に空きがあれば進めてよい
+    //   （先行は inflight_frames < 2 までなのでリングの勘定は変わらない。刻みはそのまま来ても、空きが無ければ何もしない）
+    if (kick)
+        QMetaObject::invokeMethod(decodestream, "processFrame", Qt::QueuedConnection);
 }
 
 // ==============================================================

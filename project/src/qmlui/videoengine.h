@@ -143,6 +143,7 @@ public:
     //   render loop（basic）がその場で描くので、upload→swap が毎回同じになる。CUDA_VIEWER_RENDER_NOW=0 で切る
     void   setPresentWindow(QQuickWindow* w) { presentWindow_ = w; }
     void   renderNow();
+    bool   renderNowEnabled();
     // QQuickWindow::afterRendering（swap の直前。main.cpp）から: swap にかかった時間を測る起点
     void   noteAfterRendering() { afterRenderNs_ = mono_now_ns(); }
 
@@ -152,6 +153,7 @@ public:
 signals:
     void initialized();
     void frameReady();                // 新しい表示フレームができた
+    void framePresented();            // 新しいフレームが swap された（onFrameSwapped。表示のペースが UI の通知を出す合図）
     void histogramChanged();
     void pickUpdated();               // スポイトの値が新しいフレームの分に更新された
     void encode_finished();
@@ -332,7 +334,7 @@ private:
     qint64     prevVblankNs_  = 0;      // 前に出たフレームの swap の後の最初の vblank の時刻
     double     uploadToSwapEmaMs_ = 7.0;
     QQuickWindow* presentWindow_ = nullptr;
-    int        renderNowEnv_ = -1;      // CUDA_VIEWER_RENDER_NOW（0 で切る）。-1 = 未読
+    int        renderNowEnv_ = -1;      // CUDA_VIEWER_RENDER_NOW（1 で使う。既定は使わない）。-1 = 未読
     // swap の回数と時間（CSV の swaps / swap_ms / swap_max_ms。前に出たコマから今のコマが出るまで）
     qint64     afterRenderNs_ = 0;
     int        swapsSincePresent_ = 0;

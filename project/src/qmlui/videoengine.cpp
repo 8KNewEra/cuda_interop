@@ -733,15 +733,23 @@ bool VideoEngine::vblankGrid(qint64& vbNs, double& perNs) const
 #endif
 }
 
-void VideoEngine::renderNow()
+bool VideoEngine::renderNowEnabled()
 {
-    if (!presentWindow_) return;
+    // 既定は使わない（CUDA_VIEWER_RENDER_NOW=1 で使う）。
+    //   UpdateRequest を直接送って描かせると、60fps の素材（vblank 2 回に 1 コマ）で swap が毎回約 14.5ms ブロックし、
+    //   GUI スレッドが止まって 54〜55fps に張り付いた（requestUpdate に任せると 60fps に張り付く。原因は Qt / ドライバ側で未解明）。
+    //   入れたときの狙い（HUD の更新で予約済みの描画に乗って swap が早まる）は、UI の通知を swap の後に寄せたことで要らなくなった
     if (renderNowEnv_ < 0) {
         bool ok = false;
         const int v = qEnvironmentVariableIntValue("CUDA_VIEWER_RENDER_NOW", &ok);
-        renderNowEnv_ = ok ? (v != 0 ? 1 : 0) : 1;
+        renderNowEnv_ = (ok && v != 0) ? 1 : 0;
     }
-    if (!renderNowEnv_) return;
+    return renderNowEnv_ == 1;
+}
+
+void VideoEngine::renderNow()
+{
+    if (!presentWindow_ || !renderNowEnabled()) return;
     // frameReady → VideoItem::update で描画は予約済み。basic の render loop は UpdateRequest を受けたらその場で
     //   polish → sync → render → swap まで進む（QQuickWindow::event → handleUpdateRequest）
     QEvent ev(QEvent::UpdateRequest);
@@ -867,6 +875,7 @@ void VideoEngine::onFrameSwapped()
 
     swapsSincePresent_ = 0;
     swapMaxMsSince_    = -1;
+    emit framePresented();   // 受け手は Queued で受けること（描画の途中で QML を動かさない）
     presented_        = painted_;
     lastPresentNs_    = now;
     lastPresentFrame_ = painted_.frameNo;

@@ -305,7 +305,7 @@ private:
     bool    pacingActive() const { return !presentQueue_.empty() || presentTimer_.isActive(); }
     void    deferUi(int what);          // 表示のペースの最中なら印だけ、そうでなければすぐ出す
     void    emitUi(int what);
-    void    flushDeferredUi();          // 印の付いた通知を出す（presentTick の swap の直後・待ち行列を空けたとき）
+    void    flushDeferredUi();          // 印の付いた通知を出す（swap の直後・待ち行列を空けたとき）
 
     // videoInfo / gpus の作り置き（バインディングごとに作り直すと 1 回の通知で数 ms かかっていた）
     QVariantMap  buildVideoInfo() const;
@@ -318,7 +318,7 @@ private:
     void    schedulePresent();          // 先頭のコマを出す時刻にタイマーを掛ける
     void    presentTick();              // 先頭のコマを出す
     void    flushPresentQueue(bool showNewest);   // 待ち行列を空ける（showNewest なら最後のコマを出す）
-    void    replyDecode();              // デコードへ 1 枚受け取ったと返す
+    void    replyDecode(bool kick = true);   // デコードへ 1 枚受け取ったと返す（kick: 続けて次をデコードさせる）
     void init_decodethread_complete();
     void setControlsEnabled(bool on);
 

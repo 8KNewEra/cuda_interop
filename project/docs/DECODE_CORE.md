@@ -165,11 +165,19 @@ sequenceDiagram
     起点 = 最初のコマが届いた時刻 ＋ max(1 コマ, 25ms)（待ち行列にほぼ 1 コマ溜まり、キーフレームの遅れを吸収する）。
   - 理想の時刻に一番近い実際の vblank（`VideoEngine::vblankGrid`。DWM の `qpcVBlank` と周期）を選び、
     swap がその vblank の周期の真ん中に来る時刻（vblank − 周期 / 2 − upload→swap の移動平均）に `presentTimer_`（PreciseTimer）で upload を始める。
+  - upload→swap の見込みは周期の半分で打ち切る（始めるのは V の 1 周期前より早くしない）。ウィンドウ表示では DWM が前のコマを
+    画面に出すのは狙った vblank のさらに 1 つ後で、それより前に次の swap を呼ぶとブロックする。打ち切らないとブロックが見込みに入って
+    さらに早く始める悪循環になり、60fps の素材（4K 2 倍速も）で swap 約 14.5ms・55fps に張り付いていた。
+  - ただし upload を始めるのは、前のコマを出した vblank の 1ms 後より前にしない。前のコマが画面に出る前に swap すると vsync オンの
+    ドライバがブロックし、その時間が upload→swap の移動平均に入って次はさらに早く始める…と悪化する（60p の素材で swap が毎回約 14.5ms
+    止まり、GUI の受け取りと返事が遅れてデコードの刻みを取りこぼし、55.7fps に落ちていた）。
   - ずれが溜まって選ぶ vblank が 1 つ動くのは 1 回だけ（120Hz で 29.97fps なら約 10 秒に 1 回、5 vblank のコマが 1 枚）。
   - 前に描いたコマがまだ swap していなければ 1ms ずつ待つ（最大 20 回。1 回の swap に 2 枚描かない）。大きく遅れたら起点を取り直す。
-  - upload の直後に `VideoEngine::renderNow`（ウィンドウへ UpdateRequest を直接送り、basic の render loop にその場で swap まで描かせる）。
-    requestUpdate に任せると、性能 HUD の更新（250ms）などで先に予約されていた描画に乗って swap が 4〜5ms 早まり、狙った vblank の
-    1 つ前に入っていた（3 → 5 vblank の組が 250ms の周期で出た）。`CUDA_VIEWER_RENDER_NOW=0` で切る。
+  - upload の直後にその場で描かせる `VideoEngine::renderNow`（ウィンドウへ UpdateRequest を直接送る）は**既定で使わない**
+    （`CUDA_VIEWER_RENDER_NOW=1` で使う）。60fps の素材（vblank 2 回に 1 コマ）で swap が毎回約 14.5ms ブロックし、GUI スレッドが止まって
+    54〜55fps に張り付いた（requestUpdate に任せると 60fps に張り付く。原因は未解明）。入れた狙い（HUD の更新で予約済みの描画に乗って
+    swap が早まる、250ms 周期の 3→5 vblank）は、UI の通知を swap の後（`VideoEngine::framePresented` を Queued で受けて
+    `flushDeferredUi`）に出すことで代わりに防ぐ。
   - 実測（120Hz、29.97fps、HUD あり、144 秒）: 4 vblank が 98.3%（入れる前 89.7%）、swap の位置は周期の 0.52 ± 0.11。
     残りは 約 8.7 秒ごとの 5 vblank（狙いどおり。29.97fps を 120Hz で出す限り避けられない）、HUD 由来の 3→5 の組（renderNow で対策）、
     GUI スレッドが 16〜57ms 止まったもの数回。
@@ -179,6 +187,10 @@ sequenceDiagram
   以前はタイマーの時刻のまま出していて、`infoChanged` の評価（約 5ms）が upload の時刻に重なるとタイマーが遅れ（5→3 vblank、2.5 秒ごと）、
   追加の描画が 1 つの vblank に 3〜4 回重なると swap が 10〜16ms 止まった（6→2 vblank）。あわせて `videoInfo` / `gpus` は
   `infoChanged` / `stateChanged` ごとに 1 回だけ作って使い回す（バインディングごとに作り直していた）。
+- **返事のたびに次のデコードを促す**: 待ち行列から出した（捨てた）コマの返事のあとに `processFrame` も呼ぶ（`replyDecode(kick)`）。
+  刻み（`fps_thread`）だけに任せると、返事が遅れて刻みが 2 回来たときに `drop_flag` が 1 回分しか覚えられず刻みが消え、再生が遅れる
+  （性能 HUD の更新 250ms ごとに 1 回消えて、60fps の素材が 55.8fps になっていた）。消費は表示のペースが理想の時刻で決めるので、
+  デコードは空きがあれば進めてよい。先行の上限（`inflight_frames < 2`）は変わらない。待ち行列を空けて刻みの経路へ戻るときは促さない。
 - **受け取りの返事**: 待ち行列のコマは出したときに 1 枚ずつ `receve_decode_flag` を直接呼ぶ（Queued）。`decode_please` は
   SingleShotConnection を 1 回の emit で全部動かすので、待ち行列の経路では使わない（使うと 2 枚分の返事が 1 回で出る）。
 - **リングの勘定は変わらない**: 待ち行列のコマは「GUI の未受け取り ≦ 2」（デコードの先行の上限 = `inflight_frames < 2`）の枠そのもの。
