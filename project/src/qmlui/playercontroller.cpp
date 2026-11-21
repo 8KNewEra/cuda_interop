@@ -1044,6 +1044,16 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
 
     // ---- 表示のペース: 安定した順方向の通常再生は待ち行列へ（裏が空いたら tryPresent が次のコマを裏に描く）----
     if (updatePacing()) {
+        // リフレッシュより速い再生: 待ち行列は一番新しい 1 枚だけ（新しいコマが届いたら、まだ出していない前のコマは
+        //   upload せずに捨てて返事をする）。デコードは再生速度の刻み（fps_thread）で進み、デコーダが追いつかなければ
+        //   上限の速さで回る（vsync オフと同じ）。表示は vblank ごとに、そのとき一番新しいコマを出す
+        if (overRefresh_ && !presentQueue_.empty()) {
+            int d = 0;
+            for (const VideoFrame& old : presentQueue_) d += 1 + old.paced_dropped;
+            for (size_t i = 0; i < presentQueue_.size(); ++i) replyDecode(false);
+            presentQueue_.clear();
+            Frame.paced_dropped = uint8_t(std::min(d, 255));
+        }
         if (presentQueue_.size() >= 2) {
             // デコードの先行は 2 枚までなので来ないはず。来たら古い方を捨てて枠を守る
             qWarning() << "[PlayerController] 表示の待ち行列があふれた。古いコマを捨てる FrameNo =" << presentQueue_.front().FrameNo;
@@ -1104,7 +1114,8 @@ void PlayerController::showFrame(const VideoFrame& f)
 //     ・コマ k の理想の表示時刻 = 起点 ＋ k × 1 コマの長さ（計算で決まる。測った時刻の揺れが入らない）。それに一番近い vblank が V
 //     ・起点 = 最初のコマが届いた時刻 ＋ max(1 コマ, 25ms か 2 コマの短い方)。キーフレームのデコードの遅れは待ち行列が吸収する
 //     ・V は前のコマの vblank より後、今から間に合う一番早い vblank 以降。遅れていれば理想の時刻を過ぎたコマを upload せずに捨てる
-//     ・リフレッシュより速い再生は vblank ごとに 1 枚、コマは毎回同じ数（stepK_）だけ進める
+//     ・リフレッシュより速い再生は、デコードを再生速度の刻みに任せ（デコーダが追いつかなければ上限の速さ）、vblank ごとに
+//       そのとき一番新しいコマを 1 枚出す。出さないコマは decode_view で捨てて返事をする（待ち行列は 1 枚。リングの勘定は変わらない）
 //   使わない: 一時停止・シーク・コマ送り・逆再生・エンコード、vsync オフ・高速（ドライバの「垂直同期」。届いたらすぐ描く）、
 //            vblank の時刻が取れないとき、CUDA_VIEWER_PACING=0
 // ==============================================================
@@ -1125,15 +1136,9 @@ bool PlayerController::updatePacing()
     qint64 vb = 0; double per = 0;
     if (!engine_->vblankGrid(vb, per)) return false;
     const qint64 dur = qint64(1e9 / fps);
-    // リフレッシュより速い再生か（1 コマが vblank の 0.95 倍より短い）。モードか速さが変わったら 1 vblank あたりのコマ数を決め直す
+    // リフレッシュより速い再生か（1 コマが vblank の 0.95 倍より短い）
     const bool over = dur < qint64(per * 0.95);
-    if (over != overRefresh_ || dur != pacedFrameDurNs_) {
-        overRefresh_ = over;
-        stepTarget_  = over ? int(std::clamp<long long>(std::llround(per / double(dur)), 1, 2)) : 1;
-        stepK_       = stepTarget_;
-        kWin_ = kFull2_ = 0;
-        kUpBlockedUntilNs_ = 0;
-    }
+    overRefresh_ = over;
     if (dur != pacedFrameDurNs_) {               // 再生速度が変わったら起点を取り直す
         pacedFrameDurNs_ = dur;
         nextIdealNs_ = 0;
@@ -1176,28 +1181,11 @@ void PlayerController::tryPresent(bool force)
     qint64 V = 0;
     int dropped = 0;
     if (overRefresh_) {
-        // リフレッシュより速い再生: 前に出した vblank の次（間に合わなければ今から間に合う一番早い vblank）に出し、
-        //   毎回同じ数（stepK_）だけ進める。捨てる数が vblank ごとにばらつくと動きの速さが毎回変わってカクついて見える
-        //   （8K HEVC 120fps の 2 倍速 = 目標 240 を 120Hz で: デコードが約 155fps しか出ず、1 コマ・2 コマが不規則に混ざっていた）。
-        //   デコードが 2 コマずつに追いつかないなら 1 コマずつ（画面のリフレッシュの速さ）にして動きを一定に保つ
+        // リフレッシュより速い再生: 前に出した vblank の次（間に合わなければ今から間に合う一番早い vblank）に、
+        //   待ち行列の一番新しいコマ（decode_view が 1 枚だけにしている）を出す
         V = Vmin;
         if (lastPresentedVNs_ > 0) V = std::max(V, lastPresentedVNs_ + iper);
-        ++kWin_;
-        if (presentQueue_.size() >= 2) ++kFull2_;
-        while (presentQueue_.size() >= 2 && dropped < stepK_ - 1) {
-            presentQueue_.pop_front();
-            replyDecode();
-            ++dropped;
-        }
-        if (kWin_ >= 60) {
-            if (stepK_ > 1 && kFull2_ < 54) {                   // 2 コマずつ進めるだけのコマが来ない（1 割以上）
-                stepK_ = 1;
-                kUpBlockedUntilNs_ = now + 10000000000LL;       // 10 秒は上げない（上げ下げを繰り返さない）
-            } else if (stepK_ < stepTarget_ && kFull2_ >= 58 && now >= kUpBlockedUntilNs_) {
-                stepK_ = stepTarget_;
-            }
-            kWin_ = kFull2_ = 0;
-        }
+        dropped = presentQueue_.front().paced_dropped;
     } else {
         if (nextIdealNs_ == 0) {
             // 起点 = 届いた時刻 ＋ 遅延（1 コマ、ただし 25ms か 2 コマの短い方以上）。待ち行列は 2 コマまでなので長くしすぎない
@@ -1230,7 +1218,8 @@ void PlayerController::tryPresent(bool force)
     showFrame(f);
     engine_->setNextRelease(release);
     engine_->upload(f);
-    replyDecode();
+    // リフレッシュより速い再生は次のデコードを促さない（刻みに任せる。促すと再生速度より速くデコードしてしまう）
+    replyDecode(!overRefresh_);
     lastPresentedVNs_ = V;
 
     // 次のコマの理想の時刻。表示が追いつかないときも起点は取り直さず、次の回で理想の時刻を過ぎたコマを捨てて追いつく
