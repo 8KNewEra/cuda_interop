@@ -1143,6 +1143,16 @@ void PlayerController::schedulePresent()
     qint64        V = vb + qint64(n * per);
     if (lastPresentedVNs_ > 0 && V < lastPresentedVNs_ + qint64(per * 0.5))
         V = lastPresentedVNs_ + qint64(per);
+    // 今から始めて間に合う一番早い vblank より前は狙わない（swap が周期の真ん中に来るには、今 ＋ 周期の半分 ＋ upload→swap が要る）。
+    //   理想の時刻だけから V を決めると、表示が追いつかず遅れているとき V も一緒に遅れて「次のコマももう期限」に気付けず、
+    //   presentTick がコマを捨てなかった（4 倍速が画面 60fps・再生も 60fps のまま）。V を今に合わせれば、遅れているときは
+    //   次のコマの理想の時刻も V に収まるので、先頭を捨てて最新のコマを出す
+    const double  leadNs = std::min(engine_->uploadToSwapMs() * 1e6, per * 0.5);
+    {
+        const qint64 earliest = now + qint64(per * 0.5) + qint64(leadNs);
+        const qint64 Vmin = vb + qint64(std::ceil(double(earliest - vb) / per) * per);
+        if (V < Vmin) V = Vmin;
+    }
     presentTargetVNs_ = V;
     presentPerNs_     = per;
     // swap が V の周期の真ん中に来るように upload を始める。
@@ -1154,7 +1164,6 @@ void PlayerController::schedulePresent()
     //   ウィンドウ表示では DWM が前のコマを画面に出すのは狙った vblank のさらに 1 つ後で、それまでに次の swap を呼ぶと
     //   そこまでブロックする。そのブロックが移動平均に入ると早く始める → またブロック、で 60fps の素材が
     //   swap 約 14.5ms・55fps に張り付いていた（4K 2 倍速でも）。打ち切れば前のコマが出た後に始めるので待つものがない
-    const double  leadNs = std::min(engine_->uploadToSwapMs() * 1e6, per * 0.5);
     qint64        wake = V - qint64(per * 0.5) - qint64(leadNs);
     if (lastPresentedVNs_ > 0) wake = std::max(wake, lastPresentedVNs_ + 1000000);
     const qint64  waitNs = wake - now;
@@ -1202,10 +1211,14 @@ void PlayerController::presentTick()
     if (engine_->renderNowEnabled()) flushDeferredUi();
     lastPresentedVNs_ = presentTargetVNs_;
 
-    // 次のコマの理想の時刻。大きく遅れたら（デコードが追いつかない等）起点を取り直す
+    // 次のコマの理想の時刻。表示が追いつかない（1 コマ出すのに vblank 2 回かかる等）ときも起点は取り直さず、
+    //   次の presentTick で理想の時刻を過ぎたコマを upload せずに捨てて追いつく（再生の速さを保つ。デコードは返事のたびに
+    //   促すので、捨てた分も含めてコンテンツの速さでデコードされる）。以前は 2 コマ遅れたら取り直していて、捨てる代わりに
+    //   再生そのものが遅くなっていた（4 倍速 = 目標 119.88fps が、画面 60fps・再生も 60fps = 実質 2 倍速）。
+    //   0.25 秒（または 4 コマ）以上遅れたとき（デコードが追いつかない・止まっていた等）だけ取り直す
     const qint64 now = mono_now_ns();
     nextIdealNs_ += pacedFrameDurNs_;
-    if (nextIdealNs_ < now - 2 * pacedFrameDurNs_) nextIdealNs_ = 0;
+    if (nextIdealNs_ < now - std::max<qint64>(250000000, 4 * pacedFrameDurNs_)) nextIdealNs_ = 0;
     schedulePresent();
 }
 

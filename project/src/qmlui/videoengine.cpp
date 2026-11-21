@@ -808,7 +808,8 @@ void VideoEngine::onFrameSwapped()
     // CSV（CUDA_VIEWER_PRESENT_LOG=<パス>。最初の表示で開く）
     if (!presentLogTried_) {
         presentLogTried_ = true;
-        const QString path = qEnvironmentVariable("CUDA_VIEWER_PRESENT_LOG");
+        // 前後の空白・タブは捨てる（Qt Creator の実行環境に貼ったときに末尾のタブが入り、開けなかったことがある）
+        const QString path = qEnvironmentVariable("CUDA_VIEWER_PRESENT_LOG").trimmed();
         if (!path.isEmpty()) {
             presentLogFile_ = std::make_unique<QFile>(path);
             if (presentLogFile_->open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
