@@ -286,15 +286,11 @@ private:
     //   合わせた時刻に 1 枚ずつ出す。受け取りの返事（receve_decode_flag）は出したときに 1 枚ずつ返す
     //   （待ち行列のコマは「GUI の未受け取り ≦ 2」の枠の中。リング 6 段の勘定は変わらない）
     std::deque<VideoFrame> presentQueue_;
-    QTimer  presentTimer_;              // 次のコマを出す時刻（Qt::PreciseTimer、単発）
+    QTimer  presentTimer_;              // 裏が空かないまま 100ms 経ったら上書きして進める（描画が止まっているときの保険）
     qint64  nextIdealNs_ = 0;           // 次のコマの理想の表示時刻（0 = 起点を取り直す）
     qint64  pacedFrameDurNs_ = 0;       // 1 コマの長さ（fps × 再生速度から）
     int     pacingEnv_ = -1;            // CUDA_VIEWER_PACING（0 で切る）。-1 = 未読
-    int     pendingWaits_ = 0;          // 前のコマの swap 待ちで延ばした回数
-    qint64  presentWakePlanNs_ = 0;     // 先頭のコマの upload を始める予定の時刻（表示の計測。タイマーの遅れ）
-    qint64  presentTargetVNs_ = 0;      // 先頭のコマを出す vblank の時刻（schedulePresent）
-    double  presentPerNs_ = 0;          // そのときの vblank の周期
-    qint64  lastPresentedVNs_ = 0;      // 最後にコマを出した vblank（同じ vblank に 2 枚出さない）
+    qint64  lastPresentedVNs_ = 0;      // 最後に裏に描いたコマを出す vblank（同じ vblank に 2 枚出さない）
     // リフレッシュより速い再生（目標 fps > 画面のリフレッシュ）: vblank ごとに 1 枚出し、コマは毎回同じ数（stepK_）だけ進める
     bool    overRefresh_ = false;
     int     stepTarget_ = 1;            // 目標から決まる 1 vblank あたりのコマ数（1〜2。待ち行列は 2 コマまで）
@@ -304,11 +300,11 @@ private:
 
     // ---- UI の定期更新を表示のペースの空き時間に寄せる（docs/DECODE_CORE.md 3.6）----
     //   性能 HUD（250ms）・動画情報（500ms）・推移の記録（1 秒）の通知は QML の評価と追加の描画を起こす。
-    //   表示のペースの最中は印だけ付け、presentTick の swap の直後（次の upload まで 20ms 以上空いている）にまとめて出す
+    //   表示のペースの最中は印だけ付け、コマの swap の直後（framePresented）にまとめて出す
     enum UiTick { UiPerf = 1, UiInfo = 2 };
     int     pendingUi_ = 0;
     int     infoTicks_ = 0;
-    bool    pacingActive() const { return !presentQueue_.empty() || presentTimer_.isActive(); }
+    bool    pacingActive() const;       // 待ち行列にコマがあるか、裏のコマがまだ表に入っていない
     void    deferUi(int what);          // 表示のペースの最中なら印だけ、そうでなければすぐ出す
     void    emitUi(int what);
     void    flushDeferredUi();          // 印の付いた通知を出す（swap の直後・待ち行列を空けたとき）
@@ -321,8 +317,7 @@ private:
     mutable QVariantMap  videoInfoCache_;
     mutable QVariantList gpusCache_;
     bool    updatePacing();             // このコマを待ち行列に通すか（条件と 1 コマの長さの更新）
-    void    schedulePresent();          // 先頭のコマを出す時刻にタイマーを掛ける
-    void    presentTick();              // 先頭のコマを出す
+    void    tryPresent(bool force = false);   // 裏が空いていれば次に出すコマを選んで裏に描く（出してよい時刻付き）
     void    flushPresentQueue(bool showNewest);   // 待ち行列を空ける（showNewest なら最後のコマを出す）
     void    replyDecode(bool kick = true);   // デコードへ 1 枚受け取ったと返す（kick: 続けて次をデコードさせる）
     void init_decodethread_complete();

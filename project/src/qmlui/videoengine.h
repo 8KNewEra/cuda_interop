@@ -18,12 +18,23 @@
 //         （ON のものだけ。fbo / tempfbo を交互に使い、最終結果が fbo に来るよう開始側を決める）
 //       → fbo = 処理結果。ヒストグラム・画像保存・エンコードはここを読む
 //       → 表示専用パス（zebra.frag: 比較・チャンネル・ゼブラ・タイル境界）: fbo → tempfbo
-//       → displayTexture() を VideoItem が表示
+//       → 表示するテクスチャ（表示ツールがあれば tempTexture、なければ fbo）を VideoItem が表示
 //
-//   コンテキストが 2 つあるので GPU 上の順序はフェンスで渡す:
-//     engine → QML : 描き終えたら frameFence。VideoItem / HistogramItem が描画前に glWaitSync
-//     QML → engine : シーングラフが描き終えたら displayDoneFence。次の FBO 上書き前に glWaitSync
-//   render loop は basic（GUI スレッド）固定なので CPU 側の競合はない。
+//   描画は Qt Quick の描画スレッド（threaded render loop）。vsync の swap で止まるのは描画スレッドだけで、
+//   GUI スレッド（コマの受け取り・upload・UI）は止まらない。
+//
+//   表示に使う組（fbo・tempfbo・ヒストグラムのプロット先・その CUDA の登録）は 2 組ある:
+//     裏（メンバの fbo / fboTextureID / cudaResource2 / histFbo ... がそのまま指す）: engine が書く。
+//       ヒストグラムの集計・画像保存・エンコード・スポイトも、書いた直後にここを読む
+//     表（front_）: 描画スレッドが貼って表示する。engine は書かない
+//   入れ替えは sync の間（GUI スレッドが止まっている。VideoItem::updatePaintNode → syncFront）だけ。
+//   CPU 側の排他はこれで足りる（front_ を書くのは sync だけで、その間 GUI スレッドは止まっている）。
+//   GPU 上の順序はフェンスで渡す:
+//     engine → 描画スレッド : 描き終えたら frameFence。sync で glWaitSync
+//     描画スレッド → engine : swap のたびに displayDoneFence。表から外した組の backFreeFence_ になり、
+//                            engine はその組に書く前に glWaitSync（CPU は待たない）
+//   表示のペース（PlayerController）は裏にコマを先に描いておき、出してよい時刻（releaseAt）を付ける。
+//   syncFront はその時刻より前の sync では入れ替えない（docs/DECODE_CORE.md 3.6）
 // ==============================================================
 
 #include "src/videoprocess/save_encode.h"
@@ -39,6 +50,7 @@
 #include <QOpenGLShaderProgram>
 #include <QElapsedTimer>
 #include <QMutex>
+#include <QTimer>
 #include <QVariantMap>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -95,10 +107,8 @@ public:
     // 性能 HUD の計測（PlayerController が ON/OFF・集計の取り出し・デコード時間の追加をする）
     PerfMeter& perf() { return perf_; }
 
-    // ---- 表示側（Qt Quick のレンダリング中に呼ぶ）----
+    // ---- GUI スレッドから（最後に描いたフレーム = 裏の状態）----
     bool    hasFrame()        const { return frame_valid_; }
-    // 表示するテクスチャ。表示ツールが ON なら tempTexture（fbo に重ねた表示専用）、OFF なら fbo
-    GLuint  displayTexture()  const { return displayTex_ ? displayTex_ : fboTextureID; }
     QSize   displaySize()     const { return QSize(width_, height_); }
     // 10bit 経路か（テクスチャが RGBA16）。10bit 以上の素材のとき upload が自動で切り替える
     bool    highBitDepth()    const { return rgba16_; }
@@ -109,53 +119,69 @@ public:
     void setPickRequest(int x, int y) { pickX_ = x; pickY_ = y; if (x < 0) pickResult_.clear(); }
     QVariantMap pickResult();
     QVariantMap lastPick() const { return pickX_ < 0 ? QVariantMap() : pickResult_; }
-    GLuint  histTexture()     const { return histTextureID; }
-    QSize   histSize()        const { return histSize_; }
     // HistogramItem の実ピクセルサイズ。次の描画でプロット先をこの大きさに作り直す
     //   （固定サイズの拡大縮小だと、大きな画面でぼやけ、小さな画面で線が消える）
     void    setHistViewport(const QSize& px, qreal dpr);
     bool    histValid()       const { return hist_valid_; }
     quint64 frameSerial()     const { return frame_serial_; }
 
-    // シーングラフのコンテキストがカレントの状態で呼ぶ
-    void waitFrameFence();            // engine の描画完了を GPU 側で待つ
-    void signalDisplayDone();         // シーングラフの描画完了を記録
+    // ---- 描画スレッドの sync から（VideoItem / HistogramItem::updatePaintNode。GUI スレッドは止まっている）----
+    //   syncFront: 裏に出してよいコマがあれば表と入れ替える（出してよい時刻より前の sync では入れ替えない）。
+    //   どちらの item から何回呼んでもよい（入れ替えは 1 回）。入れ替えたら backFreed を出す
+    bool    syncFront();
+    bool    frontValid()       const { return front_.valid; }
+    // 表示するテクスチャ。表示ツールが ON なら tempTexture（fbo に重ねた表示専用）、OFF なら fbo
+    GLuint  frontTexture()     const { return front_.dispTex; }
+    QSize   frontSize()        const { return front_.size; }
+    bool    frontHistValid()   const { return front_.histValid && front_.histTex != 0; }
+    GLuint  frontHistTexture() const { return front_.histTex; }
+    QSize   frontHistSize()    const { return front_.histSize; }
+
+    // シーングラフのコンテキストがカレントの状態で呼ぶ（描画スレッド）
+    void waitFrameFence();            // engine の描画完了を GPU 側で待つ（sync）
+    // QQuickWindow::frameSwapped から（描画スレッド。main.cpp）。画面に出たフレームの計測を GUI スレッドへ渡す（onFrameSwapped）
+    void onRenderThreadSwapped();
+    // QQuickWindow::beforeSynchronizing から（描画スレッド。main.cpp）: sync の回数を数える（拍が 1 つずれて待ち続けないため）
+    void noteBeforeSync();
+    // QQuickWindow::afterRendering（swap の直前。描画スレッド）から: 描き終えたフェンス（displayDoneFence_）を張り、
+    //   swap にかかった時間を測る起点を記録する
+    void noteAfterRendering();
 
     // ---- 表示の計測（画面に出たフレーム。性能 HUD と CSV ログ）----
-    //   upload しただけでは画面に出たとは限らない（swap の前に次のフレームで fbo を上書きすると出ない）。
-    //   VideoItem が描いたフレームを notePainted で控え、frameSwapped で onFrameSwapped が「出た」と数える
+    //   upload しただけでは画面に出たとは限らない（入れ替える前に次のコマで裏を上書きすると出ない）。
+    //   sync で表にしたフレームを、その後の swap で「出た」と数える（onFrameSwapped。GUI スレッド）
     //   CSV: 環境変数 CUDA_VIEWER_PRESENT_LOG=<パス> で 1 表示ごとに 1 行（HUD の ON/OFF と無関係）
-    void notePainted();                       // VideoItem::updatePaintNode から（描くフレームを控える）
-    void onFrameSwapped();                    // QQuickWindow::frameSwapped から（swap の直後）
     void setSteadyPlayback(bool on);          // 安定して順方向に再生しているか（PlayerController::decode_view）。
                                               //   false の間は間隔の起点を捨てる（一時停止・シークの明けを数えない）
 
     // ---- 表示のペース（PlayerController の待ち行列が使う）----
-    // 実際の vblank の格子（DWM）。vbNs = 直近の vblank の時刻（mono_now_ns と同じ物差し）、perNs = 周期。取れなければ false
+    // 実際の vblank の格子。vbNs = 直近の vblank の時刻（mono_now_ns と同じ物差し）、perNs = 周期。取れなければ false
     bool   vblankGrid(qint64& vbNs, double& perNs) const;   // ウィンドウのモニター（VblankClock）→ 測れなければ DWM
-    // upload の先頭から描画を出し終える（afterRendering = swap を呼ぶ直前）までの時間の移動平均（ms）。upload を始める時刻の逆算に使う。
-    //   swap の時間は入れない: vsync オンの swap は前のコマが画面に出るまでブロックすることがあり、それを入れると見込みが膨らみ、
-    //   早く始める → またブロック、で張り付く（60Hz で目標 59.94 のとき swap 約 14ms・55fps）
-    double uploadToSwapMs() const { return uploadToSwapEmaMs_; }
-    // 描いたのにまだ swap していないフレームがあるか（1 回の swap に 2 枚描かないため）
-    bool   hasPendingPresent() const { return frame_valid_ && rendered_.serial != 0 && rendered_.serial != presented_.serial; }
-    // 映像を出すウィンドウ（main.cpp が渡す）と、その場で描かせる（表示のペースが upload の直後に呼ぶ）。
-    //   requestUpdate に任せると、UI の更新（性能 HUD の 250ms など）で先に予約されていた描画に乗って swap が早まり、
-    //   狙った vblank の 1 つ前に入ってしまう（upload→swap が 7ms → 2〜3ms）。UpdateRequest を直接送れば
-    //   render loop（basic）がその場で描くので、upload→swap が毎回同じになる。CUDA_VIEWER_RENDER_NOW=0 で切る
-    void   setPresentWindow(QQuickWindow* w) { presentWindow_ = w; }
-    void   renderNow();
-    bool   renderNowEnabled();
-    // QQuickWindow::afterRendering（swap の直前。main.cpp）から: swap にかかった時間を測る起点
-    void   noteAfterRendering() { afterRenderNs_ = mono_now_ns(); }
+    // 裏が空いているか（前に描いたコマがもう表に入った）。空いていないうちに upload すると、まだ出ていないコマを上書きする
+    bool   backFree() const { return !pending_; }
+    // 裏のコマが出してよい時刻を待っているか（その間は item を描き直させない。時刻になったら kickPresent が描かせる）
+    bool   waitingRelease() const { return pending_ && releaseAtNs_ > mono_now_ns(); }
+    // 次の upload / rerender で描くコマを出してよい時刻（mono_now_ns。0 = すぐ）。1 回の描画で使い捨て
+    void   setNextRelease(qint64 releaseAtNs) { nextReleaseNs_ = releaseAtNs; }
+    // upload にかかる CPU の時間の移動平均（ms。表示のペースが「今から間に合う vblank」を見積もる）
+    double uploadCpuMs() const { return uploadCpuEmaMs_; }
+    // 映像を出すウィンドウ（main.cpp が渡す）
+    void   setPresentWindow(QQuickWindow* w);   // kickPresent の UpdateRequest の宛先。拍の間の UpdateRequest をここで止める
+    // 拍（表示のペースの最中だけ）: ウィンドウの UpdateRequest を止め、swap の直後に 1 回だけ sync する（videoengine.cpp）
+    void   setHeartbeat(bool on);
 
     // ヒストグラム統計（QML 表示用）
     QVariantMap histStats() const;
+
+protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override;
 
 signals:
     void initialized();
     void frameReady();                // 新しい表示フレームができた
     void framePresented();            // 新しいフレームが swap された（onFrameSwapped。表示のペースが UI の通知を出す合図）
+    void backFreed();                 // 裏のコマが表に入り、裏が空いた（描画スレッドから出る。受け手は Queued）
+    void presentRequested();          // 出してよい時刻を待つコマがある。VideoItem / HistogramItem は update する
     void histogramChanged();
     void pickUpdated();               // スポイトの値が新しいフレームの分に更新された
     void encode_finished();
@@ -198,8 +224,15 @@ private:
     void getCudaDeviceIDFromOpenGL();
     static std::vector<int> make_nice_y_labels(int max_value);
 
-    void waitDisplayDone();           // 自分のコンテキストで displayDoneFence を待つ
+    void waitBackFree();              // 自分のコンテキストで backFreeFence_ を待つ（裏に書く前）
     void publishFrameFence();
+    void createBackTargets(int width, int height);   // 裏の fbo / tempfbo と CUDA の登録を作る（古いものは retireGl）
+    void retireGl(GLuint tex, GLuint fb);            // 描画スレッドが貼っているかもしれない GL の名前は後で消す
+    void collectRetiredGl();                         // 表から外れ、sync を 2 回過ぎたものを消す
+    void kickPresent();                              // 待っているコマを sync に拾わせる（GUI スレッド）
+    // GUI スレッドで: 描画スレッドの swap の後の計測（onRenderThreadSwapped が Queued で呼ぶ）
+    struct ShownFrame;
+    void onFrameSwapped(qint64 nowNs, qint64 afterRenderNs, const ShownFrame& shown, quint64 syncGenAtSwap);
 
     void waitScreenshotSaved();
 
@@ -277,7 +310,8 @@ private:
     mutable QMutex fenceMutex_;
     GLsync frameFence_       = nullptr;
     bool   frameFenceWaited_ = false;
-    GLsync displayDoneFence_ = nullptr;
+    GLsync displayDoneFence_ = nullptr;   // 描画スレッドの最後の描画（afterRendering のたび。swap の前）
+    GLsync backFreeFence_    = nullptr;   // 今の裏を描画スレッドが読み終えた（表から外した sync の時点の displayDoneFence）
 
     // ---- CUDA interop ----
     cudaGraphicsResource* cudaResource1 = nullptr;   // 入力テクスチャ
@@ -319,7 +353,7 @@ private:
     int fpsCount = 0;
     PerfMeter perf_;             // 性能 HUD（OFF の間は何もしない）
 
-    // ---- 表示の計測（notePainted / onFrameSwapped）----
+    // ---- 表示の計測（syncFront / onRenderThreadSwapped / onFrameSwapped）----
     //   時刻はすべて mono_now_ns（__global__.h。QPC の ns。スレッド・DWM の vblank と同じ物差し）
     struct ShownFrame {
         quint64 serial   = 0;    // frame_serial_（0 = なし）
@@ -329,22 +363,59 @@ private:
         int     paced = 0;                                              // VideoFrame::paced
         qint64  wakePlanNs = 0, wakeNs = 0; int pendWaits = 0;          // VideoFrame::t_wake_plan_ns / t_wake_ns / pend_waits
         int     dropped = 0;                                            // VideoFrame::paced_dropped
+        qint64  releaseNs = 0;   // 出してよい時刻（0 = すぐ）
+        qint64  syncNs = 0;      // 表に入れた sync の時刻
+        // upload の内訳（計測。ms、-1 = なし）: 2 つ前のコマの GPU 待ち・入力テクスチャの map・FBO_Rendering・全体
+        double  upWaitMs = -1, upMapMs = -1, upFboMs = -1, upTotalMs = -1;
     };
+
+    // ---- 表（描画スレッドが表示している組）。書くのは syncFront（sync の間）だけ ----
+    struct Front {
+        bool   valid = false;
+        GLuint fbo = 0, fboTex = 0, tempfbo = 0, tempTex = 0;
+        cudaGraphicsResource* res = nullptr;       // fboTex の登録（NVENC / ヒストグラム / スポイト）
+        cudaGraphicsResource* resShot = nullptr;   // fboTex の登録（画像保存）
+        int    w = 0, h = 0; bool rgba16 = false;  // fbo / tempfbo を作ったときの大きさ・形式
+        GLuint dispTex = 0;                        // 表示するテクスチャ（fboTex か tempTex）
+        QSize  size;                               // その大きさ
+        GLuint histFbo = 0, histTex = 0;
+        QSize  histSize{480, 320};
+        bool   histValid = false;
+        ShownFrame shown;                          // このコマ（表示の計測）
+    };
+    Front front_;
+    // 裏の状態（fbo などのメンバが指す組）
+    int    backW_ = 0, backH_ = 0; bool backRgba16_ = false;   // fbo / tempfbo を作ったときの大きさ・形式
+    bool   backHistValid_ = false;     // 裏のヒストグラムのプロットがこのコマのものか
+    bool   pending_ = false;           // 裏に、まだ表に入っていないコマがある
+    qint64 releaseAtNs_ = 0;           // そのコマを出してよい時刻（0 = すぐ）
+    qint64 nextReleaseNs_ = 0;         // 次に描くコマの分（setNextRelease）
+    std::atomic<bool> frontReset_{false};   // reset で表を消す（次の sync で）
+    std::atomic<quint64> syncGen_{0};     // 描画スレッドの sync の回数（noteBeforeSync）
+    std::atomic<quint64> renderGen_{0};   // 描画スレッドの swap の回数（retireGl の消してよい時期）
+    struct RetiredGl { GLuint tex = 0, fb = 0; quint64 gen = 0; };
+    std::vector<RetiredGl> retiredGl_;
+    QTimer* releaseTimer_ = nullptr;   // 出してよい時刻の 1/4 周期後に、まだ裏に残っていれば kickPresent（拍が止まったときの保険）
+    bool   heartbeat_ = false;         // 拍の最中（setHeartbeat）
+    bool   inKick_ = false;            // kickPresent が送った UpdateRequest（止めない）
+    bool   deferredUpdate_ = false;    // 拍の間に止めた UpdateRequest がある
+    double uploadCpuEmaMs_ = 2.0;
+    // GUI スレッドが止まった所の計測（CSV）。前のコマが出てからこのコマが出るまで
+    double upWaitMs_ = -1, upMapMs_ = -1;   // 今の upload の分（FBO_Rendering が rendered_ に移す）
+    double kickMaxMs_ = 0, kickSumMs_ = 0;  // kickPresent の sync で止まった時間
+    double swapToGuiMaxMs_ = 0;             // swap の通知が GUI スレッドに届くまで
     qint64     logT0Ns_ = 0;            // CSV の t_ms の起点
     qint64     prevTickNs_ = 0;         // 前に出たフレームの刻み（刻みの間隔）
     qint64     prevVblankIdx_ = -1;     // 前に出たフレームが乗った vblank の番号（DWM。時刻から数える）
     qint64     prevVblankNs_  = 0;      // 前に出たフレームの swap の後の最初の vblank の時刻
-    double     uploadToSwapEmaMs_ = 3.0;   // 名前は以前のまま。中身は upload → afterRendering
     mutable int lastGridSrc_ = -1;      // vblankGrid の出どころ（1 = ウィンドウのモニター、0 = DWM、-1 = なし。CSV の vb_src）
     QQuickWindow* presentWindow_ = nullptr;
-    int        renderNowEnv_ = -1;      // CUDA_VIEWER_RENDER_NOW（1 で使う。既定は使わない）。-1 = 未読
     // swap の回数と時間（CSV の swaps / swap_ms / swap_max_ms。前に出たコマから今のコマが出るまで）
-    qint64     afterRenderNs_ = 0;
+    std::atomic<qint64> afterRenderNs_{0};   // 描画スレッドが書く
     int        swapsSincePresent_ = 0;
     double     swapMaxMsSince_ = -1;
     qint64     pendingUploadNs_ = -1;   // upload の先頭の時刻（FBO_Rendering が rendered_ に移す）
     ShownFrame rendered_;               // 最後に fbo に描いたフレーム
-    ShownFrame painted_;                // VideoItem が最後に描いた（swap 待ちの）フレーム
     ShownFrame presented_;              // 最後に画面に出たフレーム
     qint64     lastPresentNs_ = -1;     // 前に出た時刻（-1 = 起点なし）
     int        lastPresentFrame_ = -1;

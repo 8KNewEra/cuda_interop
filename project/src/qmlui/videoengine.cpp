@@ -88,6 +88,9 @@ VideoEngine::~VideoEngine()
     if (cudaResource2)           { cudaGraphicsUnregisterResource(cudaResource2);           cudaResource2 = nullptr; }
     if (cudaResource_screenshot) { cudaGraphicsUnregisterResource(cudaResource_screenshot); cudaResource_screenshot = nullptr; }
     if (cudaResource_hist_draw)  { cudaGraphicsUnregisterResource(cudaResource_hist_draw);  cudaResource_hist_draw = nullptr; }
+    // 表の組（描画スレッドはもう止まっている。QML を先に破棄している）
+    if (front_.res)              { cudaGraphicsUnregisterResource(front_.res);              front_.res = nullptr; }
+    if (front_.resShot)          { cudaGraphicsUnregisterResource(front_.resShot);          front_.resShot = nullptr; }
 
     if (interop_stream) { cudaStreamSynchronize(interop_stream); cudaStreamDestroy(interop_stream); interop_stream = nullptr; }
     if (pickEvent_) { cudaEventDestroy(pickEvent_); pickEvent_ = nullptr; }
@@ -109,7 +112,16 @@ VideoEngine::~VideoEngine()
             QMutexLocker lock(&fenceMutex_);
             if (frameFence_)       { glDeleteSync(frameFence_);       frameFence_ = nullptr; }
             if (displayDoneFence_) { glDeleteSync(displayDoneFence_); displayDoneFence_ = nullptr; }
+            if (backFreeFence_)    { glDeleteSync(backFreeFence_);    backFreeFence_ = nullptr; }
         }
+        for (const RetiredGl& r : retiredGl_) if (r.tex) glDeleteTextures(1, &r.tex);
+        retiredGl_.clear();
+        if (front_.fboTex)  glDeleteTextures(1, &front_.fboTex);
+        if (front_.tempTex) glDeleteTextures(1, &front_.tempTex);
+        if (front_.histTex) glDeleteTextures(1, &front_.histTex);
+        if (front_.fbo)     glDeleteFramebuffers(1, &front_.fbo);
+        if (front_.tempfbo) glDeleteFramebuffers(1, &front_.tempfbo);
+        if (front_.histFbo) glDeleteFramebuffers(1, &front_.histFbo);
         if (inputTextureID) glDeleteTextures(1, &inputTextureID);
         if (fboTextureID)   glDeleteTextures(1, &fboTextureID);
         if (tempTextureID)  glDeleteTextures(1, &tempTextureID);
@@ -335,6 +347,12 @@ bool VideoEngine::initialize()
 
     doneCurrent();
 
+    // 出してよい時刻を待つコマの保険（swap が来ないとき、時刻の少し後に sync へ拾わせる）
+    releaseTimer_ = new QTimer(this);
+    releaseTimer_->setSingleShot(true);
+    releaseTimer_->setTimerType(Qt::PreciseTimer);
+    connect(releaseTimer_, &QTimer::timeout, this, [this] { if (pending_) kickPresent(); });
+
     fpsTimer.start();
     initialize_completed_flag = true;
     emit initialized();
@@ -357,17 +375,18 @@ void VideoEngine::publishFrameFence()
     frameFenceWaited_ = false;
 }
 
-void VideoEngine::waitDisplayDone()
+// 裏に書く前（engine のコンテキスト）: 今の裏を描画スレッドが読み終えるのを GPU 側で待つ（CPU は待たない）
+void VideoEngine::waitBackFree()
 {
     QMutexLocker lock(&fenceMutex_);
-    if (displayDoneFence_) {
-        glWaitSync(displayDoneFence_, 0, GL_TIMEOUT_IGNORED);
-        glDeleteSync(displayDoneFence_);
-        displayDoneFence_ = nullptr;
+    if (backFreeFence_) {
+        glWaitSync(backFreeFence_, 0, GL_TIMEOUT_IGNORED);
+        glDeleteSync(backFreeFence_);
+        backFreeFence_ = nullptr;
     }
 }
 
-// シーングラフ側（VideoItem::updatePaintNode）から呼ぶ
+// 描画スレッドの sync（VideoItem / HistogramItem::updatePaintNode）から呼ぶ
 void VideoEngine::waitFrameFence()
 {
     QOpenGLContext* cur = QOpenGLContext::currentContext();
@@ -380,19 +399,179 @@ void VideoEngine::waitFrameFence()
     }
 }
 
-// QQuickWindow::frameSwapped（シーングラフのコンテキストがカレント）から呼ぶ
-void VideoEngine::signalDisplayDone()
+// ==============================================================
+// 表と裏の入れ替え（描画スレッドの sync。GUI スレッドは止まっている）
+//   裏に出してよいコマがあれば、裏の組（fbo などのメンバ）と表（front_）を入れ替える。
+//   表から外れた組は、それまでの描画がまだ GPU で読んでいるかもしれないので、最後の描画のフェンス
+//   （displayDoneFence_。swap のたびに張る）を backFreeFence_ にして、engine は書く前にそれを待つ
+// ==============================================================
+bool VideoEngine::syncFront()
 {
+    if (frontReset_.exchange(false)) {       // reset（ファイルを閉じた）: 表を消す
+        front_.valid = false;
+        front_.histValid = false;
+        front_.shown = ShownFrame{};
+    }
+    if (!pending_) return false;
+    const qint64 now = mono_now_ns();
+    if (releaseAtNs_ > 0 && now < releaseAtNs_) return false;   // まだ出す時刻ではない（表示のペース）
+
+    const Front old = front_;
+    front_.valid    = true;
+    front_.fbo      = fbo;           front_.fboTex  = fboTextureID;
+    front_.tempfbo  = tempfbo;       front_.tempTex = tempTextureID;
+    front_.res      = cudaResource2; front_.resShot = cudaResource_screenshot;
+    front_.w = backW_; front_.h = backH_; front_.rgba16 = backRgba16_;
+    front_.dispTex  = displayTex_ ? displayTex_ : fboTextureID;
+    front_.size     = QSize(backW_, backH_);
+    front_.histFbo  = histFbo;       front_.histTex = histTextureID;
+    front_.histSize = histSize_;
+    front_.histValid = backHistValid_;
+    front_.shown    = rendered_;
+    front_.shown.syncNs = now;
+
+    fbo = old.fbo;                   fboTextureID  = old.fboTex;
+    tempfbo = old.tempfbo;           tempTextureID = old.tempTex;
+    cudaResource2 = old.res;         cudaResource_screenshot = old.resShot;
+    backW_ = old.w; backH_ = old.h;  backRgba16_ = old.rgba16;
+    histFbo = old.histFbo;           histTextureID = old.histTex;
+    histSize_ = old.histSize;
+    displayTex_ = 0;
+    backHistValid_ = false;
+
+    {
+        QMutexLocker lock(&fenceMutex_);
+        QOpenGLContext* cur = QOpenGLContext::currentContext();
+        if (backFreeFence_ && cur && cur != ctx_) cur->extraFunctions()->glDeleteSync(backFreeFence_);
+        backFreeFence_    = displayDoneFence_;
+        displayDoneFence_ = nullptr;
+    }
+    pending_ = false;
+    emit backFreed();          // 描画スレッドから。受け手は Queued
+    return true;
+}
+
+// QQuickWindow::afterRendering（描画スレッド。描き終えて swap を呼ぶ直前。シーングラフのコンテキストがカレント）から呼ぶ
+//   描き終えたフェンス（displayDoneFence_）はここで張る。swap の後（frameSwapped）に張ると、vsync オンではフェンスが
+//   画面の切り替え（次の vblank）まで終わらず、engine がそれを待つ GL の処理 → 次の upload の CUDA の map（GL の完了を待つ）で
+//   GUI スレッドが vblank まで止まっていた（コマの受け取りが 2 vblank 遅れ、デコードの刻みを取りこぼして 55fps）。
+//   engine が知りたいのは「表のテクスチャを読み終えたか」だけなので、描画のコマンドの後で足りる
+void VideoEngine::noteAfterRendering()
+{
+    afterRenderNs_.store(mono_now_ns());
     QOpenGLContext* cur = QOpenGLContext::currentContext();
-    if (!cur || cur == ctx_) return;
+    if (cur && cur != ctx_) {
+        QOpenGLExtraFunctions* f = cur->extraFunctions();
+        GLsync s = f->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        f->glFlush();
+        QMutexLocker lock(&fenceMutex_);
+        if (displayDoneFence_) f->glDeleteSync(displayDoneFence_);
+        displayDoneFence_ = s;
+    }
+}
 
-    QOpenGLExtraFunctions* f = cur->extraFunctions();
-    GLsync s = f->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    f->glFlush();
+// QQuickWindow::beforeSynchronizing（描画スレッド。sync の始め）から呼ぶ。拍の重複を避けるための sync の回数
+void VideoEngine::noteBeforeSync()
+{
+    syncGen_.fetch_add(1);
+}
 
-    QMutexLocker lock(&fenceMutex_);
-    if (displayDoneFence_) f->glDeleteSync(displayDoneFence_);
-    displayDoneFence_ = s;
+// QQuickWindow::frameSwapped（描画スレッド）から呼ぶ
+void VideoEngine::onRenderThreadSwapped()
+{
+    renderGen_.fetch_add(1);
+
+    // 計測は GUI スレッドで（front_ を書くのは sync だけなので、ここで読んでよい）
+    const qint64 now   = mono_now_ns();
+    const qint64 after = afterRenderNs_.exchange(0);
+    const ShownFrame shown = front_.valid ? front_.shown : ShownFrame{};
+    const quint64 gen  = syncGen_.load();   // この swap の時点の sync の回数（拍がこの swap に応えてよいか）
+    QMetaObject::invokeMethod(this, [this, now, after, shown, gen] { onFrameSwapped(now, after, shown, gen); },
+                              Qt::QueuedConnection);
+}
+
+// その場で sync まで進める（GUI スレッド）。映像の item を描き直し対象にして、UpdateRequest を直接送る
+//   （update だけだと Windows は requestUpdate の約 5ms の後になる）。
+//   拍（heartbeat_）の間は、待っているコマが無くても毎回描かせる（描かないと swap が来ず、拍が止まる）
+void VideoEngine::kickPresent()
+{
+    if (!pending_ && !heartbeat_) return;
+    emit presentRequested();
+    if (presentWindow_) {
+        inKick_ = true;
+        deferredUpdate_ = false;   // この sync で UI の変更もまとめて描く
+        const qint64 t0 = mono_now_ns();
+        QEvent ev(QEvent::UpdateRequest);
+        QCoreApplication::sendEvent(presentWindow_, &ev);
+        // 計測（CSV の kick_max_ms / kick_sum_ms）: sync を頼んで GUI スレッドが止まった時間
+        const double ms = (mono_now_ns() - t0) / 1e6;
+        kickSumMs_ += ms;
+        if (ms > kickMaxMs_) kickMaxMs_ = ms;
+        inKick_ = false;
+    }
+}
+
+// ==============================================================
+// 拍（表示のペースの最中だけ）: GUI スレッドから描画スレッドへの sync を vblank ごとに 1 回へまとめる
+//   ドライバの vsync（強制オン）では swap は呼んだ時刻によらず次の vblank まで止まるので、描画を 1 回始めると描画スレッドは
+//   その vblank までふさがる。threaded でも GUI スレッドが sync を頼むと（UI の更新の requestUpdate → UpdateRequest）
+//   描画スレッドが空くまで待つので、UI の更新のたびに GUI スレッドが止まり（コマの受け取りが 約 49ms 遅れて 40fps）、
+//   こちらの sync も vblank の直後まで待たされて 1〜2 vblank 遅れた（30〜46fps で乱高下）。
+//   拍の間は、ウィンドウに来る UpdateRequest を止めて印だけ付け（eventFilter）、swap の直後（描画スレッドが空いた時）に
+//   1 回だけ sync する（onFrameSwapped → kickPresent）。UI の変更もその sync で一緒に描くので、GUI スレッドは待たない
+// ==============================================================
+void VideoEngine::setHeartbeat(bool on)
+{
+    if (heartbeat_ == on) return;
+    heartbeat_ = on;
+    if (on) {
+        // 拍を始める（最初の swap を起こす）
+        QTimer::singleShot(0, this, [this] { if (heartbeat_) kickPresent(); });
+    } else if (deferredUpdate_ && presentWindow_) {
+        deferredUpdate_ = false;
+        presentWindow_->requestUpdate();   // 止めていた UI の更新を描く
+    }
+}
+
+bool VideoEngine::eventFilter(QObject* obj, QEvent* ev)
+{
+    if (obj == presentWindow_ && ev->type() == QEvent::UpdateRequest && heartbeat_ && !inKick_) {
+        deferredUpdate_ = true;            // 次の拍で描く
+        return true;
+    }
+    return QObject::eventFilter(obj, ev);
+}
+
+void VideoEngine::setPresentWindow(QQuickWindow* w)
+{
+    if (presentWindow_) presentWindow_->removeEventFilter(this);
+    presentWindow_ = w;
+    if (w) w->installEventFilter(this);
+}
+
+// 描画スレッドが貼っているかもしれないテクスチャは、表から外れて描画を 2 回過ぎてから消す
+//   （その間に item が新しい表を貼り直す。すぐ消すと名前が使い回されて別のテクスチャを貼ることがある）
+void VideoEngine::retireGl(GLuint tex, GLuint fb)
+{
+    if (fb) glDeleteFramebuffers(1, &fb);   // FBO はコンテキスト間で共有されない（描画スレッドは使わない）
+    if (tex) retiredGl_.push_back({tex, 0, renderGen_.load()});
+}
+
+void VideoEngine::collectRetiredGl()
+{
+    if (retiredGl_.empty()) return;
+    const quint64 gen = renderGen_.load();
+    for (size_t i = 0; i < retiredGl_.size();) {
+        const GLuint t = retiredGl_[i].tex;
+        const bool inFront = t == front_.dispTex || t == front_.fboTex || t == front_.tempTex || t == front_.histTex;
+        if (!inFront && gen >= retiredGl_[i].gen + 2) {
+            glDeleteTextures(1, &t);
+            retiredGl_[i] = retiredGl_.back();
+            retiredGl_.pop_back();
+        } else {
+            ++i;
+        }
+    }
 }
 
 // ==============================================================
@@ -444,15 +623,22 @@ void VideoEngine::upload(const VideoFrame& Frame)
     // 性能 HUD: ここから upload の終わりまでを 1 フレームとして測る（OFF なら何もしない）
     perf_.frameBegin(this);
     pendingUploadNs_ = mono_now_ns();   // 表示の計測: upload → 画面に出るまで
+    const qint64 pendingStartNs = pendingUploadNs_;
 
     // in-flight クランプ（K フレーム前の GPU 処理が終わるまで投入しない）
     const int fdIdx = frameDoneNo;
     if (frameDoneValid[fdIdx]) {
+        const qint64 tw = mono_now_ns();
         cudaEventSynchronize(frameDone[fdIdx]);
+        upWaitMs_ = (mono_now_ns() - tw) / 1e6;   // 計測（CSV の up_wait_ms）: 2 つ前のコマの GPU 処理を待った時間
+    } else {
+        upWaitMs_ = 0;
     }
 
     cudaArray_t array;
+    const qint64 tm = mono_now_ns();
     cudaError_t err = cudaGraphicsMapResources(1, &cudaResource1, interop_stream);
+    upMapMs_ = (mono_now_ns() - tm) / 1e6;        // 計測（CSV の up_map_ms）: 入力テクスチャの map（GL の完了を待つ）
     if (err != cudaSuccess) {
         qDebug() << "cudaGraphicsMapResources error:" << cudaGetErrorString(err);
         return;
@@ -499,8 +685,21 @@ void VideoEngine::upload(const VideoFrame& Frame)
     frameDoneValid[fdIdx] = true;
     frameDoneNo = (fdIdx + 1) % kMaxFramesInFlight;
 
-    FBO_Rendering(Frame);
+    {
+        const qint64 tf = mono_now_ns();
+        FBO_Rendering(Frame);
+        // FBO_Rendering の中で rendered_ に移した後なので、ここで書き足す（計測。CSV の up_fbo_ms / up_total_ms）
+        if (rendered_.uploadNs == pendingStartNs) {
+            rendered_.upFboMs   = (mono_now_ns() - tf) / 1e6;
+            rendered_.upTotalMs = (mono_now_ns() - pendingStartNs) / 1e6;
+        }
+    }
     perf_.frameEnd();
+    // upload にかかった CPU の時間（表示のペースが「今から間に合う vblank」を見積もる）
+    {
+        const double ms = (mono_now_ns() - pendingStartNs) / 1e6;
+        if (ms > 0 && ms < 100) uploadCpuEmaMs_ += (ms - uploadCpuEmaMs_) * 0.1;
+    }
 
     fpsCount++;
     if (fpsTimer.elapsed() >= 1000) {
@@ -512,7 +711,8 @@ void VideoEngine::upload(const VideoFrame& Frame)
 
 void VideoEngine::rerender(const VideoFrame& Frame)
 {
-    if (!initialize_completed_flag || width_ <= 0 || height_ <= 0 || !fbo) return;
+    // 裏の組がまだ無い（入れ替えた直後の空の組）ときは FBO_Rendering が作る
+    if (!initialize_completed_flag || width_ <= 0 || height_ <= 0 || !inputTextureID) return;
     if (!makeCurrent()) return;
     FBO_Rendering(Frame);
 }
@@ -523,7 +723,12 @@ void VideoEngine::reset()
     hist_valid_  = false;
     frame_serial_++;
     // 表示の計測も次のファイルへ持ち越さない
-    rendered_ = painted_ = presented_ = ShownFrame{};
+    rendered_ = presented_ = ShownFrame{};
+    pending_       = false;     // 裏のコマは出さない
+    releaseAtNs_   = 0;
+    nextReleaseNs_ = 0;
+    frontReset_.store(true);    // 表は次の sync で消す（front_ を書くのは sync だけ）
+    if (releaseTimer_) releaseTimer_->stop();
     pendingUploadNs_  = -1;
     lastPresentNs_    = -1;
     lastPresentFrame_ = -1;
@@ -547,8 +752,17 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     }
     prev_encode_state = encode_state;
 
-    // シーングラフが前のフレームを描き終えてから FBO を上書きする
-    waitDisplayDone();
+    // このコマを出してよい時刻（表示のペース。1 回の描画で使い捨て）
+    const qint64 releaseAt = nextReleaseNs_;
+    nextReleaseNs_ = 0;
+
+    collectRetiredGl();
+    // 裏の組が今の大きさ・形式でなければ作り直す（解像度が変わった後、前の表が裏に回ってきたとき）
+    if (!fbo || backW_ != width_ || backH_ != height_ || backRgba16_ != rgba16_)
+        createBackTargets(width_, height_);
+    if (!fbo) return;
+    // 描画スレッドが裏の組（前の表）を読み終えてから上書きする（GPU 側で待つ）
+    waitBackFree();
 
     if (filter_change_flag) {
         setShaderUniformEnable();
@@ -619,6 +833,7 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     if (encode_state != STATE_NOT_ENCODE) return;
 
     // ---- 表示モード ----
+    backHistValid_ = false;
     if (g_AppSettings.histgram_flag && cudaResource_hist_draw && cudaResource2) {
         QElapsedTimer ht;
         if (perf_.enabled()) ht.start();
@@ -685,10 +900,8 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     // スポイト: このフレームの画素のコピーを積む（要求があるときだけ。待たない）
     if (pickX_ >= 0) pickIssue(Frame.FrameNo);
 
-    // 表示の計測: 前に描いたフレームがまだ画面に出ていなければ、ここで上書きされて出ないまま消える
-    if (frame_valid_ && rendered_.serial != 0 && rendered_.serial != presented_.serial
-        && rendered_.serial != painted_.serial)
-        ++overwrittenSince_;
+    // 表示の計測: 前に描いたコマがまだ表に入っていなければ、ここで上書きされて出ないまま消える
+    if (pending_) ++overwrittenSince_;
 
     frame_valid_ = true;
     frame_serial_++;
@@ -705,8 +918,29 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
     rendered_.wakeNs        = Frame.t_wake_ns;
     rendered_.pendWaits     = Frame.pend_waits;
     rendered_.dropped       = Frame.paced_dropped;
+    rendered_.releaseNs     = releaseAt;
+    rendered_.upWaitMs      = upWaitMs_;
+    rendered_.upMapMs       = upMapMs_;
+    rendered_.upFboMs       = -1;
+    rendered_.upTotalMs     = -1;
+    upWaitMs_ = upMapMs_ = -1;
+    pending_     = true;          // 次の sync で表に入る（releaseAt より後の sync で）
+    releaseAtNs_ = releaseAt;
     publishFrameFence();
     emit frameReady();
+
+    // 出してよい時刻を待つコマ: 普段は拍（swap の直後の kickPresent）が拾う。swap が来ないとき（描画が止まっていた）の保険に、
+    //   時刻の 1/4 周期後にもタイマーで拾わせる（そのときまだ裏に残っていれば）
+    if (releaseTimer_) {
+        const qint64 now = mono_now_ns();
+        if (releaseAt > 0) {
+            qint64 vb = 0; double per = 0;
+            const qint64 kickAt = releaseAt + (vblankGrid(vb, per) ? qint64(per * 0.25) : 4000000);
+            releaseTimer_->start(std::max(0, int((kickAt - now + 500000) / 1000000)));
+        } else {
+            releaseTimer_->stop();
+        }
+    }
 }
 
 // ==============================================================
@@ -739,40 +973,13 @@ bool VideoEngine::vblankGrid(qint64& vbNs, double& perNs) const
 #endif
 }
 
-bool VideoEngine::renderNowEnabled()
-{
-    // 既定は使わない（CUDA_VIEWER_RENDER_NOW=1 で使う）。
-    //   UpdateRequest を直接送って描かせると、60fps の素材（vblank 2 回に 1 コマ）で swap が毎回約 14.5ms ブロックし、
-    //   GUI スレッドが止まって 54〜55fps に張り付いた（requestUpdate に任せると 60fps に張り付く。原因は Qt / ドライバ側で未解明）。
-    //   入れたときの狙い（HUD の更新で予約済みの描画に乗って swap が早まる）は、UI の通知を swap の後に寄せたことで要らなくなった
-    if (renderNowEnv_ < 0) {
-        bool ok = false;
-        const int v = qEnvironmentVariableIntValue("CUDA_VIEWER_RENDER_NOW", &ok);
-        renderNowEnv_ = (ok && v != 0) ? 1 : 0;
-    }
-    return renderNowEnv_ == 1;
-}
-
-void VideoEngine::renderNow()
-{
-    if (!presentWindow_ || !renderNowEnabled()) return;
-    // frameReady → VideoItem::update で描画は予約済み。basic の render loop は UpdateRequest を受けたらその場で
-    //   polish → sync → render → swap まで進む（QQuickWindow::event → handleUpdateRequest）
-    QEvent ev(QEvent::UpdateRequest);
-    QCoreApplication::sendEvent(presentWindow_, &ev);
-}
-
 // ==============================================================
 // 表示の計測（画面に出たフレーム）
-//   VideoItem::updatePaintNode → notePainted（このフレームを描いた）
-//   → swap → QQuickWindow::frameSwapped → onFrameSwapped（画面に出た）
-//   すべて GUI スレッド（render loop basic）。swap は vsync で戻るので、frameSwapped の時刻 ≒ 画面に出た時刻
+//   sync（syncFront）で表に入れたコマ → 描画スレッドの swap → QQuickWindow::frameSwapped
+//   → onRenderThreadSwapped（描画スレッド。時刻と、表にあったコマを控える）→ onFrameSwapped（GUI スレッド。Queued）
+//   swap は vsync で戻るので、frameSwapped の時刻 ≒ 画面に出た時刻
 //   （ドライバがフリップを溜めるときは実際の表示はそれより後になりうる。間隔のばらつきを見る目的には足りる）
 // ==============================================================
-void VideoEngine::notePainted()
-{
-    if (rendered_.serial != 0 && frame_valid_) painted_ = rendered_;
-}
 
 void VideoEngine::setSteadyPlayback(bool on)
 {
@@ -789,32 +996,35 @@ void VideoEngine::setSteadyPlayback(bool on)
     }
 }
 
-void VideoEngine::onFrameSwapped()
+void VideoEngine::onFrameSwapped(qint64 now, qint64 afterRender, const ShownFrame& painted, quint64 syncGenAtSwap)
 {
+    // 拍: swap の直後（描画スレッドが空いている）に次の sync。vsync の swap は vblank で戻るので sync は vblank の直後に来て、
+    //   その描画の swap が次の vblank に出る。出してよい時刻を過ぎたコマがあれば、この sync で表に入る
+    {   // 計測（CSV の swap_to_gui_max_ms）: 描画スレッドの swap から、GUI スレッドがこの通知を処理し始めるまで（GUI の混み具合）
+        const double lag = (mono_now_ns() - now) / 1e6;
+        if (lag > swapToGuiMaxMs_) swapToGuiMaxMs_ = lag;
+    }
+    //   ただし、この swap の後にもう sync が済んでいれば（描画スレッドは次の描画・swap の最中）拍は打たない。その swap の通知が
+    //   次に来るので、そのとき打つ。打つと描画スレッドの swap（vsync で次の vblank まで）が終わるまで GUI スレッドが待ち、
+    //   その間に次の swap の通知が溜まる → それに応えてまた待つ…と 1 つずれたまま毎周期 約 16ms 止まり続けていた
+    //   （CSV の kick_max_ms 約 16ms・swap_to_gui_max_ms 約 17ms。コマの受け取りが 2 vblank 遅れ、刻みを取りこぼして 55〜57fps）
+    if (heartbeat_ && syncGen_.load() == syncGenAtSwap) kickPresent();
+
     // swap の回数と時間は同じフレームの描き直しも数える（二重に描いていないか、swap が止まっていないか）
-    const qint64 now = mono_now_ns();
-    const qint64 afterRender = afterRenderNs_;
     const double swapMs = afterRender > 0 ? (now - afterRender) / 1e6 : -1.0;
-    afterRenderNs_ = 0;
     ++swapsSincePresent_;
     if (swapMs > swapMaxMsSince_) swapMaxMsSince_ = swapMs;
 
-    // 同じフレームの描き直し（UI だけの更新・ズーム）は表示として数えない
-    if (painted_.serial == 0 || painted_.serial == presented_.serial) return;
+    // 同じフレームの描き直し（UI だけの更新・ズーム・出す時刻待ち）は表示として数えない
+    if (painted.serial == 0 || painted.serial == presented_.serial) return;
     const double intervalMs = lastPresentNs_ >= 0 ? (now - lastPresentNs_) / 1e6 : -1.0;
-    const double uploadIvMs = (lastPresentNs_ >= 0 && presented_.uploadNs >= 0 && painted_.uploadNs >= 0)
-                              ? (painted_.uploadNs - presented_.uploadNs) / 1e6 : -1.0;
-    const double latencyMs  = painted_.uploadNs >= 0 ? (now - painted_.uploadNs) / 1e6 : -1.0;
-    const int    step       = lastPresentFrame_ >= 0 ? painted_.frameNo - lastPresentFrame_ : 1;
+    const double uploadIvMs = (lastPresentNs_ >= 0 && presented_.uploadNs >= 0 && painted.uploadNs >= 0)
+                              ? (painted.uploadNs - presented_.uploadNs) / 1e6 : -1.0;
+    const double latencyMs  = painted.uploadNs >= 0 ? (now - painted.uploadNs) / 1e6 : -1.0;
+    const int    step       = lastPresentFrame_ >= 0 ? painted.frameNo - lastPresentFrame_ : 1;
     const int    overwritten = overwrittenSince_;
 
     if (steady_) perf_.addPresent(intervalMs, latencyMs, step, overwritten);
-    // upload → swap の移動平均（表示のペースが upload を始める時刻を逆算するのに使う）
-    //   swap のブロックを含めないよう、upload → afterRendering（swap を呼ぶ直前）で測る
-    if (afterRender > 0 && painted_.uploadNs > 0) {
-        const double renderMs = (afterRender - painted_.uploadNs) / 1e6;
-        if (renderMs > 0 && renderMs < 50) uploadToSwapEmaMs_ += (renderMs - uploadToSwapEmaMs_) * 0.1;
-    }
 
     // CSV（CUDA_VIEWER_PRESENT_LOG=<パス>。最初の表示で開く）
     if (!presentLogTried_) {
@@ -828,7 +1038,8 @@ void VideoEngine::onFrameSwapped()
                 *presentLog_ << "t_ms,frame_no,step,present_interval_ms,upload_interval_ms,upload_to_present_ms,overwritten,steady,"
                                 "tick_interval_ms,tick_to_begin_ms,decode_ms,emit_to_recv_ms,recv_to_upload_ms,"
                                 "vblank_idx,vblank_step,swap_phase,refresh_ms,paced,"
-                                "swaps,swap_ms,swap_max_ms,wake_late_ms,pend_waits,dropped,vb_src\n";
+                                "swaps,swap_ms,swap_max_ms,sync_late_ms,pend_waits,dropped,vb_src,"
+                                "up_wait_ms,up_map_ms,up_fbo_ms,up_total_ms,kick_max_ms,kick_sum_ms,swap_to_gui_max_ms\n";
                 logT0Ns_ = now;
                 qDebug() << "[VideoEngine] 表示のログ:" << path;
             } else {
@@ -840,7 +1051,7 @@ void VideoEngine::onFrameSwapped()
     if (presentLog_) {
         // 受け渡しの内訳（ms。どれかの時刻が無ければ -1）
         auto span = [](qint64 a, qint64 b) { return (a > 0 && b > 0) ? (b - a) / 1e6 : -1.0; };
-        const ShownFrame& f = painted_;
+        const ShownFrame& f = painted;
         const double tickIv   = span(prevTickNs_, f.tickNs);
         const double tickBeg  = span(f.tickNs, f.decodeBeginNs);
         const double decodeMs = span(f.decodeBeginNs, f.emitNs);
@@ -878,19 +1089,23 @@ void VideoEngine::onFrameSwapped()
                      << vbIdx << ',' << vbStep << ',' << QString::number(phase, 'f', 4) << ',' << num(refreshMs) << ','
                      << f.paced << ','
                      << swapsSincePresent_ << ',' << num(swapMs) << ',' << num(swapMaxMsSince_) << ','
-                     << num(f.wakePlanNs > 0 && f.wakeNs > 0 ? (f.wakeNs - f.wakePlanNs) / 1e6 : -1.0) << ','
-                     << f.pendWaits << ',' << f.dropped << ',' << lastGridSrc_ << '\n';
+                     << num(f.releaseNs > 0 && f.syncNs > 0 ? (f.syncNs - f.releaseNs) / 1e6 : -1.0) << ','
+                     << f.pendWaits << ',' << f.dropped << ',' << lastGridSrc_ << ','
+                     << num(f.upWaitMs) << ',' << num(f.upMapMs) << ',' << num(f.upFboMs) << ',' << num(f.upTotalMs) << ','
+                     << num(kickMaxMs_) << ',' << num(kickSumMs_) << ',' << num(swapToGuiMaxMs_) << '\n';
         if (++presentLogLines_ % 120 == 0) presentLog_->flush();
         prevTickNs_    = f.tickNs;
         prevVblankIdx_ = vbIdx;
     }
 
     swapsSincePresent_ = 0;
+    kickMaxMs_ = kickSumMs_ = 0;
+    swapToGuiMaxMs_ = 0;
     swapMaxMsSince_    = -1;
     emit framePresented();   // 受け手は Queued で受けること（描画の途中で QML を動かさない）
-    presented_        = painted_;
+    presented_        = painted;
     lastPresentNs_    = now;
-    lastPresentFrame_ = painted_.frameNo;
+    lastPresentFrame_ = painted.frameNo;
     overwrittenSince_ = 0;
 }
 
@@ -1128,17 +1343,27 @@ void VideoEngine::initCudaTexture(int width, int height)
     }
 }
 
+// 解像度・形式が変わったとき: 裏の組を作り直す。表の組は表示中なので触らず、次に裏へ回ってきたとき
+//   FBO_Rendering が作り直す（大きさ・形式が今と違う組は使わない）
 void VideoEngine::initTextureCuda(int width, int height)
 {
+    createBackTargets(width, height);
+}
+
+// 裏の組（fbo / tempfbo と、fbo の CUDA の登録 2 つ）を作る
+void VideoEngine::createBackTargets(int width, int height)
+{
+    // 登録から作った texture object を先に片付ける（2 組で共用のリング）
     fboTexRetire.drain();
     histTexRetire.drain();
 
-    if (cudaResource2) { cudaGraphicsUnregisterResource(cudaResource2); cudaResource2 = nullptr; }
+    if (cudaResource2)           { cudaGraphicsUnregisterResource(cudaResource2);           cudaResource2 = nullptr; }
+    if (cudaResource_screenshot) { cudaGraphicsUnregisterResource(cudaResource_screenshot); cudaResource_screenshot = nullptr; }
     displayTex_ = 0;   // 作り直すので古い id を表示に使わない
-    if (fboTextureID)  { glDeleteTextures(1, &fboTextureID);  fboTextureID = 0; }
-    if (fbo)           { glDeleteFramebuffers(1, &fbo);       fbo = 0; }
-    if (tempTextureID) { glDeleteTextures(1, &tempTextureID); tempTextureID = 0; }
-    if (tempfbo)       { glDeleteFramebuffers(1, &tempfbo);   tempfbo = 0; }
+    retireGl(fboTextureID, fbo);
+    retireGl(tempTextureID, tempfbo);
+    fboTextureID = fbo = tempTextureID = tempfbo = 0;
+    backW_ = backH_ = 0;
 
     auto makeTarget = [this](GLuint& f, GLuint& t, int w, int h) {
         glGenFramebuffers(1, &f);
@@ -1163,6 +1388,16 @@ void VideoEngine::initTextureCuda(int width, int height)
         qDebug() << "cudaGraphicsGLRegisterImage (fbo) error:" << cudaGetErrorString(err);
         cudaResource2 = nullptr;
     }
+    // GLWidget と同じく fboTextureID をもう一度登録している（画像保存用。読み取り専用）
+    err = cudaGraphicsGLRegisterImage(&cudaResource_screenshot, fboTextureID, GL_TEXTURE_2D,
+                                      cudaGraphicsRegisterFlagsReadOnly);
+    if (err != cudaSuccess) {
+        qDebug() << "cudaGraphicsGLRegisterImage (screenshot) error:" << cudaGetErrorString(err);
+        cudaResource_screenshot = nullptr;
+    }
+    backW_ = width;
+    backH_ = height;
+    backRgba16_ = rgba16_;
 }
 
 void VideoEngine::initCudaScreenshot(int width, int height)
@@ -1170,7 +1405,6 @@ void VideoEngine::initCudaScreenshot(int width, int height)
     waitScreenshotSaved();
 
     if (d_cudaScreenshot) { cudaFree(d_cudaScreenshot); d_cudaScreenshot = nullptr; }
-    if (cudaResource_screenshot) { cudaGraphicsUnregisterResource(cudaResource_screenshot); cudaResource_screenshot = nullptr; }
 
     // 1 画素 4 バイト（RGBA8）。10bit 経路は PNG / TIFF を 16bit で保存するので 8 バイト（RGBA16）
     cudaError_t err = cudaMallocPitch(&d_cudaScreenshot, &d_cudaScreenshotPitch, width * (rgba16_ ? 8 : 4), height);
@@ -1190,14 +1424,7 @@ void VideoEngine::initCudaScreenshot(int width, int height)
         qDebug() << "cudaStreamCreateWithFlags error:" << cudaGetErrorString(err);
         screenshotStream = nullptr;
     }
-
-    // GLWidget と同じく fboTextureID をもう一度登録している（読み取り専用）
-    err = cudaGraphicsGLRegisterImage(&cudaResource_screenshot, fboTextureID, GL_TEXTURE_2D,
-                                      cudaGraphicsRegisterFlagsReadOnly);
-    if (err != cudaSuccess) {
-        qDebug() << "cudaGraphicsGLRegisterImage (screenshot) error:" << cudaGetErrorString(err);
-        cudaResource_screenshot = nullptr;
-    }
+    // fbo の登録（cudaResource_screenshot）は組ごとに createBackTargets が作る
 }
 
 void VideoEngine::initCudaHist()
@@ -1239,8 +1466,10 @@ void VideoEngine::setHistViewport(const QSize& px, qreal dpr)
 // ヒストグラムのプロット先（表示サイズに合わせて作る）
 void VideoEngine::initHistTarget(const QSize& size)
 {
-    if (histTextureID) { glDeleteTextures(1, &histTextureID); histTextureID = 0; }
-    if (histFbo)       { glDeleteFramebuffers(1, &histFbo);   histFbo = 0; }
+    // 裏の組のプロット先だけ作り直す（表の組は表示中。裏へ回ってきたとき drawHistogram が作り直す）
+    retireGl(histTextureID, histFbo);
+    histTextureID = 0;
+    histFbo = 0;
     histSize_ = size;
 
     glGenFramebuffers(1, &histFbo);
@@ -1775,7 +2004,7 @@ void VideoEngine::drawHistogram()
     }
 
     // 表示側のサイズが変わっていたら作り直す（ここは engine のコンテキストがカレント）
-    if (histWanted_ != histSize_) initHistTarget(histWanted_);
+    if (histWanted_ != histSize_ || !histFbo) initHistTarget(histWanted_);
     glBindFramebuffer(GL_FRAMEBUFFER, histFbo);
     glViewport(0, 0, histSize_.width(), histSize_.height());
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -1835,6 +2064,7 @@ void VideoEngine::drawHistogram()
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     hist_valid_ = true;
+    backHistValid_ = true;
     emit histogramChanged();
 }
 

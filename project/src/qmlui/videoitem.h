@@ -8,7 +8,9 @@
 //
 //   ・テクスチャは QNativeInterface::QSGOpenGLTexture::fromNative で包むだけ
 //     （GL の実体は engine が持つ。こちらでは削除しない）
-//   ・表示するのは engine->displayTexture()（表示ツールがあれば tempTexture、なければ fbo）
+//   ・表示するのは engine の「表」の組（frontTexture。表示ツールがあれば tempTexture、なければ fbo）。
+//     updatePaintNode（描画スレッドの sync）の最初に syncFront で、出してよいコマを表に入れる
+//     （engine は裏の組だけに書く。videoengine.h の冒頭）
 //   ・FBO は GL の慣例どおり下の行から並ぶので、表示時に上下反転する
 //   ・ズーム／パン: 左/中ドラッグ = 移動、ホイール = 拡大縮小（カーソル位置固定）、
 //     ダブルクリック = 等倍。最大は 1 画素 = 32px

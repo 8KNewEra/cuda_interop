@@ -30,7 +30,8 @@ flowchart LR
 
 - **処理パス**（画像処理タブ）は映像そのものを変える。結果の `fbo` をヒストグラム・画像保存・エンコードが読む。
 - **表示専用パス**（表示ツールタブ）は `fbo` を読んで `tempfbo` に描くだけ。`fbo` は変えないので、ヒストグラム・画像保存・エンコードには入らない。
-- 表示は `VideoEngine::displayTexture()`（表示ツールがあれば `tempTexture`、なければ `fbo`）を `VideoItem` がそのまま載せる（コピーしない）。
+- 表示は「表」の組の表示テクスチャ（`VideoEngine::frontTexture()`。表示ツールがあれば `tempTexture`、なければ `fbo`）を
+  `VideoItem` がそのまま載せる（コピーしない）。組は 2 つあり、engine が書くのは「裏」（3.3）。
 
 ## 2. ファイル
 
@@ -62,9 +63,17 @@ flowchart LR
 
 - `VideoEngine` は自前の `QOpenGLContext` ＋ `QOffscreenSurface` を GUI スレッドで持つ。Qt Quick とは `AA_ShareOpenGLContexts` で共有し、
   ここで描いたテクスチャを `VideoItem` / `HistogramItem` が `QSGOpenGLTexture::fromNative` で包んで表示する。
-- render loop は `basic`（GUI スレッド）固定（`main.cpp` が `QSG_RENDER_LOOP=basic`）。CPU 側の競合は無く、GPU 側の順序だけフェンスで渡す。
-  - engine → QML: 描き終えたら `frameFence`（`publishFrameFence`）。`VideoItem` が描く前に `glWaitSync`（`waitFrameFence`）。
-  - QML → engine: シーングラフが描き終えたら `displayDoneFence`（`signalDisplayDone`）。次の FBO 上書きの前に待つ（`waitDisplayDone`）。
+- render loop は `threaded`（`main.cpp` が `QSG_RENDER_LOOP=threaded`。シーングラフの描画と swap は描画スレッド）。
+  engine（upload・処理パス・CUDA）は GUI スレッドのまま。描画スレッドが読むのは「表」の組だけ（3.3）なので、CPU 側の排他は
+  「表を書くのは sync の間だけ」で足り、GPU 側の順序はフェンスで渡す。
+  - engine → 描画スレッド: 描き終えたら `frameFence`（`publishFrameFence`）。sync で `glWaitSync`（`waitFrameFence`）。
+  - 描画スレッド → engine: 描くたびに `displayDoneFence`（`afterRendering` = swap の前。`noteAfterRendering`）。表から外した組の
+    `backFreeFence_` になり、engine はその組に書く前に待つ（`waitBackFree`。GPU 側で待つので CPU は止まらない）。
+    swap の後（`frameSwapped`）に張ると、vsync オンではフェンスが画面の切り替え（次の vblank）まで終わらない。engine の GL の処理が
+    それを待ち、次の upload の CUDA の map（GL の完了を待つ）で GUI スレッドが vblank まで止まって、コマの受け取りが 2 vblank 遅れ
+    デコードの刻みを取りこぼしていた（60fps の素材が 55fps）。
+  - `frameSwapped` / `afterRendering`（`main.cpp`）は描画スレッドで来る。そこではフェンスと時刻だけ取り、表示の計測は GUI スレッドへ
+    Queued で渡す（`onFrameSwapped`）。`QSG_RENDER_LOOP=basic` を指定しても動く（描画が GUI スレッドに戻る。表示のペースは粗くなる）。
 - CUDA は `interop_stream`（変換・画像保存のコピー）、ヒストグラムは既定ストリーム ＋ `hist_stream`。
 
 ### 3.2 テクスチャと登録
@@ -72,18 +81,36 @@ flowchart LR
 | 資源 | 形式 | CUDA の登録 | 用途 |
 |---|---|---|---|
 | `inputTextureID` | RGBA8 / RGBA16 | `cudaResource1`（SurfaceLoadStore） | 変換カーネルが surface で書く。比較表示・スポイトの「補正前」 |
-| `fbo` / `fboTextureID` | 同じ | `cudaResource2`（ReadOnly）、`cudaResource_screenshot`（ReadOnly） | 処理結果。ヒストグラム・画像保存・エンコード・スポイト「補正後」 |
-| `tempfbo` / `tempTextureID` | 同じ | — | 処理パスのピンポン、表示専用パスの出力 |
+| `fbo` / `fboTextureID` | 同じ | `cudaResource2`（ReadOnly）、`cudaResource_screenshot`（ReadOnly） | 処理結果。ヒストグラム・画像保存・エンコード・スポイト「補正後」（2 組。3.3） |
+| `tempfbo` / `tempTextureID` | 同じ | — | 処理パスのピンポン、表示専用パスの出力（2 組。3.3） |
 | `curveTexID` | 1D、RGB32F × 256 | — | トーンカーブの表（ユニット 2） |
 | `vbo_hist` | 頂点バッファ | `cudaResource_hist_draw`（WriteDiscard） | ヒストグラムの線（CUDA が書く） |
-| `histFbo` | RGBA8 | — | ヒストグラムのプロット（`HistogramItem` が表示） |
+| `histFbo` | RGBA8 | — | ヒストグラムのプロット（`HistogramItem` が表示。2 組。3.3） |
 | `d_cudaScreenshot` | `cudaMallocPitch`、4 / 8 バイト/画素 | — | 画像保存のコピー先 |
 
-- 形式は経路で決まる（8bit 経路 RGBA8、10bit 経路 RGBA16。4.1）。大きさか経路が変わると `upload` が全部作り直す
-  （`initCudaTexture` / `initTextureCuda` / `initCudaScreenshot` / `setShaderUniform` / `initCudaHist`）。
+- 形式は経路で決まる（8bit 経路 RGBA8、10bit 経路 RGBA16。4.1）。大きさか経路が変わると `upload` が作り直す
+  （`initCudaTexture` / `initTextureCuda`（裏の組だけ）/ `initCudaScreenshot` / `setShaderUniform` / `initCudaHist`）。
 - CUDA のテクスチャ / surface オブジェクトは、使い終わる前に消さないよう「退役リング」（`inputSurfRetire` / `fboTexRetire` / `histTexRetire`）で
   ストリームの完了を待ってから破棄する。
 - GPU 上で同時に処理中のフレームは 2 まで（`kMaxFramesInFlight`。`frameDone` イベント）。
+
+### 3.3 表示の組（2 組。表と裏）
+
+- 表示に使う組 = `fbo` / `fboTextureID` / `tempfbo` / `tempTextureID` / `cudaResource2` / `cudaResource_screenshot` /
+  `histFbo` / `histTextureID` / `histSize_`。2 組あり、**メンバ変数が指すのが「裏」**（engine が書く組）、`front_` が「表」（描画スレッドが貼る組）。
+  - 処理パス・表示専用パス・ヒストグラムのプロットは裏に描く。ヒストグラムの集計・画像保存・エンコード・スポイトも、書いた直後に裏を読む
+    （今までと同じ順序。メンバ変数の名前もそのまま）。一時停止中の画像保存は `rerender` で裏に描き直したものを読む。
+  - 入れ替えは描画スレッドの sync（`VideoItem` / `HistogramItem::updatePaintNode` の最初に `syncFront`）。GUI スレッドは sync の間止まっているので、
+    メンバ変数と `front_` をそのまま入れ替えてよい。`front_` を書くのは sync だけ（`reset` は `frontReset_` を立てて次の sync に任せる）。
+  - 裏に出していないコマがある間は `pending_`。表示のペースは `backFree()` を見て、空くまで次のコマを描かない（`backFreed` で再開）。
+    すぐ出す経路（一時停止・シーク・vsync オフ）は上書きしてよい（最新のコマが出る。CSV の `overwritten`）。
+  - 出してよい時刻（`setNextRelease`）付きのコマは、その時刻より前の sync では入れ替えない（`DECODE_CORE.md` 3.6）。
+- 大きさ・形式が変わったら裏の組だけ作り直す（`createBackTargets`）。表は表示中なので触らず、入れ替えで裏に回ってきたときに
+  `FBO_Rendering` の先頭で作り直す（作ったときの大きさ・形式 `backW_` / `backH_` / `backRgba16_` が今と違えば）。
+  ヒストグラムのプロット先も同じ（`drawHistogram` が `histFbo` の無い組・大きさの違う組を作り直す）。
+- 描画スレッドが貼っているかもしれないテクスチャは、すぐ消さずに `retiredGl_` に置き、表から外れて swap を 2 回過ぎてから消す
+  （すぐ消すと名前が使い回され、item が別のテクスチャを貼ることがある）。FBO はコンテキスト間で共有されないのですぐ消す。
+- VRAM は fbo・tempfbo が 1 組ぶん増える（16K の RGBA16 で 1 枚約 1GB × 2）。
 
 ## 4. 1 フレームの流れ
 
@@ -98,8 +125,8 @@ sequenceDiagram
     VE->>VE: 大きさ・経路が変わったら作り直す
     VE->>CU: decode_ready を待つ → 変換（YUV → RGBA）→ 入力テクスチャ
     VE->>GL: FBO_Rendering
-    GL->>GL: displayDoneFence を待つ
-    GL->>GL: 処理パス → fbo
+    GL->>GL: 裏の組の backFreeFence_ を待つ（前に表だったとき描画スレッドが読み終えた）
+    GL->>GL: 処理パス → fbo（裏）
     opt 画像保存の要求
         GL->>CU: fbo をコピー → 別スレッドで圧縮・保存
     end
@@ -109,9 +136,10 @@ sequenceDiagram
         GL->>CU: ヒストグラム（ON のとき）
         GL->>GL: 表示専用パス → tempfbo（ツールが ON のとき）
         GL->>CU: スポイトのコピーを積む（ON のとき。待たない）
-        GL->>SG: frameFence → frameReady
+        GL->>SG: frameFence → frameReady（pending_。出してよい時刻付き）
     end
-    SG->>SG: frameFence を待って描く → displayDoneFence
+    SG->>SG: sync: syncFront（時刻を過ぎていれば裏と表を入れ替え → backFreed）→ frameFence を待つ
+    SG->>SG: 描く → displayDoneFence → swap（描画スレッド）
 ```
 
 - 一時停止中に設定を変えたときは `rerender`（入力テクスチャはそのままで `FBO_Rendering` だけ）。
@@ -276,14 +304,14 @@ HUD が OFF の間は各フックが即 return する（クエリもイベント
 
 ### 13.1 表示の計測（画面に出たフレーム）
 
-- upload したフレームが画面に出るとは限らない。`fbo` は 1 枚なので、シーングラフが swap する前に次の `upload` が来ると
-  前のフレームは出ないまま上書きされる（`waitDisplayDone` は前回表示した分しか待たない）。受け取り間隔だけ見ても分からないので、
-  画面に出た側で測る。
-- 流れ: `FBO_Rendering` の最後で描いたフレームを `rendered_` に控える（通し番号・FrameNo・upload の時刻）
-  → `VideoItem::updatePaintNode` が `notePainted`（`painted_`）→ swap → `QQuickWindow::frameSwapped`（`main.cpp`）が `onFrameSwapped`。
-  `painted_` が前に出たものと違えば「出た」として、表示間隔・upload→表示・番号の差・その間の上書き枚数を `PerfMeter::addPresent` へ。
-  同じフレームの描き直し（UI だけの更新・ズーム）は数えない。
-- 上書きは `FBO_Rendering` で数える（前に描いたフレームが描かれも出もしていないうちに次を描いた）。
+- upload したフレームが画面に出るとは限らない。裏に描いたコマが表に入る前に次の `upload` が来ると、前のコマは出ないまま上書きされる
+  （すぐ出す経路。表示のペースは裏が空くまで待つ）。受け取り間隔だけ見ても分からないので、画面に出た側で測る。
+- 流れ: `FBO_Rendering` の最後で描いたフレームを `rendered_` に控える（通し番号・FrameNo・upload の時刻・出してよい時刻）
+  → sync の `syncFront` が表に入れるとき `front_.shown` に写す（sync の時刻も）→ 描画スレッドの swap → `QQuickWindow::frameSwapped`（`main.cpp`）
+  → `onRenderThreadSwapped`（描画スレッド。swap の時刻と `front_.shown` を控える）→ `onFrameSwapped`（GUI スレッド。Queued）。
+  表のコマが前に出たものと違えば「出た」として、表示間隔・upload→表示・番号の差・その間の上書き枚数を `PerfMeter::addPresent` へ。
+  同じフレームの描き直し（UI だけの更新・ズーム・出す時刻待ちの描き直し）は数えない。
+- 上書きは `FBO_Rendering` で数える（`pending_` のまま次を描いた）。
 - 数えるのは安定して順方向に再生している間だけ（`setSteadyPlayback`。PlayerController の `render_active_ && !reverse_flag`）。
   それ以外の間は起点を捨てるので、一時停止・シークの明けの長い間隔は入らない（受け取り間隔も同じく `resetTiming`）。
 - 時刻は swap が戻った時刻（vsync で戻る）。ドライバがフリップを溜める場合は実際の表示はそれより後になりうるが、間隔のばらつきを見るには足りる。
@@ -291,13 +319,19 @@ HUD が OFF の間は各フックが即 return する（クエリもイベント
   列は `t_ms, frame_no, step, present_interval_ms, upload_interval_ms, upload_to_present_ms, overwritten, steady,
   tick_interval_ms, tick_to_begin_ms, decode_ms, emit_to_recv_ms, recv_to_upload_ms, vblank_idx, vblank_step, swap_phase, refresh_ms, paced`。
   `paced` = 表示のペース（`DECODE_CORE.md` 3.6）を通ったコマ。待ち行列で待った時間は `recv_to_upload_ms` に入る。
-  続けて `swaps, swap_ms, swap_max_ms, wake_late_ms, pend_waits`:
-  `swaps` = 前のコマが出てからこのコマが出るまでの swap の回数（1 が理想。2 以上は同じ内容を描き直している）、
+  続けて `swaps, swap_ms, swap_max_ms, sync_late_ms, pend_waits`:
+  `swaps` = 前のコマが出てからこのコマが出るまでの swap の回数（1 が理想。2 以上は UI の更新などで同じ内容を描き直している）、
   `swap_ms` = このコマの swap にかかった時間（`afterRendering` → `frameSwapped`。swap がブロックしていないか）、
-  `swap_max_ms` = その間の swap で一番長かったもの、`wake_late_ms` = 表示のペースのタイマーが予定より遅れた時間（swap 待ちの延長を含む）、
-  `pend_waits` = 前のコマの swap 待ちで 1ms 延ばした回数、`dropped` = このコマを出す前に同じ vblank に重なって upload せず捨てたコマの数
+  `swap_max_ms` = その間の swap で一番長かったもの（描画スレッドの swap。GUI スレッドは止まらない）、
+  `sync_late_ms` = 出してよい時刻から、表に入れた sync までの時間（表示のペース。拍の sync は vblank の直後なので 0.5〜数 ms に
+  揃うのが狙い。周期ぶん（16.7ms など）足されていれば 1 vblank 遅れて出ている）、
+  `pend_waits` = 1 なら裏が空かないまま 100ms 待って上書きしたコマ、`dropped` = このコマを出す前に同じ vblank に重なって upload せず捨てたコマの数
   （リフレッシュより速い再生。`step` = 前に出たコマとの番号の差と合わせて見る）、`vb_src` = vblank の出どころ
   （1 = ウィンドウがあるモニターを測った値（`VblankClock`）、0 = DWM（画面全体）、-1 = なし）。`swap_phase` / `vblank_step` / `refresh_ms` もこの値で計算する。
+  最後に GUI スレッドが止まった所の切り分け用: `up_wait_ms`（upload の先頭で 2 つ前のコマの GPU 処理を待った時間）、
+  `up_map_ms`（入力テクスチャの CUDA の map。GL の完了を待つ）、`up_fbo_ms`（`FBO_Rendering`。ヒストグラムの集計の同期を含む）、
+  `up_total_ms`（upload 全体）、`kick_max_ms` / `kick_sum_ms`（前のコマが出てからの拍の sync で GUI スレッドが止まった時間の最大・合計）、
+  `swap_to_gui_max_ms`（描画スレッドの swap の通知が GUI スレッドで処理され始めるまでの最大。GUI の混み具合）。
   - 受け渡しの内訳: 刻み（`fps_thread` が `g_last_tick_ns` に記録）→ デコード開始（`processFrame`）→ 送出（`stamp_frame_times`）
     → GUI の受け取り（`decode_view` の先頭）→ upload の先頭。時刻は `VideoFrame::t_*`（`mono_now_ns`。QPC の ns でスレッドをまたいで比べられる）。
     `tick_interval_ms` は前に出たフレームの刻みとの差。受け取り待ち（`drop_flag`）で遅れたデコードは `tick_to_begin_ms` に出る。

@@ -21,6 +21,8 @@ VideoItem::VideoItem(QQuickItem* parent)
 
     if (VideoEngine* eng = VideoEngine::instance()) {
         connect(eng, &VideoEngine::frameReady, this, &VideoItem::onFrameReady);
+        // 出してよい時刻を待つコマ（表示のペース）: sync で syncFront を呼ばせるため、描き直し対象にする
+        connect(eng, &VideoEngine::presentRequested, this, [this] { update(); });
     }
 }
 
@@ -56,7 +58,10 @@ void VideoItem::onFrameReady()
         resetZoom();            // 解像度が変わったら等倍へ
     }
     emit frameChanged();
-    update();
+    // 出してよい時刻を待つコマ（表示のペース）は今は描き直さない（sync しても入れ替えない。余分な描画と swap が増えるだけ）。
+    //   時刻になったら engine が presentRequested で描き直させる
+    VideoEngine* eng = VideoEngine::instance();
+    if (!eng || !eng->waitingRelease()) update();
 }
 
 // 表示枠（アスペクト比を保って中央寄せ）
@@ -233,9 +238,11 @@ void VideoItem::mouseDoubleClickEvent(QMouseEvent* event)
 
 QSGNode* VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
 {
+    // 描画スレッドの sync（GUI スレッドは止まっている）。裏に出してよいコマがあれば表と入れ替える
     VideoEngine* eng = VideoEngine::instance();
+    if (eng) eng->syncFront();
     const QRectF dst = videoRect();
-    if (!eng || !eng->hasFrame() || !window() || dst.isEmpty() || eng->displayTexture() == 0) {
+    if (!eng || !eng->frontValid() || !window() || dst.isEmpty() || eng->frontTexture() == 0) {
         delete oldNode;
         texId_ = 0;
         return nullptr;
@@ -243,7 +250,6 @@ QSGNode* VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
 
     // engine が FBO を描き終えるのを GPU 側で待つ（CPU は止めない）
     eng->waitFrameFence();
-    eng->notePainted();   // 表示の計測: このフレームを描いた（swap 後の frameSwapped で「出た」と数える）
 
     auto* node = static_cast<QSGImageNode*>(oldNode);
     if (!node) {
@@ -255,8 +261,8 @@ QSGNode* VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
         texId_ = 0;
     }
 
-    const GLuint id = eng->displayTexture();
-    const QSize  sz = eng->displaySize();
+    const GLuint id = eng->frontTexture();
+    const QSize  sz = eng->frontSize();
     if (id != texId_ || sz != texSize_) {
         // 解像度変更で engine がテクスチャを作り直したら包み直す
         QSGTexture* t = QNativeInterface::QSGOpenGLTexture::fromNative(id, window(), sz);
@@ -290,6 +296,9 @@ HistogramItem::HistogramItem(QQuickItem* parent)
             emit changed();
             update();
         });
+        // 表と裏を入れ替える sync では、映像と同じ組のプロットに貼り直す（貼ったままだと engine が書き始める組を読む）
+        connect(eng, &VideoEngine::frameReady,       this, [this, eng] { if (!eng->waitingRelease()) update(); });
+        connect(eng, &VideoEngine::presentRequested, this, [this] { update(); });
     }
 }
 
@@ -324,7 +333,8 @@ bool HistogramItem::valid() const
 QSGNode* HistogramItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
 {
     VideoEngine* eng = VideoEngine::instance();
-    if (!eng || !eng->histValid() || !window() || width() <= 0 || height() <= 0 || eng->histTexture() == 0) {
+    if (eng) eng->syncFront();   // 描画スレッドの sync。映像の item より先に呼ばれても同じ（入れ替えは 1 回）
+    if (!eng || !eng->frontHistValid() || !window() || width() <= 0 || height() <= 0) {
         delete oldNode;
         texId_ = 0;
         return nullptr;
@@ -341,12 +351,12 @@ QSGNode* HistogramItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
         texId_ = 0;
     }
     // サイズが変わると engine がテクスチャを作り直す（同じ番号が再利用されうるので寸法も見る）
-    if (eng->histTexture() != texId_ || eng->histSize() != texSize_) {
+    if (eng->frontHistTexture() != texId_ || eng->frontHistSize() != texSize_) {
         QSGTexture* t = QNativeInterface::QSGOpenGLTexture::fromNative(
-            eng->histTexture(), window(), eng->histSize(), QQuickWindow::TextureHasAlphaChannel);
+            eng->frontHistTexture(), window(), eng->frontHistSize(), QQuickWindow::TextureHasAlphaChannel);
         node->setTexture(t);
-        texId_ = eng->histTexture();
-        texSize_ = eng->histSize();
+        texId_ = eng->frontHistTexture();
+        texSize_ = eng->frontHistSize();
     }
     node->setRect(boundingRect());
     node->markDirty(QSGNode::DirtyMaterial);

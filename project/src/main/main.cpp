@@ -58,12 +58,9 @@ static void prepareQmlUi()
     fmt.setDepthBufferSize(24);
     fmt.setStencilBufferSize(8);
     // vsync（swap を vblank に合わせて待つか）は NVIDIA ドライバの「垂直同期」設定に合わせる（DisplayProbe::vsyncPolicy）。
-    //   QML 版の通常再生は表示のペース（docs/DECODE_CORE.md 3.6）が upload の時刻を vblank に合わせるので、swap で待つ必要は薄い。
-    //   1 のままだと、1 つの vblank に描画が 3〜4 回重なったときや GPU が重いとき（16K）に swap が 10〜16ms ブロックし、
-    //   GUI スレッドが止まってコマを取りこぼしていた（16K 2 倍速で画面に出るのが 60fps 止まり）。
-    //   0 にするとウィンドウ表示では DWM が vblank で合成するのでティアリングしないが、全画面（独立フリップ）では
-    //   ティアリングしうる。UI のアニメーションが vblank で抑えられなくなるので CPU / GPU の使用が増えることもある
-    //   オフ・高速のときは表示のペースも使わない（届いたらすぐ描く。g_vsync_paced、__global__.h）。設定の変更は再起動で反映
+    //   swap は描画スレッド（threaded render loop、下）で呼ぶので、vsync で swap が止まっても GUI スレッドは止まらない。
+    //   オン: 描画スレッドが vblank ごとに swap し、表示のペース（docs/DECODE_CORE.md 3.6）がどのコマをどの vblank に出すかを決める。
+    //   オフ・高速: 表示のペースは使わない（届いたらすぐ描く。ティアリングは覚悟。g_vsync_paced、__global__.h）。設定の変更は再起動で反映
     {
         const DisplayProbe::VsyncPolicy vp = DisplayProbe::vsyncPolicy();
         g_vsync_swap_interval = vp.swapInterval;
@@ -90,10 +87,14 @@ static void prepareQmlUi()
     // Windows の Qt 6 は既定で D3D11 なので OpenGL を明示する
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
 
-    // GUI スレッドで描画する（basic render loop）。デコードとのハンドシェイク・
-    //   CUDA interop がすべて GUI スレッドに揃い、スレッド間の受け渡しが増えない
+    // 描画スレッドで描画する（threaded render loop）。
+    //   以前は GUI スレッドで描いていた（basic）。vsync オンのウィンドウ表示では swap が前のコマが画面に出るまで止まることがあり、
+    //   その間 GUI スレッドのコマの受け取り・upload・デコードへの返事も止まって、目標がリフレッシュ以上のとき（60Hz で 2 倍速など）
+    //   54〜56fps に張り付いていた。描画スレッドに分ければ止まるのは描画スレッドだけになる。
+    //   engine（CUDA interop・GLSL の処理）は GUI スレッドの自前のコンテキストのまま。描画スレッドとは表示の組を 2 つにして
+    //   受け渡す（videoengine.h の冒頭）。QSG_RENDER_LOOP=basic を指定すれば以前の描き方でも動く（表示のペースは粗くなる）
     if (qEnvironmentVariableIsEmpty("QSG_RENDER_LOOP"))
-        qputenv("QSG_RENDER_LOOP", "basic");
+        qputenv("QSG_RENDER_LOOP", "threaded");
 
     // カスタマイズ可能なスタイル（Windows スタイルは背景差し替えを嫌う）
     QQuickStyle::setStyle("Basic");
@@ -129,22 +130,26 @@ static int runQmlUi(QApplication& app)
 
     auto* window = qobject_cast<QQuickWindow*>(qml.rootObjects().first());
     if (window) {
-        // シーングラフが描き終えたことを engine に伝える（FBO 上書き前に待つ）
+        // sync を始めたことを engine に伝える（描画スレッド。拍が済んだ swap に応えて待たないため）
+        QObject::connect(window, &QQuickWindow::beforeSynchronizing, window, [] {
+            if (VideoEngine* eng = VideoEngine::instance())
+                eng->noteBeforeSync();
+        }, Qt::DirectConnection);
+        // swap したことを engine に伝える（描画スレッド。表示の計測と拍）
         QObject::connect(window, &QQuickWindow::frameSwapped, window, [] {
-            if (VideoEngine* eng = VideoEngine::instance()) {
-                eng->signalDisplayDone();
-                eng->onFrameSwapped();   // 表示の計測（画面に出たフレーム）
-            }
+            if (VideoEngine* eng = VideoEngine::instance())
+                eng->onRenderThreadSwapped();
         }, Qt::DirectConnection);
 
         chrome.attach(window);
 
-        // 表示のペース: upload の直後にこのウィンドウをその場で描かせる（VideoEngine::renderNow）
+        // 表示のペース: 出してよい時刻を待つコマがあるとき、swap の直後にこのウィンドウの sync をその場で進める（VideoEngine::kickPresent）
         if (VideoEngine* eng = VideoEngine::instance())
             eng->setPresentWindow(window);
         // 表示のペース: ウィンドウがあるモニターの vblank を測る（DWM は画面全体＝メインのモニターの値しか返さない）
         VblankClock::instance().setWindow(window);
-        // 表示の計測: 描き終えてから swap が戻るまでの時間（swap が止まっていないか）
+        // 描き終えたことを engine に伝える（描画スレッド。swap の前）: 表から外した組に書く前に待つフェンスと、
+        //   描き終えてから swap が戻るまでの時間（swap が止まっていないか）の起点
         QObject::connect(window, &QQuickWindow::afterRendering, window, [] {
             if (VideoEngine* eng = VideoEngine::instance())
                 eng->noteAfterRendering();
@@ -155,10 +160,11 @@ static int runQmlUi(QApplication& app)
 #endif
 
         // 実際に取れた表示の色深度（10 / 8）を動画情報へ。コンテキストができた時点の値を読む
+        //   sceneGraphInitialized は描画スレッドで来るので、player へは GUI スレッドで渡す
         auto reportBits = [window, &player] {
             QOpenGLContext* c = QOpenGLContext::currentContext();
             const int bits = c ? c->format().redBufferSize() : window->format().redBufferSize();
-            player.setDisplayBits(bits);
+            QMetaObject::invokeMethod(&player, [&player, bits] { player.setDisplayBits(bits); }, Qt::QueuedConnection);
             qDebug() << "[main] 表示の色深度:" << bits << "bit";
         };
         if (window->isSceneGraphInitialized()) reportBits();

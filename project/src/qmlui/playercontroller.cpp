@@ -44,10 +44,10 @@ PlayerController::PlayerController(QObject* parent)
     seekHoldTimer_.setInterval(10000);
     connect(&seekHoldTimer_, &QTimer::timeout, this, [this] { clearSeekHold(); });
 
-    // 表示のペース: 次のコマを出す時刻（ms 単位。誤差 ±0.5ms は vblank の周期の半分の余裕で吸収する）
+    // 表示のペース: 裏が空かないまま（最小化などで描画が止まっている）待ち続けないための保険
     presentTimer_.setSingleShot(true);
-    presentTimer_.setTimerType(Qt::PreciseTimer);
-    connect(&presentTimer_, &QTimer::timeout, this, &PlayerController::presentTick);
+    presentTimer_.setInterval(100);
+    connect(&presentTimer_, &QTimer::timeout, this, [this] { tryPresent(true); });
 
     // videoInfo / gpus の作り置きを捨てる合図（QML の接続より先に張るので、QML が読む前に進む）
     connect(this, &PlayerController::infoChanged,  this, [this] { ++infoGen_; });
@@ -140,6 +140,8 @@ bool PlayerController::initialize()
     // 表示のペース: コマが swap されたら（描画が終わってから）待たせていた HUD / 動画情報の通知を出す。
     //   Queued: frameSwapped の中（描画の途中）で QML を動かさない
     connect(engine_, &VideoEngine::framePresented, this, [this] { flushDeferredUi(); }, Qt::QueuedConnection);
+    // 表示のペース: 裏のコマが表に入った（描画スレッドの sync から）。次のコマを裏に描いておく
+    connect(engine_, &VideoEngine::backFreed, this, [this] { tryPresent(); }, Qt::QueuedConnection);
     connect(engine_, &VideoEngine::pickUpdated,      this, &PlayerController::pickChanged);
 
     // フィルタ係数。変わったら次の描画でシェーダへ送る（一時停止中も同じフレームを描き直す）
@@ -598,8 +600,13 @@ QVariantList PlayerController::gpus() const
 // UI の定期更新を表示のペースの空き時間に寄せる
 //   表示のペースの最中に HUD / 動画情報の通知をタイマーの時刻のまま出すと、QML の評価（数 ms）が upload の時刻に重なって
 //   タイマーが遅れたり（5→3 vblank）、追加の描画が 1 つの vblank に 3〜4 回重なって swap が 10〜16ms 止まったり（6→2）した。
-//   印だけ付けて、presentTick の swap の直後に出す。印が付いたまま次の刻みが来たら（コマが出ていない）その場で出す
+//   印だけ付けて、コマの swap の直後（framePresented）に出す。印が付いたまま次の刻みが来たら（コマが出ていない）その場で出す
 // ==============================================================
+bool PlayerController::pacingActive() const
+{
+    return !presentQueue_.empty() || (engine_ && !engine_->backFree());
+}
+
 void PlayerController::deferUi(int what)
 {
     if (!pacingActive() || (pendingUi_ & what)) {
@@ -952,6 +959,8 @@ void PlayerController::stop_decode_thread()
     presentTimer_.stop();
     presentQueue_.clear();
     nextIdealNs_ = 0;
+    lastPresentedVNs_ = 0;
+    if (engine_) engine_->setHeartbeat(false);
 
     disconnect(decodestream, nullptr, this, nullptr);
     disconnect(this, nullptr, decodestream, nullptr);
@@ -1033,7 +1042,7 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
     // 表示の計測: 安定して順方向に再生している間だけ表示間隔を数える（性能 HUD の frozen と同じ条件）
     if (engine_) engine_->setSteadyPlayback(render_active_ && !reverse_flag);
 
-    // ---- 表示のペース: 安定した順方向の通常再生は待ち行列へ（出すのは presentTick）----
+    // ---- 表示のペース: 安定した順方向の通常再生は待ち行列へ（裏が空いたら tryPresent が次のコマを裏に描く）----
     if (updatePacing()) {
         if (presentQueue_.size() >= 2) {
             // デコードの先行は 2 枚までなので来ないはず。来たら古い方を捨てて枠を守る
@@ -1042,7 +1051,7 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
             replyDecode();
         }
         presentQueue_.push_back(Frame);
-        schedulePresent();
+        tryPresent();
         return;
     }
     // 待ち行列を使わない経路（一時停止・シーク・逆再生・エンコード・高速再生など）へ移るときは空ける。
@@ -1055,7 +1064,8 @@ void PlayerController::decode_view(VideoFrame Frame, bool pause, bool reverse)
 
     showFrame(Frame);
 
-    // OpenGL へ画像を渡して描画。一時停止中は再描画だけ（フィルタ変更・画像保存用）
+    // OpenGL へ画像を渡して描画。一時停止中は再描画だけ（フィルタ変更・画像保存用）。すぐ出す（出してよい時刻なし）
+    engine_->setNextRelease(0);
     if (!pause_flag && encode_state != STATE_ENCODE_READY) {
         engine_->upload(Frame);
     } else if (encode_state == STATE_NOT_ENCODE) {
@@ -1083,19 +1093,20 @@ void PlayerController::showFrame(const VideoFrame& f)
 // ==============================================================
 // 表示のペース（vblank に合わせて出す。docs/DECODE_CORE.md 3.6）
 //
-//   以前は届いたコマをすぐ upload していたので、画面に出る時刻 = 刻み（fps_thread の steady_clock）＋ デコード時間。
-//   刻みと画面の vblank は別の時計なのでゆっくりずれ、境目を通るあいだ swap の 1ms の揺れで 5・3・5・3 vblank と
-//   行ったり来たりしていた（120Hz で 29.97fps のとき 10〜17 秒ごとに 1〜2 秒）。キーフレームのデコード（約 4ms）も境目で効いた。
+//   描画は描画スレッド（threaded render loop）。engine は表示の組を 2 つ持ち、ここは「裏」が空いたらすぐ次のコマを
+//   裏に描いておき、そのコマを出す vblank V と、出してよい時刻（V の 1 つ前の vblank − 0.5ms）を付ける（setNextRelease）。
+//   描画スレッドの sync（VideoItem::updatePaintNode → VideoEngine::syncFront）は、その時刻より前には裏を表に入れない。
+//   再生中は拍（VideoEngine::setHeartbeat）で GUI からの sync を swap の直後（vblank の直後）の 1 回にまとめるので、
+//   時刻を過ぎた最初の拍の sync で表に入り、その描画の swap が V に出る。
+//   upload は前もって済んでいるので、upload の時間や GUI の混み具合で出る vblank がずれない。
 //
-//   ここでは
-//     ・コマ k の理想の表示時刻 = 起点 ＋ k × 1 コマの長さ（計算で決まる。測った時刻の揺れが入らない）
-//     ・それに一番近い vblank を選び、swap がその vblank の周期の真ん中（前後に周期の半分の余裕）になる時刻に upload を始める
-//       （開始 = vblank − 周期 / 2 − upload→swap の移動平均）
-//     ・理想の時刻は計算なので、ずれが溜まって選ぶ vblank が 1 つ動くのは 1 回だけ（5 vblank のコマが 1 枚入る）。行ったり来たりしない
-//     ・起点 = 最初のコマが届いた時刻 ＋ max(1 コマ, 25ms)。キーフレームのデコードの遅れ（約 4ms）は待ち行列が吸収する
-//     ・リフレッシュより速い再生では、同じ vblank に重なるコマを upload せずに捨てる（vblank ごとに 1 コマ）
+//   どのコマを出すかは以前と同じ:
+//     ・コマ k の理想の表示時刻 = 起点 ＋ k × 1 コマの長さ（計算で決まる。測った時刻の揺れが入らない）。それに一番近い vblank が V
+//     ・起点 = 最初のコマが届いた時刻 ＋ max(1 コマ, 25ms か 2 コマの短い方)。キーフレームのデコードの遅れは待ち行列が吸収する
+//     ・V は前のコマの vblank より後、今から間に合う一番早い vblank 以降。遅れていれば理想の時刻を過ぎたコマを upload せずに捨てる
+//     ・リフレッシュより速い再生は vblank ごとに 1 枚、コマは毎回同じ数（stepK_）だけ進める
 //   使わない: 一時停止・シーク・コマ送り・逆再生・エンコード、vsync オフ・高速（ドライバの「垂直同期」。届いたらすぐ描く）、
-//            DWM の時刻が取れないとき、CUDA_VIEWER_PACING=0
+//            vblank の時刻が取れないとき、CUDA_VIEWER_PACING=0
 // ==============================================================
 bool PlayerController::updatePacing()
 {
@@ -1114,9 +1125,6 @@ bool PlayerController::updatePacing()
     qint64 vb = 0; double per = 0;
     if (!engine_->vblankGrid(vb, per)) return false;
     const qint64 dur = qint64(1e9 / fps);
-    // リフレッシュより速い再生（16K 2 倍速 = 119.88fps を 120Hz など）も使う。vblank ごとに 1 コマを選び、
-    //   同じ vblank に重なるコマは upload せずに捨てる（presentTick）。以前はすぐ出していて、swap がブロックしている間に届いた
-    //   2 コマを続けて upload し 1 枚目が出ないまま上書きされ、その無駄な変換で GPU がさらに重くなって 60fps に張り付いていた
     // リフレッシュより速い再生か（1 コマが vblank の 0.95 倍より短い）。モードか速さが変わったら 1 vblank あたりのコマ数を決め直す
     const bool over = dur < qint64(per * 0.95);
     if (over != overRefresh_ || dur != pacedFrameDurNs_) {
@@ -1133,89 +1141,47 @@ bool PlayerController::updatePacing()
     return true;
 }
 
-void PlayerController::schedulePresent()
+// 裏が空いていれば、待ち行列から次に出すコマを選んで裏に描いておく。
+//   force: 裏が空かないまま 100ms 経った（最小化などで描画が止まっている）。まだ出ていないコマを上書きして進める
+void PlayerController::tryPresent(bool force)
 {
-    if (presentQueue_.empty()) { presentTimer_.stop(); return; }
-    if (presentTimer_.isActive()) return;          // 先頭のコマの時刻はもう掛けてある
+    if (presentQueue_.empty() || !engine_ || !run_decode_thread) { presentTimer_.stop(); return; }
+    if (!engine_->backFree() && !force) {
+        if (!presentTimer_.isActive()) presentTimer_.start();
+        return;
+    }
+    presentTimer_.stop();
 
     const qint64 now = mono_now_ns();
     qint64 vb = 0; double per = 0;
-    if (!engine_ || !engine_->vblankGrid(vb, per)) { presentWakePlanNs_ = now; presentTimer_.start(0); return; }
-
-    if (overRefresh_) {
-        // リフレッシュより速い再生: 理想の時刻は使わず、前に出した vblank の次（間に合わなければ今から間に合う一番早い vblank）に出す
-        const double  leadNs = std::min(engine_->uploadToSwapMs() * 1e6 + 1500000.0, per * 0.5);   // 描画を出すまで ＋ 1.5ms（swap 自体）
-        const qint64  earliest = now + qint64(per * 0.5) + qint64(leadNs);
-        qint64        V = vb + qint64(std::ceil(double(earliest - vb) / per) * per);
-        if (lastPresentedVNs_ > 0) V = std::max(V, lastPresentedVNs_ + qint64(per));
-        presentTargetVNs_ = V;
-        presentPerNs_     = per;
-        qint64 wake = V - qint64(per * 0.5) - qint64(leadNs);
-        if (lastPresentedVNs_ > 0) wake = std::max(wake, lastPresentedVNs_ + 1000000);
-        const qint64 waitNs = wake - now;
-        presentWakePlanNs_ = waitNs <= 0 ? now : wake;
-        presentTimer_.start(waitNs <= 0 ? 0 : int((waitNs + 500000) / 1000000));
+    if (!engine_->vblankGrid(vb, per)) {
+        // vblank の時刻が取れない: すぐ出す
+        engine_->setHeartbeat(false);
+        const VideoFrame f = presentQueue_.front();
+        presentQueue_.pop_front();
+        showFrame(f);
+        engine_->setNextRelease(0);
+        engine_->upload(f);
+        replyDecode();
+        lastPresentedVNs_ = 0;
         return;
     }
-    if (nextIdealNs_ == 0) {
-        // 起点 = 届いた時刻 ＋ 遅延（1 コマ、ただし 25ms か 2 コマの短い方以上）。待ち行列は 2 コマまでなので長くしすぎない
-        const qint64 recv = presentQueue_.front().t_recv_ns > 0 ? presentQueue_.front().t_recv_ns : now;
-        nextIdealNs_ = recv + std::max<qint64>(pacedFrameDurNs_, std::min<qint64>(25000000, 2 * pacedFrameDurNs_));
-    }
-    // 理想の時刻に一番近い vblank。ただし最後に出した vblank より後（同じ vblank に 2 枚出さない）
-    const double  n = std::round(double(nextIdealNs_ - vb) / per);
-    qint64        V = vb + qint64(n * per);
-    if (lastPresentedVNs_ > 0 && V < lastPresentedVNs_ + qint64(per * 0.5))
-        V = lastPresentedVNs_ + qint64(per);
-    // 今から始めて間に合う一番早い vblank より前は狙わない（swap が周期の真ん中に来るには、今 ＋ 周期の半分 ＋ upload→swap が要る）。
-    //   理想の時刻だけから V を決めると、表示が追いつかず遅れているとき V も一緒に遅れて「次のコマももう期限」に気付けず、
-    //   presentTick がコマを捨てなかった（4 倍速が画面 60fps・再生も 60fps のまま）。V を今に合わせれば、遅れているときは
-    //   次のコマの理想の時刻も V に収まるので、先頭を捨てて最新のコマを出す
-    const double  leadNs = std::min(engine_->uploadToSwapMs() * 1e6 + 1500000.0, per * 0.5);   // 描画を出すまで ＋ 1.5ms（swap 自体）
-    {
-        const qint64 earliest = now + qint64(per * 0.5) + qint64(leadNs);
-        const qint64 Vmin = vb + qint64(std::ceil(double(earliest - vb) / per) * per);
-        if (V < Vmin) V = Vmin;
-    }
-    presentTargetVNs_ = V;
-    presentPerNs_     = per;
-    // swap が V の周期の真ん中に来るように upload を始める。
-    //   ただし前のコマを出した vblank（lastPresentedVNs_）より前には始めない（＋1ms）。前のコマがまだ画面に出ていないうちに
-    //   swap すると、vsync オンのドライバは前のコマが出るまで swap をブロックする。そのブロックの時間が upload→swap の移動平均に
-    //   入ると、次はさらに早く始めて、さらに長くブロックする（16K 60p で swap が毎回約 14.5ms 止まり、GUI スレッドが止まって
-    //   コマの受け取りと返事が遅れ、デコードの刻みを取りこぼして 55.7fps に落ちていた）。前の vblank の後なら待つものがない
-    //   さらに upload→swap の見込みは周期の半分までで打ち切る（始めるのは V の 1 周期前より早くしない）。
-    //   ウィンドウ表示では DWM が前のコマを画面に出すのは狙った vblank のさらに 1 つ後で、それまでに次の swap を呼ぶと
-    //   そこまでブロックする。そのブロックが移動平均に入ると早く始める → またブロック、で 60fps の素材が
-    //   swap 約 14.5ms・55fps に張り付いていた（4K 2 倍速でも）。打ち切れば前のコマが出た後に始めるので待つものがない
-    qint64        wake = V - qint64(per * 0.5) - qint64(leadNs);
-    if (lastPresentedVNs_ > 0) wake = std::max(wake, lastPresentedVNs_ + 1000000);
-    const qint64  waitNs = wake - now;
-    presentWakePlanNs_ = waitNs <= 0 ? now : wake;   // 表示の計測（タイマーの遅れ）
-    presentTimer_.start(waitNs <= 0 ? 0 : int((waitNs + 500000) / 1000000));
-}
+    const qint64 iper = qint64(per);
+    engine_->setHeartbeat(true);   // 拍: sync を swap の直後の 1 回にまとめる（VideoEngine::setHeartbeat）
+    // 今から描いて間に合う一番早い vblank: upload（CPU）を終えてから最初の vblank の次。
+    //   出してよい時刻（V の 1 つ前の vblank の直前）を upload の後に置けば、その vblank の直後の拍の sync で表に入り V に出る
+    const qint64 ready = now + qint64(engine_->uploadCpuMs() * 1e6) + 500000;
+    const qint64 Vmin  = vb + qint64(std::ceil(double(ready - vb) / per) * per) + iper;
 
-void PlayerController::presentTick()
-{
-    if (presentQueue_.empty() || !engine_ || !run_decode_thread) return;
-
-    // 前に描いたコマがまだ swap していなければ待つ（1 回の swap に 2 枚描くと前のコマが出ない）。
-    //   最小化などで swap が来ないときに止まらないよう、20 回（約 20ms）で諦めて進む
-    if (engine_->hasPendingPresent() && pendingWaits_ < 20) {
-        ++pendingWaits_;
-        presentTimer_.start(1);
-        return;
-    }
-    const int waits = pendingWaits_;
-    pendingWaits_ = 0;
-
-    // 同じ vblank に次のコマも間に合う（次のコマの理想の時刻もこの vblank に丸まる）なら、先頭は出さずに捨てる。
-    //   upload しないので変換・画像処理の GPU を使わない。リフレッシュより速い再生（2 倍速・4 倍速）と、遅れを取り戻すとき
+    qint64 V = 0;
     int dropped = 0;
     if (overRefresh_) {
-        // リフレッシュより速い再生: 毎回同じ数（stepK_）だけ進める。捨てる数が vblank ごとにばらつくと動きの速さが毎回変わって
-        //   カクついて見える（8K HEVC 120fps の 2 倍速 = 目標 240 を 120Hz で: デコードが約 155fps しか出ず、1 コマ・2 コマ進むのが
-        //   不規則に混ざっていた）。デコードが 2 コマずつに追いつかないなら 1 コマずつ（画面のリフレッシュの速さ）にして動きを一定に保つ
+        // リフレッシュより速い再生: 前に出した vblank の次（間に合わなければ今から間に合う一番早い vblank）に出し、
+        //   毎回同じ数（stepK_）だけ進める。捨てる数が vblank ごとにばらつくと動きの速さが毎回変わってカクついて見える
+        //   （8K HEVC 120fps の 2 倍速 = 目標 240 を 120Hz で: デコードが約 155fps しか出ず、1 コマ・2 コマが不規則に混ざっていた）。
+        //   デコードが 2 コマずつに追いつかないなら 1 コマずつ（画面のリフレッシュの速さ）にして動きを一定に保つ
+        V = Vmin;
+        if (lastPresentedVNs_ > 0) V = std::max(V, lastPresentedVNs_ + iper);
         ++kWin_;
         if (presentQueue_.size() >= 2) ++kFull2_;
         while (presentQueue_.size() >= 2 && dropped < stepK_ - 1) {
@@ -1224,18 +1190,27 @@ void PlayerController::presentTick()
             ++dropped;
         }
         if (kWin_ >= 60) {
-            const qint64 t = mono_now_ns();
             if (stepK_ > 1 && kFull2_ < 54) {                   // 2 コマずつ進めるだけのコマが来ない（1 割以上）
                 stepK_ = 1;
-                kUpBlockedUntilNs_ = t + 10000000000LL;         // 10 秒は上げない（上げ下げを繰り返さない）
-            } else if (stepK_ < stepTarget_ && kFull2_ >= 58 && t >= kUpBlockedUntilNs_) {
+                kUpBlockedUntilNs_ = now + 10000000000LL;       // 10 秒は上げない（上げ下げを繰り返さない）
+            } else if (stepK_ < stepTarget_ && kFull2_ >= 58 && now >= kUpBlockedUntilNs_) {
                 stepK_ = stepTarget_;
             }
             kWin_ = kFull2_ = 0;
         }
     } else {
-        while (presentQueue_.size() >= 2 && presentTargetVNs_ > 0
-               && nextIdealNs_ + pacedFrameDurNs_ <= presentTargetVNs_ + qint64(presentPerNs_ * 0.5)) {
+        if (nextIdealNs_ == 0) {
+            // 起点 = 届いた時刻 ＋ 遅延（1 コマ、ただし 25ms か 2 コマの短い方以上）。待ち行列は 2 コマまでなので長くしすぎない
+            const qint64 recv = presentQueue_.front().t_recv_ns > 0 ? presentQueue_.front().t_recv_ns : now;
+            nextIdealNs_ = recv + std::max<qint64>(pacedFrameDurNs_, std::min<qint64>(25000000, 2 * pacedFrameDurNs_));
+        }
+        // 理想の時刻に一番近い vblank。ただし前に出した vblank より後（同じ vblank に 2 枚出さない）、
+        //   今から間に合う一番早い vblank 以降（遅れているときは V も今に合わせ、次のコマの理想の時刻も V に収まれば先頭を捨てる。
+        //   理想の時刻だけで V を決めると、遅れに気付けず 4 倍速が画面 60fps・再生も 60fps のままになった）
+        V = vb + qint64(std::round(double(nextIdealNs_ - vb) / per) * per);
+        if (lastPresentedVNs_ > 0 && V < lastPresentedVNs_ + iper / 2) V = lastPresentedVNs_ + iper;
+        if (V < Vmin) V = Vmin;
+        while (presentQueue_.size() >= 2 && nextIdealNs_ + pacedFrameDurNs_ <= V + iper / 2) {
             presentQueue_.pop_front();
             replyDecode();
             nextIdealNs_ += pacedFrameDurNs_;
@@ -1245,43 +1220,38 @@ void PlayerController::presentTick()
 
     VideoFrame f = presentQueue_.front();
     presentQueue_.pop_front();
+    // 出してよい時刻 = V の 1 つ前の vblank − 0.5ms（それより前の sync では入れ替えない）。その vblank の直後の拍の sync で入る
+    const qint64 release = V - iper - 500000;
     f.paced          = 1;
-    f.t_wake_plan_ns = presentWakePlanNs_;
-    f.t_wake_ns      = mono_now_ns();
-    f.pend_waits     = uint8_t(std::min(waits, 255));
+    f.t_wake_plan_ns = release;
+    f.t_wake_ns      = now;
+    f.pend_waits     = uint8_t(force ? 1 : 0);
     f.paced_dropped  = uint8_t(std::min(dropped, 255));
     showFrame(f);
+    engine_->setNextRelease(release);
     engine_->upload(f);
-    engine_->renderNow();   // CUDA_VIEWER_RENDER_NOW=1 のときだけ、その場で描いて swap まで進める（既定は requestUpdate に任せる）
     replyDecode();
-    // 待たせていた HUD / 動画情報の通知は swap の後（framePresented）に出す。その場で描いたときはもう swap 済みなのでここで出す
-    if (engine_->renderNowEnabled()) flushDeferredUi();
-    lastPresentedVNs_ = presentTargetVNs_;
+    lastPresentedVNs_ = V;
 
-    // 次のコマの理想の時刻。表示が追いつかない（1 コマ出すのに vblank 2 回かかる等）ときも起点は取り直さず、
-    //   次の presentTick で理想の時刻を過ぎたコマを upload せずに捨てて追いつく（再生の速さを保つ。デコードは返事のたびに
-    //   促すので、捨てた分も含めてコンテンツの速さでデコードされる）。以前は 2 コマ遅れたら取り直していて、捨てる代わりに
-    //   再生そのものが遅くなっていた（4 倍速 = 目標 119.88fps が、画面 60fps・再生も 60fps = 実質 2 倍速）。
-    //   0.25 秒（または 4 コマ）以上遅れたとき（デコードが追いつかない・止まっていた等）だけ取り直す
+    // 次のコマの理想の時刻。表示が追いつかないときも起点は取り直さず、次の回で理想の時刻を過ぎたコマを捨てて追いつく
+    //   （再生の速さを保つ）。0.25 秒（または 4 コマ）以上遅れたとき（デコードが追いつかない・止まっていた等）だけ取り直す
     if (!overRefresh_) {
-        const qint64 now = mono_now_ns();
         nextIdealNs_ += pacedFrameDurNs_;
         if (nextIdealNs_ < now - std::max<qint64>(250000000, 4 * pacedFrameDurNs_)) nextIdealNs_ = 0;
     }
-    schedulePresent();
 }
 
 void PlayerController::flushPresentQueue(bool showNewest)
 {
     presentTimer_.stop();
-    pendingWaits_ = 0;
+    if (engine_) engine_->setHeartbeat(false);   // 拍をやめる（止めていた UI の更新を描く）
     nextIdealNs_ = 0;
     lastPresentedVNs_ = 0;
-    presentTargetVNs_ = 0;
     if (presentQueue_.empty()) { flushDeferredUi(); return; }
     if (showNewest && engine_ && run_decode_thread) {
         const VideoFrame f = presentQueue_.back();
         showFrame(f);
+        engine_->setNextRelease(0);   // すぐ出す（まだ出ていない裏のコマは上書きする）
         engine_->upload(f);
     }
     for (size_t i = 0; i < presentQueue_.size(); ++i) replyDecode(false);   // 待ち行列を使わない経路へ移るので刻みに戻す

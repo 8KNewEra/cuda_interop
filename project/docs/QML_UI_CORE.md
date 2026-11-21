@@ -19,7 +19,7 @@ UI のクラス構成・スレッド・QML と C++ の約束ごと・画面ご�
 ## 1. 起動とビルド
 
 - 表示まわりの検証用の環境変数: `CUDA_VIEWER_PRESENT_LOG=<パス>`（表示の CSV）、`CUDA_VIEWER_PACING=0`（表示のペースを切る）、
-  `CUDA_VIEWER_RENDER_NOW=1`（upload 直後にその場で描く。既定は使わない）。vsync は環境変数ではなく NVIDIA ドライバの「垂直同期」設定に従う（`DECODE_CORE.md` 3.6）。
+  `QSG_RENDER_LOOP=basic`（描画を GUI スレッドに戻す。既定は threaded）。vsync は環境変数ではなく NVIDIA ドライバの「垂直同期」設定に従う（`DECODE_CORE.md` 3.6）。
   中身は `DECODE_CORE.md` 3.6 と `IMG_PROCESS_CORE.md` 13.1。
 - `--qml` 引数、または環境変数 `CUDA_VIEWER_UI=qml` で Qt Quick 版。なしなら従来の Widgets 版（`MainWindow` / `GLWidget`）。
 - ファイルを追加・削除したら **qmake を実行してから再ビルド**（`cuda_interop.pro`・`qml.qrc`・`qml/qmldir` の 3 か所に登録が要る）。
@@ -41,7 +41,7 @@ classDiagram
     direction LR
     class main_cpp["main.cpp"] {
         QSurfaceFormat（10:10:10:2）
-        QSG_RENDER_LOOP=basic
+        QSG_RENDER_LOOP=threaded
         context property 登録
     }
     class PlayerController {
@@ -81,8 +81,8 @@ classDiagram
     PlayerController --> fps_thread : 再生の刻み
     PlayerController --> info_thread : GPU 使用率
     VideoEngine *-- PerfMeter
-    VideoItem ..> VideoEngine : displayTexture
-    HistogramItem ..> VideoEngine : histTexture
+    VideoItem ..> VideoEngine : syncFront / frontTexture
+    HistogramItem ..> VideoEngine : syncFront / frontHistTexture
     DisplayProbe ..> PlayerController : 表示の深さ
 ```
 
@@ -93,11 +93,16 @@ classDiagram
 
 ```mermaid
 flowchart LR
-    subgraph GUI[GUI スレッド（= 描画スレッド。render loop basic）]
-        QML[QML / シーングラフ]
+    subgraph GUI[GUI スレッド]
+        QML[QML]
         PC[PlayerController]
         VE[VideoEngine<br/>自前の GL コンテキスト]
     end
+    subgraph RT[描画スレッド（render loop threaded）]
+        SG[シーングラフの sync / 描画 / swap]
+    end
+    VE -->|裏の組 → sync で表へ（syncFront）| SG
+    SG -->|backFreed・frameSwapped（Queued）| PC
     subgraph DT[デコードスレッド]
         D[decode_thread<br/>nvgpudecode / cpudecode / avidecode]
     end
@@ -114,8 +119,12 @@ flowchart LR
     VE -->|エンコード中| ET
 ```
 
-- **GUI スレッド**: QML、PlayerController、VideoEngine（GL・CUDA の変換と処理）、シーングラフの描画が全部ここ。
-  VideoEngine とシーングラフは別の GL コンテキスト（共有）なので、GPU 上の順序だけフェンスで渡す（`IMG_PROCESS_CORE.md` 3.1）。
+- **GUI スレッド**: QML、PlayerController、VideoEngine（GL・CUDA の変換と処理）。
+- **描画スレッド**（Qt Quick の threaded render loop）: シーングラフの描画と swap。vsync の swap で止まるのはここだけ。
+  VideoEngine とは別の GL コンテキスト（共有）。表示の組を 2 つにして、描画スレッドは「表」だけを読み、入れ替えは sync の間
+  （GUI スレッドが止まっている）だけ。GPU 上の順序はフェンスで渡す（`IMG_PROCESS_CORE.md` 3.1・3.3）。
+  `updatePaintNode` は描画スレッドで動く（GUI スレッドは止まっている）ので、item のメンバを読んでよいが、そこで QObject の
+  シグナルを GUI 向けに出すときは Queued で受ける。
 - **デコードスレッド**: ファイルごとに作る（`start_decode_thread`）。受け渡しのハンドシェイクは `DECODE_CORE.md` 3.2。
 - **fps_thread**: 目標 fps（素材の fps × 再生速度）で `processFrame` を叩く。エンコード中は切り離す（`set_fps_driving(false)`）。
 - **info_thread**: GPU ごとの使用率（NVML ＋ PDH）を `g_GPUInfo` に書く。PlayerController が 0.5 秒ごと（`infoTimer_`）に読んで `infoChanged`。
@@ -219,9 +228,10 @@ flowchart LR
 ダイアログ … EncodePanel / ScreenshotPanel / DecodePanel / PropertiesPanel
 ```
 
-- 映像（VideoItem）: `engine->displayTexture()` を `QSGOpenGLTexture::fromNative` で包むだけ（コピーなし。GL の実体は engine が持つ）。
+- 映像（VideoItem）: engine の表の組（`frontTexture()`。sync の最初に `syncFront` で出してよいコマを表へ入れる）を
+  `QSGOpenGLTexture::fromNative` で包むだけ（コピーなし。GL の実体は engine が持つ）。
   FBO は下の行から並ぶので表示時に上下反転。左 / 中ドラッグ = 移動、ホイール = 拡大縮小（カーソル位置固定）、ダブルクリック = 等倍、最大 1 画素 = 32px。
-  描く前に engine の `frameFence` を待ち、描き終えたら `displayDoneFence` を出す。
+  描く前に engine の `frameFence` を待ち、描き終えるたびに（swap の前）`displayDoneFence` を出す（`main.cpp` の `afterRendering`）。
 - ファイルのドロップで開ける（`isSupportedFile` で判定）。
 
 ### 4.2 画像処理パネル（FilterPanel）
@@ -369,8 +379,8 @@ flowchart LR
 - **Repeater に毎回新しくなる配列を直接渡さない**。`player.gpus` / `encoder.gpus` は更新のたびに新しい配列なので、model は台数（`length`）にして
   中身は `list[index]` から読む（行が作り直されてグラフがちらつくのを防ぐ）。
 - 推移グラフは配列を作り直して代入する（中身を書き換えても変更通知が出ない）。
-- **映像の上に重ねる部品で Canvas を使わない**。render loop が basic なので、Canvas（Image ＋ Immediate）の JS とソフトウェア描画が
-  GUI スレッドで映像の upload と swap の間に割り込み、表示の間隔が乱れる（性能 HUD の 250ms 周期でガタついていた。`IMG_PROCESS_CORE.md` 13.1）。
+- **映像の上に重ねる部品で Canvas を使わない**。Canvas（Image ＋ Immediate）の JS とソフトウェア描画は GUI スレッドで動き、
+  映像の受け取りと upload に割り込む（render loop が basic だった頃は性能 HUD の 250ms 周期で表示がガタついていた。`IMG_PROCESS_CORE.md` 13.1）。
   線や塗りはシーングラフのノード（`SparklineItem` が見本）で描く。
 - `Item.scale` など既存プロパティ名と衝突する名前を付けない（NumberSpin は `factor`）。
 - StyledText は空白が縮むので桁そろえは `&nbsp;`。

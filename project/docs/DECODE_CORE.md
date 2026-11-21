@@ -159,43 +159,52 @@ sequenceDiagram
 - 以前は届いたコマをすぐ `upload` していたので、画面に出る時刻 = 刻み（`fps_thread`。steady_clock）＋ デコード時間 ＋ GUI の待ち。
   刻みと画面の vblank は別の時計なのでゆっくりずれ、境目を通るあいだ swap の約 1ms の揺れで 5・3・5・3 vblank と行ったり来たりした
   （120Hz で 29.97fps の素材、10〜17 秒ごとに 1〜2 秒。キーフレームのデコード約 4ms も境目で効いた。実測は `IMG_PROCESS_CORE.md` 13.1）。
+- **描画は描画スレッド**（threaded render loop。`main.cpp` が `QSG_RENDER_LOOP=threaded`）。swap（vsync オンなら vblank まで止まりうる）を
+  呼ぶのは描画スレッドだけで、GUI スレッド（コマの受け取り・upload・デコードへの返事・UI）は止まらない。
+  以前は GUI スレッドで描いていて（basic）、vsync オンのウィンドウ表示では swap が前のコマが画面に出るまで止まることがあり、
+  目標がリフレッシュ以上の再生（60Hz で 2 倍速・4 倍速、120Hz で 120 超え）が 54〜56fps / 110〜116fps に張り付いていた。
+  upload の時刻を細かく合わせる調整（upload→swap の見込み、前の vblank より前に始めない、等）でも環境ごとに崩れたので、作りを変えた。
+- engine は表示の組（fbo・tempfbo・ヒストグラムのプロット先・その CUDA の登録）を **2 組**持つ（`IMG_PROCESS_CORE.md` 3.3）。
+  engine は「裏」にだけ書き、描画スレッドは「表」だけを貼る。入れ替えは sync（`VideoItem::updatePaintNode` → `VideoEngine::syncFront`）。
 - 安定した順方向の通常再生（`render_active_`・一時停止でない・逆再生でない・エンコードしていない・シークの保持中でない）だけ、
-  `decode_view` は届いたコマを待ち行列 `presentQueue_` に置き、`presentTick` が 1 枚ずつ出す（`showFrame` → `upload` → 返事）。
+  `decode_view` は届いたコマを待ち行列 `presentQueue_` に置く。**裏が空いたら**（`VideoEngine::backFreed`。sync で入れ替えた直後）
+  `tryPresent` が次に出すコマを選んで裏に描いておき（`showFrame` → `upload` → 返事）、そのコマを出す vblank V と
+  **出してよい時刻**（V の 1 つ前の vblank − 0.5ms。`VideoEngine::setNextRelease`）を付ける。
+  - `syncFront` は出してよい時刻より前の sync では入れ替えない。
+  - **拍**（`VideoEngine::setHeartbeat`。表示のペースの最中だけ）: GUI スレッドから描画スレッドへの sync を vblank ごとに 1 回へまとめる。
+    ウィンドウに来る UpdateRequest（UI の更新の requestUpdate）を止めて印だけ付け（`eventFilter`）、描画スレッドの swap の直後
+    （`onFrameSwapped`）に 1 回だけ、その場で sync まで進める（`kickPresent`: 映像の item を描き直し対象にして UpdateRequest を直接送る）。
+    UI の変更もその sync で一緒に描く。vsync の swap は vblank で戻るので sync は vblank の直後に来て、出してよい時刻を過ぎたコマは
+    この sync で表に入り、その描画の swap で次の vblank = V に出る。拍をやめるとき（一時停止・シークなど）止めていた更新を描く。
+    swap の通知を処理する前にもう次の sync が済んでいれば（`beforeSynchronizing` で数える `syncGen_` が swap の時点と違う）拍は打たない。
+    打つと描画スレッドの swap（次の vblank まで）が終わるまで GUI スレッドが待ち、その間に溜まった次の swap の通知に応えてまた待つ…と
+    1 つずれたまま毎周期約 16ms 止まり続け（CSV の `kick_max_ms` 約 16ms・`swap_to_gui_max_ms` 約 17ms）、コマの受け取りが
+    2 vblank 遅れて刻みを取りこぼし、60fps の素材が 55〜57fps だった。
+    swap が来ないとき（描画が止まっていた）の保険に、出してよい時刻の 1/4 周期後にもタイマー（`releaseTimer_`）で拾わせる。
+  - なぜ拍が要るか: ドライバの vsync（強制オン）では swap は呼んだ時刻によらず次の vblank まで止まり、描画を 1 回始めると描画スレッドは
+    その vblank までふさがる。threaded でも GUI スレッドが sync を頼むと描画スレッドが空くまで待つので、
+    - swap のたびに sync させるだけ（UI の更新はそのまま）: UI の更新のたびに GUI スレッドが止まり、コマの受け取りが約 49ms 遅れて
+      60fps の素材が 40fps に張り付いた（デコードの先行 2 枚 ÷ 往復 3 vblank）
+    - 周期の真ん中にタイマーで sync: UI の描画で描画スレッドがふさがっていると vblank の直後まで待たされ、1〜2 vblank 遅れて
+      30〜46fps で乱高下した（`sync_late_ms` が 16 / 32ms）
+  - upload はその vblank より前に済ませておくので、upload の時間や GUI の混み具合で出る vblank がずれない（以前の「upload を始める時刻」の
+    見込みは要らなくなった）。
   - 理想の表示時刻 = 起点 ＋ k × 1 コマ（fps × 再生速度から）。計算で決まるので測った時刻の揺れが入らない。
-    起点 = 最初のコマが届いた時刻 ＋ max(1 コマ, 25ms)（待ち行列にほぼ 1 コマ溜まり、キーフレームの遅れを吸収する）。
-  - 理想の時刻に一番近い実際の vblank（`VideoEngine::vblankGrid`）を選び、
-    swap がその vblank の周期の真ん中に来る時刻（vblank − 周期 / 2 − upload→swap の移動平均）に `presentTimer_`（PreciseTimer）で upload を始める。
-  - upload を始める時刻の見込みは「upload → afterRendering（swap を呼ぶ直前）」の移動平均 ＋ 1.5ms。swap の時間は入れない
-    （vsync オンの swap は前のコマが画面に出るまでブロックすることがあり、入れると見込みが膨らんで早く始める → またブロック、で張り付く。
-    60Hz のモニターで目標 59.94 のとき swap 約 14ms・55fps だった）。
-  - upload→swap の見込みは周期の半分で打ち切る（始めるのは V の 1 周期前より早くしない）。ウィンドウ表示では DWM が前のコマを
-    画面に出すのは狙った vblank のさらに 1 つ後で、それより前に次の swap を呼ぶとブロックする。打ち切らないとブロックが見込みに入って
-    さらに早く始める悪循環になり、60fps の素材（4K 2 倍速も）で swap 約 14.5ms・55fps に張り付いていた。
-  - ただし upload を始めるのは、前のコマを出した vblank の 1ms 後より前にしない。前のコマが画面に出る前に swap すると vsync オンの
-    ドライバがブロックし、その時間が upload→swap の移動平均に入って次はさらに早く始める…と悪化する（60p の素材で swap が毎回約 14.5ms
-    止まり、GUI の受け取りと返事が遅れてデコードの刻みを取りこぼし、55.7fps に落ちていた）。
+    起点 = 最初のコマが届いた時刻 ＋ max(1 コマ, 25ms か 2 コマの短い方)（待ち行列にほぼ 1 コマ溜まり、キーフレームの遅れを吸収する）。
+    V = 理想の時刻に一番近い実際の vblank（`VideoEngine::vblankGrid`）。前のコマの vblank より後（同じ vblank に 2 枚出さない）、
+    今から間に合う一番早い vblank（upload の CPU 時間の移動平均の後の最初の vblank の次）以降。
   - vblank の時刻と周期は、ウィンドウがあるモニターで測る（`VblankClock`、`src/qmlui/vblankclock.*`。専用スレッドが
     そのモニターの DXGI 出力で `WaitForVBlank` を回して時刻を記録し、周期は間隔の移動平均。ウィンドウを別のモニターへ移したら取り直す）。
     測れないときだけ DWM（`DwmGetCompositionTimingInfo`）に戻る。DWM は Windows 8.1 以降 hwnd を指定できず画面全体（メインのモニター）の
-    値しか返さないので、メイン 120Hz・ウィンドウ 60Hz のとき 120Hz の格子で出していて、目標がリフレッシュを超える再生で 55fps 前後に落ちた。
+    値しか返さない（メイン 120Hz・ウィンドウ 60Hz のとき 120Hz の格子で出していた）。
   - ずれが溜まって選ぶ vblank が 1 つ動くのは 1 回だけ（120Hz で 29.97fps なら約 10 秒に 1 回、5 vblank のコマが 1 枚）。
-  - 前に描いたコマがまだ swap していなければ 1ms ずつ待つ（最大 20 回。1 回の swap に 2 枚描かない）。
   - 表示が追いつかないときは起点を取り直さず、理想の時刻を過ぎたコマを upload せずに捨てて追いつく（再生の速さを保つ）。
-    狙う vblank は「今から始めて間に合う一番早い vblank」（今 ＋ 周期の半分 ＋ upload→swap）より前にしない。理想の時刻だけから
-    決めると、遅れているとき狙う vblank も一緒に遅れて期限切れに気付けず、1 コマも捨てなかった。
-    取り直すのは 0.25 秒（または 4 コマ）以上遅れたときだけ。以前は 2 コマ遅れで取り直していて、4 倍速（119.88fps）が
-    画面 60fps のときに再生そのものが 60fps（実質 2 倍速）に落ちていた。
-  - upload の直後にその場で描かせる `VideoEngine::renderNow`（ウィンドウへ UpdateRequest を直接送る）は**既定で使わない**
-    （`CUDA_VIEWER_RENDER_NOW=1` で使う）。60fps の素材（vblank 2 回に 1 コマ）で swap が毎回約 14.5ms ブロックし、GUI スレッドが止まって
-    54〜55fps に張り付いた（requestUpdate に任せると 60fps に張り付く。原因は未解明）。入れた狙い（HUD の更新で予約済みの描画に乗って
-    swap が早まる、250ms 周期の 3→5 vblank）は、UI の通知を swap の後（`VideoEngine::framePresented` を Queued で受けて
-    `flushDeferredUi`）に出すことで代わりに防ぐ。
-  - 実測（120Hz、29.97fps、HUD あり、144 秒）: 4 vblank が 98.3%（入れる前 89.7%）、swap の位置は周期の 0.52 ± 0.11。
-    残りは 約 8.7 秒ごとの 5 vblank（狙いどおり。29.97fps を 120Hz で出す限り避けられない）、HUD 由来の 3→5 の組（renderNow で対策）、
-    GUI スレッドが 16〜57ms 止まったもの数回。
+    取り直すのは 0.25 秒（または 4 コマ）以上遅れたときだけ（2 コマ遅れで取り直していた頃は、4 倍速が画面 60fps のとき
+    再生そのものが 60fps = 実質 2 倍速に落ちていた）。
+  - 裏が空かないまま 100ms 経ったら（最小化などで描画が止まっている）、まだ出ていないコマを上書きして進める（`presentTimer_`）。
 - **UI の定期更新は swap の直後へ寄せる**: 性能 HUD（`perfTimer_` 250ms）・動画情報（`infoTimer_` 500ms）・推移の記録（1 秒。
-  `infoSampleTick`）の通知は、表示のペースの最中は印だけ付け（`deferUi`）、`presentTick` の swap の直後にまとめて出す（`flushDeferredUi`）。
-  次の upload まで 20ms 以上空いているので、QML の評価も追加の描画もそこに収まる。印が付いたまま次の刻みが来たら（コマが出ていない）その場で出す。
+  `infoSampleTick`）の通知は、表示のペースの最中は印だけ付け（`deferUi`）、コマの swap の直後（`VideoEngine::framePresented` を
+  Queued で受けて）にまとめて出す（`flushDeferredUi`）。印が付いたまま次の刻みが来たら（コマが出ていない）その場で出す。
   以前はタイマーの時刻のまま出していて、`infoChanged` の評価（約 5ms）が upload の時刻に重なるとタイマーが遅れ（5→3 vblank、2.5 秒ごと）、
   追加の描画が 1 つの vblank に 3〜4 回重なると swap が 10〜16ms 止まった（6→2 vblank）。あわせて `videoInfo` / `gpus` は
   `infoChanged` / `stateChanged` ごとに 1 回だけ作って使い回す（バインディングごとに作り直していた）。
@@ -214,9 +223,10 @@ sequenceDiagram
   このアプリのプロファイル → 全体プロファイル → 既定 の順に読む。アプリに任せる（既定）/ 強制オン / フリップ間隔 → オン、
   強制オフ → オフ、高速（Fast Sync）→ すぐ描く、読めない（NVIDIA 以外）→ オン。G-SYNC の設定は表示だけ（動きは変えない）
   - オン（1 以上）: 表示のペースで vblank に合わせて出す。**リフレッシュより速い再生も同じ**で、vblank ごとに 1 コマを選び、
-    同じ vblank に重なるコマ（次のコマの理想の時刻もその vblank に丸まる）は upload せずに捨てて返事だけする（`presentTick`、CSV の `dropped`）。
+    同じ vblank に重なるコマ（次のコマの理想の時刻もその vblank に丸まる）は upload せずに捨てて返事だけする（`tryPresent`、CSV の `dropped`）。
     同じ vblank に 2 枚は出さない（`lastPresentedVNs_`）。
   - オフ（0）: 表示のペースを使わず、届いたらすぐ描く（ティアリングは覚悟。ベンチマーク向け。描画 fps = upload の数）。
+    裏に描いたコマは次の sync ですぐ表に入る。入る前に次のコマが来たら上書きする（最新のコマが出る）。
   - 以前はリフレッシュより速い再生だけすぐ出していて、16K 2 倍速（119.88fps、120Hz）で swap が毎回約 10.7ms ブロック
     （vsync ではなく GPU 待ち。swap interval 0 でも同じ）し、その間に届いた 2 コマを続けて upload して 1 枚目が出ないまま上書きされ、
     無駄な変換で GPU がさらに重くなって画面に出るのは 60fps に張り付いていた（HUD の描画 fps 約 120 は upload の数）。
@@ -226,7 +236,7 @@ sequenceDiagram
   捨てる数が vblank ごとにばらつくと動きの速さが毎回変わってカクつく（8K HEVC 120fps の 2 倍速 = 目標 240 を 120Hz で、デコード約 155fps、
   1 コマ・2 コマ進むのが不規則に混ざっていた）。速さは目標に届かないことがある（1 vblank に 2 コマまで。待ち行列が 2 コマのため）。
 - 使わない条件: 一時停止・シーク・コマ送り・逆再生・エンコード、vsync オフ、DWM の時刻が取れない、`CUDA_VIEWER_PACING=0`。
-- 音声は従来どおりデコード側の映像位置（`play_pos_us_`）に合わせるので、待ち行列のぶん（約 1 コマ）音が先に出る。
+- 音声は従来どおりデコード側の映像位置（`play_pos_us_`）に合わせるので、待ち行列と裏のぶん（1〜2 コマ）音が先に出る。
 - Widgets 版（MainWindow）は従来どおり（すぐ出す）。
 
 ## 4. 経路ごとのデコード
