@@ -9,6 +9,7 @@
 #include <QQuickWindow>
 #include <QCoreApplication>
 #include <QEvent>
+#include "src/qmlui/vblankclock.h"
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -716,6 +717,9 @@ void VideoEngine::FBO_Rendering(const VideoFrame& Frame)
 // ==============================================================
 bool VideoEngine::vblankGrid(qint64& vbNs, double& perNs) const
 {
+    // ウィンドウがあるモニターの vblank（VblankClock）。メインと違うリフレッシュのモニターでも正しい
+    if (VblankClock::instance().grid(vbNs, perNs)) { lastGridSrc_ = 1; return true; }
+    lastGridSrc_ = -1;
 #ifdef Q_OS_WIN
     static const LARGE_INTEGER freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f; }();
     if (freq.QuadPart <= 0) return false;
@@ -726,7 +730,9 @@ bool VideoEngine::vblankGrid(qint64& vbNs, double& perNs) const
     const ULONGLONG q  = ti.qpcVBlank;   // MSVC の steady_clock（mono_now_ns）と同じ換算
     vbNs  = qint64((long long)(q / fq) * 1000000000LL + (long long)(q % fq) * 1000000000LL / fq);
     perNs = double(ti.qpcRefreshPeriod) * 1e9 / double(fq);
-    return perNs >= 3e6 && perNs <= 50e6;
+    const bool ok = perNs >= 3e6 && perNs <= 50e6;
+    if (ok) lastGridSrc_ = 0;
+    return ok;
 #else
     Q_UNUSED(vbNs); Q_UNUSED(perNs);
     return false;
@@ -787,7 +793,8 @@ void VideoEngine::onFrameSwapped()
 {
     // swap の回数と時間は同じフレームの描き直しも数える（二重に描いていないか、swap が止まっていないか）
     const qint64 now = mono_now_ns();
-    const double swapMs = afterRenderNs_ > 0 ? (now - afterRenderNs_) / 1e6 : -1.0;
+    const qint64 afterRender = afterRenderNs_;
+    const double swapMs = afterRender > 0 ? (now - afterRender) / 1e6 : -1.0;
     afterRenderNs_ = 0;
     ++swapsSincePresent_;
     if (swapMs > swapMaxMsSince_) swapMaxMsSince_ = swapMs;
@@ -803,7 +810,11 @@ void VideoEngine::onFrameSwapped()
 
     if (steady_) perf_.addPresent(intervalMs, latencyMs, step, overwritten);
     // upload → swap の移動平均（表示のペースが upload を始める時刻を逆算するのに使う）
-    if (latencyMs > 0 && latencyMs < 50) uploadToSwapEmaMs_ += (latencyMs - uploadToSwapEmaMs_) * 0.1;
+    //   swap のブロックを含めないよう、upload → afterRendering（swap を呼ぶ直前）で測る
+    if (afterRender > 0 && painted_.uploadNs > 0) {
+        const double renderMs = (afterRender - painted_.uploadNs) / 1e6;
+        if (renderMs > 0 && renderMs < 50) uploadToSwapEmaMs_ += (renderMs - uploadToSwapEmaMs_) * 0.1;
+    }
 
     // CSV（CUDA_VIEWER_PRESENT_LOG=<パス>。最初の表示で開く）
     if (!presentLogTried_) {
@@ -817,7 +828,7 @@ void VideoEngine::onFrameSwapped()
                 *presentLog_ << "t_ms,frame_no,step,present_interval_ms,upload_interval_ms,upload_to_present_ms,overwritten,steady,"
                                 "tick_interval_ms,tick_to_begin_ms,decode_ms,emit_to_recv_ms,recv_to_upload_ms,"
                                 "vblank_idx,vblank_step,swap_phase,refresh_ms,paced,"
-                                "swaps,swap_ms,swap_max_ms,wake_late_ms,pend_waits,dropped\n";
+                                "swaps,swap_ms,swap_max_ms,wake_late_ms,pend_waits,dropped,vb_src\n";
                 logT0Ns_ = now;
                 qDebug() << "[VideoEngine] 表示のログ:" << path;
             } else {
@@ -868,7 +879,7 @@ void VideoEngine::onFrameSwapped()
                      << f.paced << ','
                      << swapsSincePresent_ << ',' << num(swapMs) << ',' << num(swapMaxMsSince_) << ','
                      << num(f.wakePlanNs > 0 && f.wakeNs > 0 ? (f.wakeNs - f.wakePlanNs) / 1e6 : -1.0) << ','
-                     << f.pendWaits << ',' << f.dropped << '\n';
+                     << f.pendWaits << ',' << f.dropped << ',' << lastGridSrc_ << '\n';
         if (++presentLogLines_ % 120 == 0) presentLog_->flush();
         prevTickNs_    = f.tickNs;
         prevVblankIdx_ = vbIdx;

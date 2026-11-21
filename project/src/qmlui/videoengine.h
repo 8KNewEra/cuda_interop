@@ -132,8 +132,10 @@ public:
 
     // ---- 表示のペース（PlayerController の待ち行列が使う）----
     // 実際の vblank の格子（DWM）。vbNs = 直近の vblank の時刻（mono_now_ns と同じ物差し）、perNs = 周期。取れなければ false
-    bool   vblankGrid(qint64& vbNs, double& perNs) const;
-    // upload の先頭から swap（frameSwapped）までの時間の移動平均（ms）。upload を始める時刻の逆算に使う
+    bool   vblankGrid(qint64& vbNs, double& perNs) const;   // ウィンドウのモニター（VblankClock）→ 測れなければ DWM
+    // upload の先頭から描画を出し終える（afterRendering = swap を呼ぶ直前）までの時間の移動平均（ms）。upload を始める時刻の逆算に使う。
+    //   swap の時間は入れない: vsync オンの swap は前のコマが画面に出るまでブロックすることがあり、それを入れると見込みが膨らみ、
+    //   早く始める → またブロック、で張り付く（60Hz で目標 59.94 のとき swap 約 14ms・55fps）
     double uploadToSwapMs() const { return uploadToSwapEmaMs_; }
     // 描いたのにまだ swap していないフレームがあるか（1 回の swap に 2 枚描かないため）
     bool   hasPendingPresent() const { return frame_valid_ && rendered_.serial != 0 && rendered_.serial != presented_.serial; }
@@ -332,7 +334,8 @@ private:
     qint64     prevTickNs_ = 0;         // 前に出たフレームの刻み（刻みの間隔）
     qint64     prevVblankIdx_ = -1;     // 前に出たフレームが乗った vblank の番号（DWM。時刻から数える）
     qint64     prevVblankNs_  = 0;      // 前に出たフレームの swap の後の最初の vblank の時刻
-    double     uploadToSwapEmaMs_ = 7.0;
+    double     uploadToSwapEmaMs_ = 3.0;   // 名前は以前のまま。中身は upload → afterRendering
+    mutable int lastGridSrc_ = -1;      // vblankGrid の出どころ（1 = ウィンドウのモニター、0 = DWM、-1 = なし。CSV の vb_src）
     QQuickWindow* presentWindow_ = nullptr;
     int        renderNowEnv_ = -1;      // CUDA_VIEWER_RENDER_NOW（1 で使う。既定は使わない）。-1 = 未読
     // swap の回数と時間（CSV の swaps / swap_ms / swap_max_ms。前に出たコマから今のコマが出るまで）

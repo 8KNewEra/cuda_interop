@@ -295,6 +295,12 @@ private:
     qint64  presentTargetVNs_ = 0;      // 先頭のコマを出す vblank の時刻（schedulePresent）
     double  presentPerNs_ = 0;          // そのときの vblank の周期
     qint64  lastPresentedVNs_ = 0;      // 最後にコマを出した vblank（同じ vblank に 2 枚出さない）
+    // リフレッシュより速い再生（目標 fps > 画面のリフレッシュ）: vblank ごとに 1 枚出し、コマは毎回同じ数（stepK_）だけ進める
+    bool    overRefresh_ = false;
+    int     stepTarget_ = 1;            // 目標から決まる 1 vblank あたりのコマ数（1〜2。待ち行列は 2 コマまで）
+    int     stepK_ = 1;                 // 今使っているコマ数
+    int     kWin_ = 0, kFull2_ = 0;     // 直近の出した回数と、そのとき待ち行列に 2 コマあった回数
+    qint64  kUpBlockedUntilNs_ = 0;     // デコードが追いつかずに 1 へ下げたあと、しばらく上げない
 
     // ---- UI の定期更新を表示のペースの空き時間に寄せる（docs/DECODE_CORE.md 3.6）----
     //   性能 HUD（250ms）・動画情報（500ms）・推移の記録（1 秒）の通知は QML の評価と追加の描画を起こす。

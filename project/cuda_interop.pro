@@ -86,6 +86,7 @@ SOURCES += \
     $$PWD/src/qmlui/tonecurve.cpp \
     $$PWD/src/qmlui/mediaprobe.cpp \
     $$PWD/src/qmlui/sparklineitem.cpp \
+    $$PWD/src/qmlui/vblankclock.cpp \
 
 HEADERS += \
     $$PWD/src/__global__.h \
@@ -123,6 +124,7 @@ HEADERS += \
     $$PWD/src/qmlui/tonecurve.h \
     $$PWD/src/qmlui/mediaprobe.h \
     $$PWD/src/qmlui/sparklineitem.h \
+    $$PWD/src/qmlui/vblankclock.h \
     src/main/__global__.h
 
 FORMS += \

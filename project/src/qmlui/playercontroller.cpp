@@ -1117,6 +1117,15 @@ bool PlayerController::updatePacing()
     // リフレッシュより速い再生（16K 2 倍速 = 119.88fps を 120Hz など）も使う。vblank ごとに 1 コマを選び、
     //   同じ vblank に重なるコマは upload せずに捨てる（presentTick）。以前はすぐ出していて、swap がブロックしている間に届いた
     //   2 コマを続けて upload し 1 枚目が出ないまま上書きされ、その無駄な変換で GPU がさらに重くなって 60fps に張り付いていた
+    // リフレッシュより速い再生か（1 コマが vblank の 0.95 倍より短い）。モードか速さが変わったら 1 vblank あたりのコマ数を決め直す
+    const bool over = dur < qint64(per * 0.95);
+    if (over != overRefresh_ || dur != pacedFrameDurNs_) {
+        overRefresh_ = over;
+        stepTarget_  = over ? int(std::clamp<long long>(std::llround(per / double(dur)), 1, 2)) : 1;
+        stepK_       = stepTarget_;
+        kWin_ = kFull2_ = 0;
+        kUpBlockedUntilNs_ = 0;
+    }
     if (dur != pacedFrameDurNs_) {               // 再生速度が変わったら起点を取り直す
         pacedFrameDurNs_ = dur;
         nextIdealNs_ = 0;
@@ -1133,6 +1142,21 @@ void PlayerController::schedulePresent()
     qint64 vb = 0; double per = 0;
     if (!engine_ || !engine_->vblankGrid(vb, per)) { presentWakePlanNs_ = now; presentTimer_.start(0); return; }
 
+    if (overRefresh_) {
+        // リフレッシュより速い再生: 理想の時刻は使わず、前に出した vblank の次（間に合わなければ今から間に合う一番早い vblank）に出す
+        const double  leadNs = std::min(engine_->uploadToSwapMs() * 1e6 + 1500000.0, per * 0.5);   // 描画を出すまで ＋ 1.5ms（swap 自体）
+        const qint64  earliest = now + qint64(per * 0.5) + qint64(leadNs);
+        qint64        V = vb + qint64(std::ceil(double(earliest - vb) / per) * per);
+        if (lastPresentedVNs_ > 0) V = std::max(V, lastPresentedVNs_ + qint64(per));
+        presentTargetVNs_ = V;
+        presentPerNs_     = per;
+        qint64 wake = V - qint64(per * 0.5) - qint64(leadNs);
+        if (lastPresentedVNs_ > 0) wake = std::max(wake, lastPresentedVNs_ + 1000000);
+        const qint64 waitNs = wake - now;
+        presentWakePlanNs_ = waitNs <= 0 ? now : wake;
+        presentTimer_.start(waitNs <= 0 ? 0 : int((waitNs + 500000) / 1000000));
+        return;
+    }
     if (nextIdealNs_ == 0) {
         // 起点 = 届いた時刻 ＋ 遅延（1 コマ、ただし 25ms か 2 コマの短い方以上）。待ち行列は 2 コマまでなので長くしすぎない
         const qint64 recv = presentQueue_.front().t_recv_ns > 0 ? presentQueue_.front().t_recv_ns : now;
@@ -1147,7 +1171,7 @@ void PlayerController::schedulePresent()
     //   理想の時刻だけから V を決めると、表示が追いつかず遅れているとき V も一緒に遅れて「次のコマももう期限」に気付けず、
     //   presentTick がコマを捨てなかった（4 倍速が画面 60fps・再生も 60fps のまま）。V を今に合わせれば、遅れているときは
     //   次のコマの理想の時刻も V に収まるので、先頭を捨てて最新のコマを出す
-    const double  leadNs = std::min(engine_->uploadToSwapMs() * 1e6, per * 0.5);
+    const double  leadNs = std::min(engine_->uploadToSwapMs() * 1e6 + 1500000.0, per * 0.5);   // 描画を出すまで ＋ 1.5ms（swap 自体）
     {
         const qint64 earliest = now + qint64(per * 0.5) + qint64(leadNs);
         const qint64 Vmin = vb + qint64(std::ceil(double(earliest - vb) / per) * per);
@@ -1188,12 +1212,35 @@ void PlayerController::presentTick()
     // 同じ vblank に次のコマも間に合う（次のコマの理想の時刻もこの vblank に丸まる）なら、先頭は出さずに捨てる。
     //   upload しないので変換・画像処理の GPU を使わない。リフレッシュより速い再生（2 倍速・4 倍速）と、遅れを取り戻すとき
     int dropped = 0;
-    while (presentQueue_.size() >= 2 && presentTargetVNs_ > 0
-           && nextIdealNs_ + pacedFrameDurNs_ <= presentTargetVNs_ + qint64(presentPerNs_ * 0.5)) {
-        presentQueue_.pop_front();
-        replyDecode();
-        nextIdealNs_ += pacedFrameDurNs_;
-        ++dropped;
+    if (overRefresh_) {
+        // リフレッシュより速い再生: 毎回同じ数（stepK_）だけ進める。捨てる数が vblank ごとにばらつくと動きの速さが毎回変わって
+        //   カクついて見える（8K HEVC 120fps の 2 倍速 = 目標 240 を 120Hz で: デコードが約 155fps しか出ず、1 コマ・2 コマ進むのが
+        //   不規則に混ざっていた）。デコードが 2 コマずつに追いつかないなら 1 コマずつ（画面のリフレッシュの速さ）にして動きを一定に保つ
+        ++kWin_;
+        if (presentQueue_.size() >= 2) ++kFull2_;
+        while (presentQueue_.size() >= 2 && dropped < stepK_ - 1) {
+            presentQueue_.pop_front();
+            replyDecode();
+            ++dropped;
+        }
+        if (kWin_ >= 60) {
+            const qint64 t = mono_now_ns();
+            if (stepK_ > 1 && kFull2_ < 54) {                   // 2 コマずつ進めるだけのコマが来ない（1 割以上）
+                stepK_ = 1;
+                kUpBlockedUntilNs_ = t + 10000000000LL;         // 10 秒は上げない（上げ下げを繰り返さない）
+            } else if (stepK_ < stepTarget_ && kFull2_ >= 58 && t >= kUpBlockedUntilNs_) {
+                stepK_ = stepTarget_;
+            }
+            kWin_ = kFull2_ = 0;
+        }
+    } else {
+        while (presentQueue_.size() >= 2 && presentTargetVNs_ > 0
+               && nextIdealNs_ + pacedFrameDurNs_ <= presentTargetVNs_ + qint64(presentPerNs_ * 0.5)) {
+            presentQueue_.pop_front();
+            replyDecode();
+            nextIdealNs_ += pacedFrameDurNs_;
+            ++dropped;
+        }
     }
 
     VideoFrame f = presentQueue_.front();
@@ -1216,9 +1263,11 @@ void PlayerController::presentTick()
     //   促すので、捨てた分も含めてコンテンツの速さでデコードされる）。以前は 2 コマ遅れたら取り直していて、捨てる代わりに
     //   再生そのものが遅くなっていた（4 倍速 = 目標 119.88fps が、画面 60fps・再生も 60fps = 実質 2 倍速）。
     //   0.25 秒（または 4 コマ）以上遅れたとき（デコードが追いつかない・止まっていた等）だけ取り直す
-    const qint64 now = mono_now_ns();
-    nextIdealNs_ += pacedFrameDurNs_;
-    if (nextIdealNs_ < now - std::max<qint64>(250000000, 4 * pacedFrameDurNs_)) nextIdealNs_ = 0;
+    if (!overRefresh_) {
+        const qint64 now = mono_now_ns();
+        nextIdealNs_ += pacedFrameDurNs_;
+        if (nextIdealNs_ < now - std::max<qint64>(250000000, 4 * pacedFrameDurNs_)) nextIdealNs_ = 0;
+    }
     schedulePresent();
 }
 

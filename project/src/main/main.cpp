@@ -3,6 +3,7 @@
 #include "src/qmlui/videoengine.h"
 #include "src/qmlui/videoitem.h"
 #include "src/qmlui/sparklineitem.h"
+#include "src/qmlui/vblankclock.h"
 #include "src/qmlui/windowchrome.h"
 #include "src/qmlui/encodecontroller.h"
 #include "src/qmlui/screenshotsettings.h"
@@ -141,6 +142,8 @@ static int runQmlUi(QApplication& app)
         // 表示のペース: upload の直後にこのウィンドウをその場で描かせる（VideoEngine::renderNow）
         if (VideoEngine* eng = VideoEngine::instance())
             eng->setPresentWindow(window);
+        // 表示のペース: ウィンドウがあるモニターの vblank を測る（DWM は画面全体＝メインのモニターの値しか返さない）
+        VblankClock::instance().setWindow(window);
         // 表示の計測: 描き終えてから swap が戻るまでの時間（swap が止まっていないか）
         QObject::connect(window, &QQuickWindow::afterRendering, window, [] {
             if (VideoEngine* eng = VideoEngine::instance())
@@ -171,7 +174,9 @@ static int runQmlUi(QApplication& app)
         DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark)); // Windows 10 fallback
     }
 
-    return app.exec();
+    const int rc = app.exec();
+    VblankClock::instance().stop();
+    return rc;
 }
 
 int main(int argc, char *argv[])
